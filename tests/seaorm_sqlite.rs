@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
+use axum::http::header::{CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
@@ -374,6 +375,7 @@ type PortQueryExecutor =
 struct PortHttpQueryAdapter {
     database: DatabaseConnection,
     executor: PortQueryExecutor,
+    calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -383,6 +385,7 @@ impl QueryResourceAdapter for PortHttpQueryAdapter {
         _resource: &ResourceDefinition,
         plan: &ReadPlan,
     ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let result = self
             .executor
             .collection(&self.database, plan, &AllowGuard, Some(&PortOwnerLoader))
@@ -441,6 +444,46 @@ impl RequestAuthorizer for AllowHttpRequest {
         _resource_id: Option<&str>,
         _headers: &HeaderMap,
     ) -> bool {
+        true
+    }
+}
+
+struct SingleResourceProbeAdapter {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ResourceAdapter for SingleResourceProbeAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+    ) -> Result<Vec<AdapterResource>, AdapterError> {
+        Ok(Vec::new())
+    }
+
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+    ) -> Result<Option<AdapterResource>, AdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
+struct SingleResourceProbeAuthorizer {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl RequestAuthorizer for SingleResourceProbeAuthorizer {
+    async fn authorize(
+        &self,
+        _resource_type: &str,
+        _resource_id: Option<&str>,
+        _headers: &HeaderMap,
+    ) -> bool {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         true
     }
 }
@@ -1168,6 +1211,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         );
     }
 
+    let query_calls = Arc::new(AtomicUsize::new(0));
     let query_adapter = Arc::new(PortHttpQueryAdapter {
         database: database.clone(),
         executor: SeaOrmQueryExecutor::<port::Entity, _, _>::new(
@@ -1177,6 +1221,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
             PortCodec,
         )
         .unwrap(),
+        calls: query_calls.clone(),
     });
     let app = http::router_with_query(
         Arc::new(registry()),
@@ -1262,6 +1307,61 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         assert_eq!(resource["attributes"]["name"], expected_name);
     }
 
+    assert_eq!(query_calls.load(Ordering::SeqCst), 3);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_single_resource_queries_reject_before_authorization_or_adapters() {
+    let database = database().await;
+    let resource_calls = Arc::new(AtomicUsize::new(0));
+    let authorization_calls = Arc::new(AtomicUsize::new(0));
+    let query_calls = Arc::new(AtomicUsize::new(0));
+    let query_adapter = Arc::new(PortHttpQueryAdapter {
+        database: database.clone(),
+        executor: SeaOrmQueryExecutor::<port::Entity, _, _>::new(
+            registry(),
+            "ports",
+            port_resource as fn(&port::Model) -> AdapterResource,
+            PortCodec,
+        )
+        .unwrap(),
+        calls: query_calls.clone(),
+    });
+    let app = http::router_with_query(
+        Arc::new(registry()),
+        Arc::new(SingleResourceProbeAdapter {
+            calls: resource_calls.clone(),
+        }),
+        Arc::new(SingleResourceProbeAuthorizer {
+            calls: authorization_calls.clone(),
+        }),
+        query_adapter,
+        pagination(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1?include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        "application/vnd.api+json"
+    );
+    assert_eq!(response.headers().get(VARY).unwrap(), "Accept");
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["errors"][0]["code"], "unsupported_query");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "include");
+    assert_eq!(authorization_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 0);
     database.close().await.unwrap();
 }
 
