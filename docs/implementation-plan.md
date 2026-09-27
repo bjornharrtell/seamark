@@ -163,6 +163,8 @@ with matching error status and JSON:API headers before an intentionally failing
 operation handler can run; endpoint error mappings remain partial overall.
 An Atomic database-acquisition failure is also verified to return a 500 error
 document with matching JSON:API headers and status.
+Document validation now explicitly covers empty `id` and `lid` strings as
+opaque JSON:API string identifiers, including local-ID relationship resolution.
 Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
 `included` members. Atomic HTTP body parsing now rejects duplicate JSON object

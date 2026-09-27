@@ -111,6 +111,34 @@ fn accepts_local_id_resource_objects_but_requires_response_ids() {
 }
 
 #[test]
+fn accepts_empty_resource_and_local_identifier_strings() {
+    let response: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "",
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": ""}}
+            }
+        }
+    }))
+    .unwrap();
+    response.validate_response().unwrap();
+
+    let request: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "lid": "",
+            "relationships": {
+                "owner": {"data": {"type": "people", "lid": ""}}
+            }
+        },
+        "included": [{"type": "people", "lid": ""}]
+    }))
+    .unwrap();
+    request.validate().unwrap();
+}
+
+#[test]
 fn response_relationship_identifiers_require_persistent_ids() {
     let document: JsonApiDocument = serde_json::from_value(json!({
         "data": {
