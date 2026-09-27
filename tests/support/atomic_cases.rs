@@ -603,11 +603,7 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
                 },
                 {
                     "op": "update",
-                    "ref": {
-                        "type": "ports",
-                        "lid": "replacement-port",
-                        "relationship": "tags"
-                    },
+                    "href": "/ports/1/relationships/tags",
                     "data": [{"type": "tags", "lid": "second-tag"}]
                 }
             ]
