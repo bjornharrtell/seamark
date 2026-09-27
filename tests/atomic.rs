@@ -364,6 +364,18 @@ fn validates_request_response_shapes_and_result_cardinality() {
 }
 
 #[test]
+fn accepts_empty_atomic_operations_as_a_valid_no_op() {
+    let request = document(json!({"atomic:operations": []}));
+
+    assert!(request.validate_request().unwrap().is_empty());
+    assert!(
+        plan_atomic_operations(&registry(), &request)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn validates_atomic_resource_result_order() {
     let operations = plan(json!({
         "atomic:operations": [
