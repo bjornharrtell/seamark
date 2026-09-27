@@ -536,12 +536,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["data"].as_array().unwrap().len(), 1);
-    assert_eq!(body["data"][0]["id"], "2");
-    assert_eq!(body["data"][0]["attributes"], json!({"name": "Beta"}));
-    assert!(body["data"][0]["relationships"]["owner"].is_object());
-    assert_eq!(body["included"][0]["id"], "12");
-    assert_eq!(body["included"][0]["attributes"], json!({"name": "Niko"}));
+    assert_eq!(body, query_cases::first_page_document());
 
     database
         .execute_unprepared("DROP TABLE seamark_m4_ports; DROP TABLE seamark_m4_people;")

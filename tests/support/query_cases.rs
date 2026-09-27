@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use seamark::query::ReadQuery;
+use serde_json::{Value, json};
 
 pub struct PersonFixture {
     pub id: i32,
@@ -95,4 +96,22 @@ pub fn second_page_without_projection() -> ReadQuery {
         includes: Vec::new(),
         ..first_page_with_owner()
     }
+}
+
+pub fn first_page_document() -> Value {
+    json!({
+        "data": [{
+            "type": "ports",
+            "id": FIRST_PAGE_PORT_ID,
+            "attributes": {"name": FIRST_PAGE_PORT_NAME},
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": FIRST_PAGE_OWNER_ID}}
+            }
+        }],
+        "included": [{
+            "type": "people",
+            "id": FIRST_PAGE_OWNER_ID,
+            "attributes": {"name": FIRST_PAGE_OWNER_NAME}
+        }]
+    })
 }
