@@ -127,7 +127,9 @@ normative conformance remains the M6 objective. M7 adds a partial opt-in SQLite 
 shared complete query response document and one shared eleven-operation
 Atomic result document with matching persisted state. The shared Atomic case
 covers collection, resource, and relationship `href` targets, custom
-to-many add/remove dispatch, and rollback after a later failure. Broader
+to-many add/remove dispatch, proves removing one of two relationship members
+leaves the other persisted, and verifies rollback of a later relationship add
+when a subsequent operation fails. Broader
 string and integer identifier/type and relationship coverage now runs through
 both query and Atomic paths. Broader identifier/type/relationship-cardinality
 cases, a wider common Atomic matrix, and capability-difference documentation

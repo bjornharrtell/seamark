@@ -321,6 +321,7 @@ pub fn request() -> JsonValue {
             {"op": "add", "data": {"type": "people", "lid": "person-one", "attributes": {"name": "One"}}},
             {"op": "add", "data": {"type": "people", "lid": "person-two", "attributes": {"name": "Two"}}},
             {"op": "add", "data": {"type": "tags", "lid": "tag-one", "attributes": {"name": "Anchor"}}},
+            {"op": "add", "data": {"type": "tags", "lid": "tag-two", "attributes": {"name": "Remaining"}}},
             {
                 "op": "add",
                 "href": "/ports",
@@ -334,7 +335,10 @@ pub fn request() -> JsonValue {
             {
                 "op": "add",
                 "href": "/ports/1/relationships/tags",
-                "data": [{"type": "tags", "lid": "tag-one"}]
+                "data": [
+                    {"type": "tags", "lid": "tag-one"},
+                    {"type": "tags", "lid": "tag-two"}
+                ]
             },
             {
                 "op": "remove",
@@ -351,9 +355,12 @@ pub fn request() -> JsonValue {
                 "href": "/ports/1/relationships/owner",
                 "data": {"type": "people", "lid": "person-two"}
             },
-            {"op": "remove", "href": "/ports/1"},
             {"op": "remove", "ref": {"type": "people", "lid": "person-one"}},
-            {"op": "remove", "ref": {"type": "tags", "lid": "tag-one"}}
+            {
+                "op": "update",
+                "ref": {"type": "tags", "id": "1"},
+                "data": {"type": "tags", "id": "1", "attributes": {"name": "Detached"}}
+            }
         ]
     })
 }
@@ -364,8 +371,8 @@ pub fn expected_result_document() -> JsonValue {
             {"data": {"type": "people", "id": "1"}},
             {"data": {"type": "people", "id": "2"}},
             {"data": {"type": "tags", "id": "1"}},
+            {"data": {"type": "tags", "id": "2"}},
             {"data": {"type": "ports", "id": "1"}},
-            {},
             {},
             {},
             {},
@@ -435,14 +442,14 @@ pub async fn execute_failure_case(database: &DatabaseConnection) -> AtomicExecut
         json!({
             "atomic:operations": [
                 {
-                    "op": "update",
-                    "ref": {"type": "people", "id": "2"},
-                    "data": {"type": "people", "id": "2", "attributes": {"name": "Changed"}}
+                    "op": "add",
+                    "href": "/ports/1/relationships/tags",
+                    "data": [{"type": "tags", "id": "1"}]
                 },
                 {
                     "op": "update",
-                    "ref": {"type": "people", "id": "999"},
-                    "data": {"type": "people", "id": "999", "attributes": {"name": "Missing"}}
+                    "ref": {"type": "ports", "id": "999"},
+                    "data": {"type": "ports", "id": "999", "attributes": {"name": "Missing"}}
                 }
             ]
         }),
@@ -456,13 +463,18 @@ pub async fn assert_final_state(database: &DatabaseConnection) {
     assert_eq!(people.len(), 1);
     assert_eq!(people[0].person_id, 2);
     assert_eq!(people[0].display_name, "Two");
-    assert!(port::Entity::find().all(database).await.unwrap().is_empty());
-    assert!(tag::Entity::find().all(database).await.unwrap().is_empty());
-    assert!(
-        port_tag::Entity::find()
-            .all(database)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let ports = port::Entity::find().all(database).await.unwrap();
+    assert_eq!(ports.len(), 1);
+    assert_eq!(ports[0].port_id, 1);
+    assert_eq!(ports[0].title, "Updated Pier");
+    assert_eq!(ports[0].owner_id, 2);
+    let mut tags = tag::Entity::find().all(database).await.unwrap();
+    tags.sort_by_key(|tag| tag.tag_id);
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags[0].tag_name, "Detached");
+    assert_eq!(tags[1].tag_name, "Remaining");
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].port_id, 1);
+    assert_eq!(links[0].tag_id, 2);
 }
