@@ -1585,6 +1585,40 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
 }
 
 #[tokio::test]
+async fn atomic_http_combines_repeated_accept_header_fields() {
+    let database = database().await;
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+    let mut request = request(
+        "/operations",
+        ATOMIC_MEDIA_TYPE,
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
+        r#"{"atomic:operations":[]}"#,
+    );
+    request.headers_mut().append(
+        ACCEPT,
+        HeaderValue::from_static(
+            "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
+        ),
+    );
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    assert_eq!(document(response).await, json!({"atomic:results": []}));
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_rejects_relationship_result_data_with_operation_pointer() {
     let database = database().await;
     let handler = Arc::new(RelationshipResultHandler {
