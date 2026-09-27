@@ -17,6 +17,7 @@ use crate::atomic::{
 };
 use crate::document::{RelationshipData, ResourceIdentifier};
 use crate::registry::{RegistryError, ResourceDefinition, ResourceRegistry};
+use crate::seaorm::SeaOrmMutationValueCodec;
 
 /// Executes operations for one typed entity using explicit field/value mapping.
 #[async_trait]
@@ -74,29 +75,26 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
 /// relationship operations and `href` targets remain application-defined and
 /// can be handled by another [`SeaOrmAtomicOperationExecutor`] in the
 /// dispatcher.
-pub struct SeaOrmResourceMutationHandler<E, F, I>
+pub struct SeaOrmResourceMutationHandler<E, C>
 where
     E: EntityTrait,
     E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
     E::Model: IntoActiveModel<E::ActiveModel> + Send,
     E::Column: FromStr,
-    F: Fn(&str, &JsonValue) -> Result<Value, String> + Send + Sync,
-    I: Fn(&str, &Value) -> Result<String, String> + Send + Sync,
+    C: SeaOrmMutationValueCodec,
 {
     definition: ResourceDefinition,
-    value_encoder: F,
-    identifier_decoder: I,
+    value_codec: C,
     entity: PhantomData<fn() -> E>,
 }
 
-impl<E, F, I> SeaOrmResourceMutationHandler<E, F, I>
+impl<E, C> SeaOrmResourceMutationHandler<E, C>
 where
     E: EntityTrait,
     E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
     E::Model: IntoActiveModel<E::ActiveModel> + Send,
     E::Column: FromStr,
-    F: Fn(&str, &JsonValue) -> Result<Value, String> + Send + Sync,
-    I: Fn(&str, &Value) -> Result<String, String> + Send + Sync,
+    C: SeaOrmMutationValueCodec,
 {
     /// Binds this typed executor to a registered public resource.
     /// # Errors
@@ -105,14 +103,12 @@ where
     pub fn new(
         registry: &ResourceRegistry,
         resource_type: &str,
-        value_encoder: F,
-        identifier_decoder: I,
+        value_codec: C,
     ) -> Result<Self, RegistryError> {
         let definition = registry.resource(resource_type)?.clone();
         Ok(Self {
             definition,
-            value_encoder,
-            identifier_decoder,
+            value_codec,
             entity: PhantomData,
         })
     }
@@ -138,7 +134,7 @@ where
     }
 
     fn encode(&self, model_field: &str, value: &JsonValue) -> Result<Value, String> {
-        (self.value_encoder)(model_field, value)
+        self.value_codec.encode_mutation_value(model_field, value)
     }
 
     fn set_field(
@@ -230,7 +226,8 @@ where
     }
 
     fn decode_identifier(&self, value: &Value) -> Result<String, String> {
-        (self.identifier_decoder)(self.definition.identifier_field(), value)
+        self.value_codec
+            .decode_identifier(self.definition.identifier_field(), value)
     }
 
     async fn add(
@@ -381,14 +378,13 @@ where
 }
 
 #[async_trait]
-impl<E, F, I> SeaOrmAtomicOperationExecutor for SeaOrmResourceMutationHandler<E, F, I>
+impl<E, C> SeaOrmAtomicOperationExecutor for SeaOrmResourceMutationHandler<E, C>
 where
     E: EntityTrait,
     E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
     E::Column: FromStr,
     E::Model: ModelTrait<Entity = E> + IntoActiveModel<E::ActiveModel> + Send,
-    F: Fn(&str, &JsonValue) -> Result<Value, String> + Send + Sync,
-    I: Fn(&str, &Value) -> Result<String, String> + Send + Sync,
+    C: SeaOrmMutationValueCodec,
 {
     fn supports(&self, operation: &PlannedOperation) -> bool {
         match operation {

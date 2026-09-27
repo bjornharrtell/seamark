@@ -22,8 +22,8 @@ use seamark::http::{
 use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
-    IncludedResource, SeaOrmExecutionError, SeaOrmIncludeLoader, SeaOrmQueryExecutor,
-    SeaOrmReadGuard,
+    IncludedResource, SeaOrmExecutionError, SeaOrmFilterValueCodec, SeaOrmIncludeLoader,
+    SeaOrmQueryExecutor, SeaOrmReadGuard,
 };
 use serde_json::json;
 use tower::ServiceExt;
@@ -107,7 +107,7 @@ fn query_executor_validates_identifier_and_queryable_columns_at_construction() {
             missing_identifier,
             "ports",
             port_resource,
-            encode_filter_value,
+            PortFilterCodec,
         ),
         Err(SeaOrmExecutionError::UnknownModelField(field)) if field == "missing_id"
     ));
@@ -127,7 +127,7 @@ fn query_executor_validates_identifier_and_queryable_columns_at_construction() {
             missing_query_field,
             "ports",
             port_resource,
-            encode_filter_value,
+            PortFilterCodec,
         ),
         Err(SeaOrmExecutionError::UnknownModelField(field)) if field == "missing_column"
     ));
@@ -157,17 +157,21 @@ fn port_resource(model: &port::Model) -> AdapterResource {
     }
 }
 
-fn encode_filter_value(model_field: &str, value: &str) -> Result<Value, String> {
-    match model_field {
-        "berth_count" | "depth_m" => value
-            .parse::<i32>()
-            .map(Value::from)
-            .map_err(|error| error.to_string()),
-        "active" => value
-            .parse::<bool>()
-            .map(Value::from)
-            .map_err(|error| error.to_string()),
-        _ => Ok(Value::from(value.to_owned())),
+struct PortFilterCodec;
+
+impl SeaOrmFilterValueCodec for PortFilterCodec {
+    fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        match model_field {
+            "berth_count" | "depth_m" => value
+                .parse::<i32>()
+                .map(Value::from)
+                .map_err(|error| error.to_string()),
+            "active" => value
+                .parse::<bool>()
+                .map(Value::from)
+                .map_err(|error| error.to_string()),
+            _ => Ok(Value::from(value.to_owned())),
+        }
     }
 }
 
@@ -240,11 +244,8 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
     }
 }
 
-type PortQueryExecutor = SeaOrmQueryExecutor<
-    port::Entity,
-    fn(&port::Model) -> AdapterResource,
-    fn(&str, &str) -> Result<Value, String>,
->;
+type PortQueryExecutor =
+    SeaOrmQueryExecutor<port::Entity, fn(&port::Model) -> AdapterResource, PortFilterCodec>;
 
 struct PortHttpQueryAdapter {
     database: DatabaseConnection,
@@ -389,7 +390,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         registry(),
         "ports",
         port_resource,
-        encode_filter_value,
+        PortFilterCodec,
     )
     .unwrap();
     let query = ReadQuery {
@@ -497,7 +498,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             registry(),
             "ports",
             port_resource as fn(&port::Model) -> AdapterResource,
-            encode_filter_value as fn(&str, &str) -> Result<Value, String>,
+            PortFilterCodec,
         )
         .unwrap(),
         guard: AllowGuard {
@@ -545,7 +546,7 @@ async fn authorization_limits_and_validation_failures_precede_queries() {
         registry(),
         "ports",
         port_resource,
-        encode_filter_value,
+        PortFilterCodec,
     )
     .unwrap();
     let guard = AllowGuard {

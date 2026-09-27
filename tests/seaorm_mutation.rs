@@ -17,6 +17,7 @@ use seamark::atomic::{
 };
 use seamark::document::ResourceIdentifier;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
 };
@@ -157,22 +158,28 @@ fn registry() -> ResourceRegistry {
     .unwrap()
 }
 
-fn encode_value(field: &str, value: &JsonValue) -> Result<Value, String> {
-    match (field, value) {
-        ("author_id", JsonValue::Null) => Ok(Value::Int(None)),
-        ("author_id" | "article_id" | "tag_id", JsonValue::String(value)) => value
-            .parse::<i32>()
-            .map(|value| Value::Int(Some(value)))
-            .map_err(|error| error.to_string()),
-        ("name" | "title", JsonValue::String(value)) => Ok(Value::from(value.clone())),
-        _ => Err(format!("unsupported value `{value}` for `{field}`")),
-    }
-}
+struct MutationCodec;
 
-fn decode_identifier(field: &str, value: &Value) -> Result<String, String> {
-    match (field, value) {
-        ("author_id" | "article_id" | "tag_id", Value::Int(Some(value))) => Ok(value.to_string()),
-        _ => Err(format!("unsupported identifier `{value:?}` for `{field}`")),
+impl SeaOrmMutationValueCodec for MutationCodec {
+    fn encode_mutation_value(&self, field: &str, value: &JsonValue) -> Result<Value, String> {
+        match (field, value) {
+            ("author_id", JsonValue::Null) => Ok(Value::Int(None)),
+            ("author_id" | "article_id" | "tag_id", JsonValue::String(value)) => value
+                .parse::<i32>()
+                .map(|value| Value::Int(Some(value)))
+                .map_err(|error| error.to_string()),
+            ("name" | "title", JsonValue::String(value)) => Ok(Value::from(value.clone())),
+            _ => Err(format!("unsupported value `{value}` for `{field}`")),
+        }
+    }
+
+    fn decode_identifier(&self, field: &str, value: &Value) -> Result<String, String> {
+        match (field, value) {
+            ("author_id" | "article_id" | "tag_id", Value::Int(Some(value))) => {
+                Ok(value.to_string())
+            }
+            _ => Err(format!("unsupported identifier `{value:?}` for `{field}`")),
+        }
     }
 }
 
@@ -252,27 +259,17 @@ impl SeaOrmAtomicOperationExecutor for ArticleTagExecutor {
 }
 
 fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatcher {
-    let author = SeaOrmResourceMutationHandler::<author::Entity, _, _>::new(
-        registry,
-        "authors",
-        encode_value,
-        decode_identifier,
-    )
-    .unwrap();
-    let article = SeaOrmResourceMutationHandler::<article::Entity, _, _>::new(
+    let author =
+        SeaOrmResourceMutationHandler::<author::Entity, _>::new(registry, "authors", MutationCodec)
+            .unwrap();
+    let article = SeaOrmResourceMutationHandler::<article::Entity, _>::new(
         registry,
         "articles",
-        encode_value,
-        decode_identifier,
+        MutationCodec,
     )
     .unwrap();
-    let tag = SeaOrmResourceMutationHandler::<tag::Entity, _, _>::new(
-        registry,
-        "tags",
-        encode_value,
-        decode_identifier,
-    )
-    .unwrap();
+    let tag = SeaOrmResourceMutationHandler::<tag::Entity, _>::new(registry, "tags", MutationCodec)
+        .unwrap();
     let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
         Arc::new(ArticleTagExecutor),
         Arc::new(author),
@@ -664,11 +661,10 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
 #[test]
 fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
     let registry = registry();
-    let handler = SeaOrmResourceMutationHandler::<article::Entity, _, _>::new(
+    let handler = SeaOrmResourceMutationHandler::<article::Entity, _>::new(
         &registry,
         "articles",
-        encode_value,
-        decode_identifier,
+        MutationCodec,
     )
     .unwrap();
     let operations = plan_atomic_operations(

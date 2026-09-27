@@ -24,7 +24,8 @@ use seamark::http::AdapterResource;
 use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
-    IncludedResource, SeaOrmIncludeLoader, SeaOrmQueryExecutor, SeaOrmReadGuard,
+    IncludedResource, SeaOrmFilterValueCodec, SeaOrmIncludeLoader, SeaOrmMutationValueCodec,
+    SeaOrmQueryExecutor, SeaOrmReadGuard,
 };
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
@@ -129,17 +130,21 @@ fn port_resource(model: &port::Model) -> AdapterResource {
     }
 }
 
-fn encode_filter_value(model_field: &str, value: &str) -> Result<Value, String> {
-    match model_field {
-        "berth_count" | "depth_m" => value
-            .parse::<i32>()
-            .map(Value::from)
-            .map_err(|error| error.to_string()),
-        "active" => value
-            .parse::<bool>()
-            .map(Value::from)
-            .map_err(|error| error.to_string()),
-        _ => Ok(Value::from(value.to_owned())),
+struct PortCodec;
+
+impl SeaOrmFilterValueCodec for PortCodec {
+    fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        match model_field {
+            "berth_count" | "depth_m" => value
+                .parse::<i32>()
+                .map(Value::from)
+                .map_err(|error| error.to_string()),
+            "active" => value
+                .parse::<bool>()
+                .map(Value::from)
+                .map_err(|error| error.to_string()),
+            _ => Ok(Value::from(value.to_owned())),
+        }
     }
 }
 
@@ -253,46 +258,51 @@ async fn insert_fixtures(database: &DatabaseConnection) {
     }
 }
 
-fn encode_mutation_value(field: &str, value: &serde_json::Value) -> Result<Value, String> {
-    match (field, value) {
-        ("owner_id" | "berth_count", serde_json::Value::Null) => Ok(Value::Int(None)),
-        ("port_id" | "person_id" | "owner_id", serde_json::Value::String(value)) => value
-            .parse::<i32>()
-            .map(|value| Value::Int(Some(value)))
-            .map_err(|error| error.to_string()),
-        ("berth_count" | "depth_m", serde_json::Value::Number(value)) => value
-            .as_i64()
-            .and_then(|value| i32::try_from(value).ok())
-            .map(|value| Value::Int(Some(value)))
-            .ok_or_else(|| format!("invalid integer value `{value}` for `{field}`")),
-        ("active", serde_json::Value::Bool(value)) => Ok(Value::from(*value)),
-        ("title" | "display_name" | "private_note", serde_json::Value::String(value)) => {
-            Ok(Value::from(value.clone()))
+impl SeaOrmMutationValueCodec for PortCodec {
+    fn encode_mutation_value(
+        &self,
+        field: &str,
+        value: &serde_json::Value,
+    ) -> Result<Value, String> {
+        match (field, value) {
+            ("owner_id" | "berth_count", serde_json::Value::Null) => Ok(Value::Int(None)),
+            ("port_id" | "person_id" | "owner_id", serde_json::Value::String(value)) => value
+                .parse::<i32>()
+                .map(|value| Value::Int(Some(value)))
+                .map_err(|error| error.to_string()),
+            ("berth_count" | "depth_m", serde_json::Value::Number(value)) => value
+                .as_i64()
+                .and_then(|value| i32::try_from(value).ok())
+                .map(|value| Value::Int(Some(value)))
+                .ok_or_else(|| format!("invalid integer value `{value}` for `{field}`")),
+            ("active", serde_json::Value::Bool(value)) => Ok(Value::from(*value)),
+            ("title" | "display_name" | "private_note", serde_json::Value::String(value)) => {
+                Ok(Value::from(value.clone()))
+            }
+            _ => Err(format!("unsupported value `{value}` for `{field}`")),
         }
-        _ => Err(format!("unsupported value `{value}` for `{field}`")),
     }
-}
 
-fn decode_mutation_identifier(field: &str, value: &Value) -> Result<String, String> {
-    match (field, value) {
-        ("port_id" | "person_id", Value::Int(Some(value))) => Ok(value.to_string()),
-        _ => Err(format!("unsupported identifier `{value:?}` for `{field}`")),
+    fn decode_identifier(&self, field: &str, value: &Value) -> Result<String, String> {
+        match (field, value) {
+            ("port_id" | "person_id", Value::Int(Some(value))) => Ok(value.to_string()),
+            _ => Err(format!("unsupported identifier `{value:?}` for `{field}`")),
+        }
     }
 }
 
 fn mutation_dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatcher {
-    let ports = SeaOrmResourceMutationHandler::<port::Entity, _, _>::new(
+    let codec = Arc::new(PortCodec);
+    let ports = SeaOrmResourceMutationHandler::<port::Entity, _>::new(
         registry,
         "ports",
-        encode_mutation_value,
-        decode_mutation_identifier,
+        Arc::clone(&codec),
     )
     .unwrap();
-    let people = SeaOrmResourceMutationHandler::<person::Entity, _, _>::new(
+    let people = SeaOrmResourceMutationHandler::<person::Entity, _>::new(
         registry,
         "people",
-        encode_mutation_value,
-        decode_mutation_identifier,
+        Arc::clone(&codec),
     )
     .unwrap();
     let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> =
@@ -342,7 +352,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         registry(),
         "ports",
         port_resource,
-        encode_filter_value,
+        Arc::new(PortCodec),
     )
     .unwrap();
     let query = ReadQuery {
