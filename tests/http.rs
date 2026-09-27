@@ -218,6 +218,17 @@ async fn document(response: Response<Body>) -> JsonApiDocument {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+async fn error_document(response: Response<Body>) -> JsonApiDocument {
+    let expected_status = response.status().as_u16().to_string();
+    let document = document(response).await;
+    let errors = document.errors.as_ref().expect("error response document");
+    assert!(!errors.is_empty());
+    for error in errors {
+        assert_eq!(error.status.as_deref(), Some(expected_status.as_str()));
+    }
+    document
+}
+
 fn assert_jsonapi_headers(response: &Response<Body>) {
     assert_eq!(
         response.headers().get(CONTENT_TYPE).unwrap(),
@@ -312,7 +323,7 @@ async fn missing_single_resource_returns_a_structured_not_found_error() {
     let response = app.oneshot(request("/ports/missing", None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_jsonapi_headers(&response);
-    let body = serde_json::to_value(document(response).await).unwrap();
+    let body = serde_json::to_value(error_document(response).await).unwrap();
     assert_eq!(body["errors"][0]["code"], "resource_not_found");
     assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 1);
 }
@@ -325,7 +336,7 @@ async fn unknown_resource_type_returns_a_structured_error_without_adapter_calls(
     let response = app.oneshot(request("/ships", None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_jsonapi_headers(&response);
-    let body = serde_json::to_value(document(response).await).unwrap();
+    let body = serde_json::to_value(error_document(response).await).unwrap();
     assert_eq!(body["errors"][0]["code"], "unknown_resource_type");
     assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
     assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
@@ -340,7 +351,7 @@ async fn authorization_denial_precedes_adapter_calls_for_both_routes() {
         let response = app.oneshot(request(path, None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_jsonapi_headers(&response);
-        let body = serde_json::to_value(document(response).await).unwrap();
+        let body = serde_json::to_value(error_document(response).await).unwrap();
         assert_eq!(body["errors"][0]["code"], "forbidden");
         assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
         assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
@@ -361,7 +372,7 @@ async fn media_negotiation_is_applied_to_both_routes() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
         assert_jsonapi_headers(&response);
-        let body = serde_json::to_value(document(response).await).unwrap();
+        let body = serde_json::to_value(error_document(response).await).unwrap();
         assert_eq!(body["errors"][0]["code"], "not_acceptable");
         assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
         assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
@@ -416,7 +427,7 @@ async fn ignores_profile_parameters_and_rejects_unsupported_extensions() {
     assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
     assert_jsonapi_headers(&response);
     assert_eq!(
-        serde_json::to_value(document(response).await).unwrap()["errors"][0]["code"],
+        serde_json::to_value(error_document(response).await).unwrap()["errors"][0]["code"],
         "not_acceptable"
     );
 }
@@ -435,6 +446,7 @@ async fn validates_profile_uri_lists_and_duplicate_accept_parameters() {
             let response = app.oneshot(request(path, Some(accept))).await.unwrap();
             assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{accept}");
             assert_jsonapi_headers(&response);
+            error_document(response).await;
         }
 
         let adapter = Arc::new(TestAdapter::default());
@@ -521,7 +533,7 @@ async fn rejects_every_nonempty_query_string_before_adapter_calls() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_jsonapi_headers(&response);
-    let body = serde_json::to_value(document(response).await).unwrap();
+    let body = serde_json::to_value(error_document(response).await).unwrap();
     assert_eq!(body["errors"][0]["code"], "unsupported_query");
     assert_eq!(body["errors"][0]["source"]["parameter"], "page[number]");
     assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
@@ -541,7 +553,7 @@ async fn adapter_failures_return_generic_jsonapi_errors_for_both_routes() {
         let response = app.oneshot(request(path, None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_jsonapi_headers(&response);
-        let body = serde_json::to_value(document(response).await).unwrap();
+        let body = serde_json::to_value(error_document(response).await).unwrap();
         assert_eq!(body["errors"][0]["code"], "read_failed");
         assert_eq!(
             body["errors"][0]["detail"],
@@ -585,7 +597,7 @@ async fn rejects_relationship_linkage_to_an_unregistered_target_type() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_jsonapi_headers(&response);
     assert_eq!(
-        serde_json::to_value(document(response).await).unwrap()["errors"][0]["code"],
+        serde_json::to_value(error_document(response).await).unwrap()["errors"][0]["code"],
         "read_failed"
     );
 }

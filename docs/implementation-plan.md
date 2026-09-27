@@ -127,10 +127,11 @@ resources, empty relationship objects, and error objects without any defined
 member. It validates link `href` URI references, registered-token or
 absolute-URI relation types, BCP 47 `hreflang` syntax, JSON Pointer syntax for
 error sources, HTTP status strings in the 100-599 range, and absolute URIs in
-`jsonapi.ext` and `jsonapi.profile`. The matrix remains partial: verifying
-that pointers identify values in a particular request, response/error status
-consistency, multiple-error status selection, remaining top-level JSON:API
-rules, normative Atomic Operations edge cases, and context-sensitive
+`jsonapi.ext` and `jsonapi.profile`. Generated base and Atomic HTTP error tests
+assert that each error object's `status` matches the HTTP response status. The
+matrix remains partial: verifying that pointers identify values in a
+particular request, multiple-error status selection, remaining top-level
+JSON:API rules, normative Atomic Operations edge cases, and context-sensitive
 request/response rules still require coverage before M6 can be complete.
 Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
