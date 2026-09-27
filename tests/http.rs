@@ -75,6 +75,10 @@ struct TestQueryAdapter {
     calls: AtomicUsize,
 }
 
+struct FailingQueryAdapter {
+    calls: AtomicUsize,
+}
+
 #[async_trait]
 impl QueryResourceAdapter for TestQueryAdapter {
     async fn collection(
@@ -95,6 +99,18 @@ impl QueryResourceAdapter for TestQueryAdapter {
                 },
             }],
         })
+    }
+}
+
+#[async_trait]
+impl QueryResourceAdapter for FailingQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        _plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(QueryAdapterError::ReadFailed)
     }
 }
 
@@ -169,7 +185,7 @@ fn test_app(adapter: Arc<TestAdapter>, allowed: bool) -> (Router, Arc<TestAuthor
 
 fn query_test_app(
     adapter: Arc<TestAdapter>,
-    query_adapter: Arc<TestQueryAdapter>,
+    query_adapter: Arc<dyn QueryResourceAdapter>,
     allowed: bool,
 ) -> (Router, Arc<TestAuthorizer>) {
     let ports = ResourceDefinition::new("ports", "port_key")
@@ -268,6 +284,48 @@ async fn collection_projects_only_declared_fields_and_preserves_nulls() {
         adapter.identifier_fields.lock().unwrap().as_slice(),
         ["port_key"]
     );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn query_adapter_read_failures_map_to_matching_jsonapi_status() {
+    let adapter = Arc::new(TestAdapter::default());
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let (app, _) = query_test_app(adapter, query_adapter.clone(), true);
+    let response = app
+        .oneshot(request(
+            "/ports?filter=equals%28name%2C%27Harbor%27%29",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(document(response).await).unwrap();
+    assert_eq!(body["data"][0]["id"], "1");
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 1);
+
+    let failing_adapter = Arc::new(FailingQueryAdapter {
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter, failing_adapter.clone(), true);
+    let response = app
+        .oneshot(request(
+            "/ports?filter=equals%28name%2C%27Harbor%27%29",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["status"], "500");
+    assert_eq!(body["errors"][0]["code"], "read_failed");
+    assert_eq!(failing_adapter.calls.load(Ordering::SeqCst), 1);
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
 }
 
