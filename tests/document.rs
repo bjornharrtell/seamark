@@ -396,6 +396,42 @@ fn validates_jsonapi_extension_and_profile_uris() {
 }
 
 #[test]
+fn jsonapi_extension_and_profile_members_are_uri_lists() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "jsonapi": {
+            "ext": [
+                "https://extensions.example.test/unknown",
+                "urn:example:unrecognized-extension"
+            ],
+            "profile": [
+                "https://profiles.example.test/unknown",
+                "urn:example:unrecognized-profile"
+            ]
+        }
+    }))
+    .unwrap();
+    document.validate().unwrap();
+
+    for jsonapi in [
+        json!({"ext": "https://extensions.example.test/unknown"}),
+        json!({"profile": "https://profiles.example.test/unknown"}),
+        json!({"ext": [1]}),
+        json!({"profile": [false]}),
+        json!({"ext": null}),
+        json!({"profile": null}),
+    ] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(json!({
+                "data": null,
+                "jsonapi": jsonapi
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn jsonapi_version_must_be_a_string_when_present() {
     let document: JsonApiDocument = serde_json::from_value(json!({
         "data": null,
