@@ -70,6 +70,15 @@ ascending `capacity` returns IDs `1,2,3`, and descending returns `2,1,3`.
 requested field order, so null values are last in either direction rather
 than relying on differing native backend defaults. Existing non-null
 descending-depth coverage remains unchanged.
+SQLite foreign-key behavior is checked on the actual
+`Database::connect("sqlite::memory:")` connection: the query fixture asserts
+`PRAGMA foreign_keys` is `1` and rejects an orphan owner ID.
+`assert_orphan_owner_foreign_key_is_rejected` exercises the same
+relationship-generated schema against PostgreSQL and SQLite, with both
+rejecting the orphan write. No explicit SQLite connection option or
+production default change is needed; the regular PostgreSQL query fixture
+does not declare this relation, so the shared Atomic fixture is the comparable
+case.
 
 The matrix must eventually cite concrete test names or conformance cases for
 every applicable normative requirement. Uncovered rows stay partial or

@@ -316,6 +316,26 @@ pub async fn create_tables(database: &DatabaseConnection) {
     }
 }
 
+pub async fn assert_orphan_owner_foreign_key_is_rejected(database: &DatabaseConnection) {
+    let error = port::ActiveModel {
+        port_id: Set(99),
+        title: Set("Orphan".to_owned()),
+        owner_id: Set(Some(999)),
+    }
+    .insert(database)
+    .await;
+    let Err(error) = error else {
+        panic!("the owner foreign key must reject an unknown person ID");
+    };
+    assert!(
+        error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("foreign key"),
+        "expected an owner foreign-key violation, got {error}"
+    );
+}
+
 pub fn request() -> JsonValue {
     json!({
         "atomic:operations": [

@@ -696,6 +696,7 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
 async fn postgres_atomic_result_document_matches_shared_backend_case() {
     let database = database().await;
     atomic_cases::create_tables(&database).await;
+    atomic_cases::assert_orphan_owner_foreign_key_is_rejected(&database).await;
 
     let result_document = atomic_cases::execute_case(&database).await;
     assert_eq!(result_document, atomic_cases::expected_result_document());
