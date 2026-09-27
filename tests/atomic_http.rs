@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
@@ -57,6 +58,25 @@ impl AtomicOperationsGuard for LimitedGuard {
 struct TestHandler {
     fail: bool,
     require_resolved_targets: bool,
+}
+
+struct FailSecondHandler {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl AtomicOperationHandler for FailSecondHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        _operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            return Err("injected second-operation failure".to_owned());
+        }
+        Ok(AtomicOperationOutcome::default())
+    }
 }
 
 struct TestHrefResolver;
@@ -480,4 +500,39 @@ async fn database_failures_return_a_server_error_document() {
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     error_document(response, body).await;
+}
+
+#[tokio::test]
+async fn execution_failure_pointer_identifies_later_failed_operation() {
+    let database = database().await;
+    let handler = Arc::new(FailSecondHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        database,
+        Arc::new(TestGuard { allowed: true }),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"},"data":{"type":"authors","attributes":{"name":"First"}}},{"op":"update","ref":{"type":"authors","id":"2"},"data":{"type":"authors","attributes":{"name":"Second"}}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 2);
 }
