@@ -355,21 +355,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         Arc::new(PortCodec),
     )
     .unwrap();
-    let query = ReadQuery {
-        filters: vec![
-            "equals(name,'Alpha')".to_owned(),
-            "equals(name,'Beta')".to_owned(),
-        ],
-        sort: Some("-depth".to_owned()),
-        page_number: Some("1".to_owned()),
-        page_size: Some("1".to_owned()),
-        fieldsets: BTreeMap::from([
-            ("ports".to_owned(), "name,owner".to_owned()),
-            ("people".to_owned(), "name".to_owned()),
-        ]),
-        includes: vec!["owner".to_owned()],
-        ..ReadQuery::default()
-    };
+    let query = query_cases::first_page_with_owner();
     let result = executor
         .collection(
             &database,
@@ -381,28 +367,33 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         .unwrap();
 
     assert_eq!(result.resources.len(), 1);
-    assert_eq!(result.resources[0].id, "2");
+    assert_eq!(result.resources[0].id, query_cases::FIRST_PAGE_PORT_ID);
     assert_eq!(
         result.resources[0].attributes,
-        BTreeMap::from([("title".to_owned(), json!("Beta"))])
+        BTreeMap::from([("title".to_owned(), json!(query_cases::FIRST_PAGE_PORT_NAME))])
     );
     assert!(result.resources[0].relationships.contains_key("owner_id"));
     assert_eq!(result.included.len(), 1);
     assert_eq!(result.included[0].resource_type, "people");
-    assert_eq!(result.included[0].resource.id, "12");
+    assert_eq!(
+        result.included[0].resource.id,
+        query_cases::FIRST_PAGE_OWNER_ID
+    );
     assert_eq!(
         result.included[0].resource.attributes,
-        BTreeMap::from([("display_name".to_owned(), json!("Niko"))])
+        BTreeMap::from([(
+            "display_name".to_owned(),
+            json!(query_cases::FIRST_PAGE_OWNER_NAME)
+        )])
     );
 
-    let second_page = ReadQuery {
-        page_number: Some("2".to_owned()),
-        fieldsets: BTreeMap::new(),
-        includes: Vec::new(),
-        ..query.clone()
-    };
     let second_page_result = executor
-        .collection(&database, &plan(&second_page), &AllowGuard, None)
+        .collection(
+            &database,
+            &plan(&query_cases::second_page_without_projection()),
+            &AllowGuard,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -411,7 +402,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
             .iter()
             .map(|resource| resource.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["1"]
+        vec![query_cases::SECOND_PAGE_PORT_ID]
     );
 
     for (filter, expected_ids) in query_cases::FILTER_CASES {
