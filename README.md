@@ -12,7 +12,7 @@ Initial query support is deliberately focused: function-style filters, using Jso
 
 ## Implementation status
 
-The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The first milestone establishes the Rust crate and protocol document types. Full JSON:API 1.1 base-specification and Atomic Operations support remains the release objective; the current code must not be treated as a conformance claim.
+The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The Rust crate now includes protocol document types and a provisional, adapter-independent public resource registry. HTTP routes, SeaORM persistence, and full JSON:API 1.1 base-specification and Atomic Operations support remain unimplemented; the current code must not be treated as a conformance claim.
 
 ## Design documents
 

@@ -17,7 +17,7 @@ full JSON:API conformance or release readiness.
 | --- | --- | --- | --- |
 | 0 | **Design baseline.** Keep the design documents aligned on the initial scope, resource mapping model, query grammar, and implementation boundaries. | Normative JSON:API 1.1 and Atomic Operations are explicit release targets; Axum and SeaORM/PostgreSQL are the initial adapters; public mappings and supported query behavior are documented. | Complete |
 | 1 | **Rust crate and protocol foundation.** Build the library foundation and JSON:API document, resource, relationship, and error representations. Add only structural validation at this stage. | Verified: 19 integration tests pass. Coverage includes serialization, explicit-null versus omission, nullable resource `id`/`lid` request objects with response-only persistent-ID validation, null/one/many relationship linkage with `id` and `lid`, empty collections, missing identities, and duplicate resource identities scoped by type across primary and included data. `cargo fmt --all`, `cargo test --all-targets --all-features`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo doc --no-deps --all-features`, and `git diff --check` pass. Duplicate JSON-member rejection is a separate parser test, not the resource-identity check. Compound linkage reachability and local-ID consistency across relationship linkages remain deferred. Keep validation gaps visible; do not imply complete normative validation. | Complete |
-| 2 | **Minimal resource registry and explicit mappings.** Define a small registry of public resource types and explicit identifier, attribute, and relationship mappings independent of ORM entity naming. Keep this first mapping layer minimal and adapter-independent; defer SeaORM/PostgreSQL mapping to milestone 4. | Focused tests cover valid and invalid registry/mapping declarations and lookup by public resource name. Document that only registered resources and declared fields are exposed. No ORM persistence or broader route/query behavior is part of this milestone. | Planned |
+| 2 | **Minimal resource registry and explicit mappings.** Define a small registry of public resource types and explicit identifier, attribute, and relationship mappings independent of ORM entity naming. Keep this first mapping layer minimal and adapter-independent; defer SeaORM/PostgreSQL mapping to milestone 4. | Verified: 8 registry integration tests cover valid and invalid declarations, same-category duplicate public names, reserved `id`/`type` names, identifier/attribute/relationship backing-field collisions, relationship target resolution including self-reference, resource-scoped lookup, explicit filter/sort opt-in, and all-or-nothing batch validation. Only registered resources and declared fields are exposed. No ORM persistence or broader route/query behavior is part of this milestone. | Complete |
 | 3 | **Single Axum GET vertical slice.** Add only collection and single-resource GET routes backed by the registry and a narrow adapter boundary. Implement JSON:API media-type negotiation and structured protocol errors; expose only supported capabilities and reject unsupported query parameters. | Axum/adapter tests cover unknown resources; authorization denial before any adapter call; empty collections and missing single-resource results; null-versus-omitted serialization; accepted/rejected media types and structured errors; and rejection of unsupported query parameters. Keep filtering, sorting, pagination, includes, and persistence out of this slice unless separately implemented and tested. | Planned |
 | 4 | **Read planning and SeaORM/PostgreSQL mapping and execution.** Establish the production mapping from explicit public-resource declarations to SeaORM entities and PostgreSQL, then parse and validate the focused equality and null filter grammar, repeated-filter OR behavior, opt-in sorting, page-number/page-size pagination, sparse fieldsets, and included relationships. Apply authorization hooks and resource limits before execution. | Mapping tests exercise identifiers, attributes, and relationships against the SeaORM path; PostgreSQL integration tests verify persisted reads. Parser/unit tests cover valid, invalid, empty, null, repeated, and boundary inputs. Query-planning tests verify authorization, limits, sorting opt-in, and pagination semantics. Unsupported query forms fail predictably rather than being silently accepted. | Planned |
 | 5 | **Mutation planning and Atomic Operations.** Implement resource create/update/delete behavior and the complete Atomic Operations extension, including ordered operations, result reporting, local-ID references, and all-or-nothing execution through SeaORM transactions. | Unit tests cover operation parsing, validation, ordering, and local-ID resolution. PostgreSQL integration tests prove successful multi-operation execution and rollback when any operation fails. Verify the extension's normative request/response and error behavior, including media-type requirements. | Planned |
@@ -47,18 +47,21 @@ full JSON:API conformance or release readiness.
 
 ## Current implementation checkpoint
 
-Milestone 1 is complete: the Rust crate has JSON:API document, resource,
-relationship, and error structures plus limited structural validation. The
+Milestones 1 and 2 are complete. The crate provides JSON:API document,
+resource, relationship, and error structures with limited structural
+validation, plus an explicit public resource registry prototype. The protocol
 model preserves omitted fields separately from explicit `null`, represents
 resource linkage (including `lid`), and serializes error status codes as
-strings. All 19 integration tests and the formatting, Clippy, documentation,
-and whitespace checks recorded above pass. Generic validation accepts a
-request resource object with either `id` or `lid`; response validation
-specifically requires a persistent `id`. This is a protocol-model foundation
-only: there are not yet HTTP routes, persistence, or full normative
-conformance. Those broader goals remain partial or planned; the minimal
-resource registry and mapping in milestone 2, followed by the limited Axum GET
-slice in milestone 3, are next. PostgreSQL mapping remains scoped to the
-SeaORM work in milestone 4. Use the registry design choices in
-[`resources-and-mapping.md`](design/resources-and-mapping.md) as the next
-design dependency.
+strings. The registry maps public type/field names to provisional internal
+field names, validates relationship targets, and requires explicit
+filter/sort opt-in. The initial registry rejects aliases where multiple
+public fields map to one internal field, including the identifier. All 27
+integration tests (19 protocol and 8 registry) and the formatting, Clippy,
+documentation, and whitespace checks pass. Generic
+document validation accepts request resource objects with either `id` or
+`lid`; response validation specifically requires a persistent `id`. The
+registry metadata is adapter-independent and does not yet execute persistence
+operations. There are not yet HTTP routes, SeaORM persistence, or full
+normative conformance. Those broader goals remain partial or planned; the
+single Axum GET slice in milestone 3 is next. PostgreSQL mapping remains
+scoped to the SeaORM work in milestone 4.

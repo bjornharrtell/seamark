@@ -1,6 +1,8 @@
 # Resources and SeaORM mapping
 
-**Status: proposal for review.** No resource declaration or mapping implementation exists yet.
+**Status: partial implementation.** An adapter-independent resource registry
+prototype is implemented. SeaORM entity mapping and database execution are
+not implemented yet.
 
 ## Public resource schema
 
@@ -20,4 +22,4 @@ Registered relationship metadata should identify target resource types and suppo
 
 ## Prototype and open choices
 
-A small resource-to-SeaORM mapping prototype should establish which mappings and dynamic queries are practical before the declaration API is chosen. Derive and configuration syntax, identifier conversion types, exact field and nullability APIs, hook ordering, and transaction details remain undecided until that work is done.
+A small resource-to-SeaORM mapping prototype should establish which mappings and dynamic queries are practical before the declaration API is finalized. The current registry is a deliberately provisional first step: it maps public resource, attribute, and relationship names to opaque internal field-name strings; validates relationship targets; and requires explicit attribute filter/sort flags. To avoid ambiguous serialization and query resolution, this initial prototype rejects duplicate internal field mappings, including collisions with the identifier mapping; public aliases over one backing field are not supported. It does not inspect SeaORM entities, resolve database columns, or execute reads or writes. The SeaORM/PostgreSQL milestone must verify whether these mappings are practical before the declaration API is frozen. Derive and configuration syntax, identifier conversion types, exact field and nullability APIs, hook ordering, and transaction details remain undecided until that work is done.
