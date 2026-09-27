@@ -962,6 +962,23 @@ async fn bodyless_routes_reject_unsupported_jsonapi_content_type_parameters_befo
             let errors = error_document(response).await.errors.unwrap();
             assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
         }
+
+        let mut request = read_request(uri);
+        request
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(JSONAPI_MEDIA_TYPE));
+        request
+            .headers_mut()
+            .append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "{uri}"
+        );
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
     }
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
     assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
@@ -999,6 +1016,18 @@ async fn bodyless_routes_reject_unsupported_jsonapi_content_type_parameters_befo
         let errors = error_document(response).await.errors.unwrap();
         assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
     }
+    let mut request = read_request("/ports/42/relationships/owner");
+    request
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(JSONAPI_MEDIA_TYPE));
+    request
+        .headers_mut()
+        .append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_jsonapi_headers(&response);
+    let errors = error_document(response).await.errors.unwrap();
+    assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
     assert!(adapter.commands.lock().unwrap().is_empty());
 }
