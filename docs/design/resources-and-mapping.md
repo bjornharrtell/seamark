@@ -53,7 +53,12 @@ CRUD/relationship updates, and rollback using isolated in-memory databases.
 PostgreSQL and SQLite consume the same core port/person fixtures and string,
 typed numeric/boolean, and null filter expectations from
 `tests/support/query_cases.rs`. CI already runs `--all-features`, so the opt-in
-SQLite fixture participates in the existing test job. Full response and Atomic
-result comparisons, broader identifier/type coverage, and the remaining
-cross-backend parity matrix are still required; the current SQLite tests are
-not a complete support claim.
+SQLite fixture participates in the existing test job. The shared Atomic fixture
+declares a to-one owner foreign-key relation and exercises valid linkage on both
+backends; rejection of an orphan foreign key is not separately asserted. The
+core query and mutation adapters contain no backend-specific execution branch;
+application codecs and relationship hooks remain responsible for type and
+relation mapping. No intentional protocol capability difference has been
+verified. Full response and Atomic result comparisons, broader
+identifier/type coverage, and the remaining cross-backend parity matrix are
+still required; the current SQLite tests are not a complete support claim.
