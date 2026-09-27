@@ -165,6 +165,8 @@ An Atomic database-acquisition failure is also verified to return a 500 error
 document with matching JSON:API headers and status.
 Document validation now explicitly covers empty `id` and `lid` strings as
 opaque JSON:API string identifiers, including local-ID relationship resolution.
+Unrecognized unique members are also verified to be ignored across base
+document, JSON:API, resource, relationship, and identifier objects.
 Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
 `included` members. Atomic HTTP body parsing now rejects duplicate JSON object
