@@ -1176,6 +1176,20 @@ fn rejects_duplicate_resource_identifiers_in_a_collection() {
         Err(DocumentValidationError::DuplicateResourceIdentifier)
     );
 
+    let mut primary_with_relationship = resource("ports", "1");
+    primary_with_relationship.relationships = Some(BTreeMap::from([(
+        "owner".to_owned(),
+        relationship_to("people", "1"),
+    )]));
+    let same_id_on_different_types_across_primary_and_included = JsonApiDocument {
+        data: Some(PrimaryData::One(primary_with_relationship)),
+        included: Some(vec![resource("people", "1")]),
+        ..JsonApiDocument::default()
+    };
+    same_id_on_different_types_across_primary_and_included
+        .validate()
+        .unwrap();
+
     let same_id_on_different_resource_types = JsonApiDocument {
         data: Some(PrimaryData::Many(vec![
             resource("ports", "1"),

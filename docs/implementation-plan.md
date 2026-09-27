@@ -274,6 +274,11 @@ primary resource is accepted. The existing reachability regression retains
 direct/transitive positive and disconnected-negative controls, and
 `rejects_included_resources_without_primary_data` covers the no-primary-data
 case.
+The [JSON:API compound documents rule](https://jsonapi.org/format/#document-compound-documents)
+prohibits more than one resource object for each `(type,id)` pair.
+`rejects_duplicate_resource_identifiers_in_a_collection` rejects the same
+pair across primary and included data and accepts a reachable included object
+with the same ID under a different type.
 The [published Atomic Operations extension](https://jsonapi.org/ext/atomic/)
 distinguishes relationship membership targets from resource references:
 `relationship_adds_require_relationship_refs_without_reclassifying_resource_updates`
