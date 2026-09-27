@@ -491,9 +491,9 @@ fn read_plan_error(error: ReadPlanError) -> Response {
             Some("include".to_owned())
         }
         ReadPlanError::InvalidPageParameter { parameter, .. } => Some((*parameter).to_owned()),
+        ReadPlanError::PageSizeExceedsMaximum { .. } => Some("page[size]".to_owned()),
         ReadPlanError::UnknownResourceType(_)
         | ReadPlanError::InvalidPaginationConfig(_)
-        | ReadPlanError::PageSizeExceedsMaximum { .. }
         | ReadPlanError::PageOffsetExceedsMaximum { .. }
         | ReadPlanError::PageOffsetOverflow => None,
     };
