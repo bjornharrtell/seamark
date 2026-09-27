@@ -283,7 +283,12 @@ collection-root coverage: an included resource linked only from the second
 primary resource is accepted. The existing reachability regression retains
 direct/transitive positive and disconnected-negative controls, and
 `rejects_included_resources_without_primary_data` covers the no-primary-data
-case.
+and errors cases. Per the [JSON:API top-level rule](https://jsonapi.org/format/#document-top-level),
+`included` MUST NOT appear unless `data` is present. The new
+`empty_primary_collection_allows_only_empty_included_array` regression accepts
+`data: []` with `included: []`; a non-empty included array is rejected because
+no included resource can satisfy the [compound-document full-linkage rule](https://jsonapi.org/format/#document-compound-documents)
+from an empty primary collection.
 The [JSON:API compound documents rule](https://jsonapi.org/format/#document-compound-documents)
 prohibits more than one resource object for each `(type,id)` pair.
 `rejects_duplicate_resource_identifiers_in_a_collection` rejects the same
