@@ -147,6 +147,11 @@ The shared `FILTER_CASES` fixture now also applies the nested
 `and(equals(name,'Beta'),not(equals(depth,'2')))` filter to both backends and
 asserts the same matching port ID (`2`); the former PostgreSQL-only assertion
 has been replaced by these paired shared-fixture checks.
+That shared fixture also already covers null-filter parity:
+`equals(capacity,null)` yields exactly port ID `3` on PostgreSQL and SQLite,
+while the non-null `equals(capacity,'8')` control yields ID `2`.
+`FilterValue::Null` maps to database-side `column.is_null()` without invoking
+the non-null typed value codec.
 Both database-backed include cases now compare unfielded owner resources
 against the same fixture-derived exact attribute map, including both declared
 values and excluding adapter-only fields.
