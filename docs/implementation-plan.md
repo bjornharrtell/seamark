@@ -175,7 +175,9 @@ processing rules while explicitly rejecting the forbidden base `data` and
 member names recursively before typed decoding, with nested-duplicate and
 trailing-value regression tests. The Atomic document, operation, reference,
 and result types also reject Serde's sequence-form representations where
-JSON:API requires objects. Base GET media negotiation now validates quoted
+JSON:API requires objects; the Atomic HTTP regression verifies malformed
+document, operation, reference, and resource-add shapes produce 400 errors.
+Base GET media negotiation now validates quoted
 absolute profile URI lists, rejects malformed or duplicate profile
 parameters, ignores Accept extensions after `q`, rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not
