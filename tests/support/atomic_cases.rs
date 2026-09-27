@@ -4,13 +4,14 @@ use async_trait::async_trait;
 use axum::http::HeaderMap;
 use sea_orm::entity::prelude::*;
 use sea_orm::{
-    ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryOrder, Schema, Set,
-    Value,
+    ActiveModelTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
+    QueryOrder, Schema, Set, Value,
 };
 use seamark::atomic::{
-    AtomicExecutionError, AtomicHrefResolver, AtomicOperationsDocument, AtomicOperationsGuard,
-    AtomicResourceReference, AtomicResult, PlannedAtomicOperation, execute_atomic_operations,
-    plan_atomic_operations_with_href_resolver,
+    AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome,
+    AtomicOperationsDocument, AtomicOperationsGuard, AtomicResourceReference, AtomicResult,
+    LocalIdMap, PlannedAtomicOperation, PlannedOperation, execute_atomic_operations,
+    plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
@@ -149,6 +150,8 @@ impl SeaOrmMutationValueCodec for MutationCodec {
 
 struct AllowGuard;
 
+struct InvalidRelationshipResultHandler;
+
 #[async_trait]
 impl AtomicOperationsGuard for AllowGuard {
     async fn authorize(
@@ -161,6 +164,34 @@ impl AtomicOperationsGuard for AllowGuard {
 
     fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for InvalidRelationshipResultHandler {
+    async fn execute_operation(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        if !matches!(operation, PlannedOperation::UpdateRelationship { .. }) {
+            return Err("expected a relationship update".to_owned());
+        }
+        transaction
+            .execute_unprepared(
+                "INSERT INTO seamark_m7_parity_people (person_id, display_name) \
+                 VALUES (99, 'must be rolled back')",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(AtomicOperationOutcome {
+            result: AtomicResult {
+                data: Some(json!({"type": "people", "id": "99"})),
+                meta: None,
+            },
+            created_resource: None,
+        })
     }
 }
 
@@ -387,6 +418,41 @@ async fn execute_request(
         &dispatcher,
     )
     .await
+}
+
+pub async fn execute_invalid_result_rollback_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let registry = registry();
+    let document: AtomicOperationsDocument = serde_json::from_value(json!({
+        "atomic:operations": [{
+            "op": "update",
+            "ref": {"type": "ports", "id": "1", "relationship": "owner"},
+            "data": null
+        }]
+    }))
+    .unwrap();
+    let operations = plan_atomic_operations(&registry, &document).unwrap();
+    let error = execute_atomic_operations(
+        database,
+        &operations,
+        &HeaderMap::new(),
+        &AllowGuard,
+        &InvalidRelationshipResultHandler,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::InvalidResult { index: 0, .. }
+    ));
+    assert!(
+        person::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty(),
+        "writes preceding an invalid server-generated result must roll back"
+    );
 }
 
 pub async fn execute_case(database: &DatabaseConnection) -> JsonValue {
