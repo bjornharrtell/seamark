@@ -2,8 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::marker::PhantomData;
 
 use language_tags::LanguageTag;
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use uriparse::URIReference;
@@ -14,6 +17,7 @@ use uriparse::URIReference;
 /// validates those mutually exclusive top-level forms, but does not claim to
 /// validate every JSON:API 1.1 requirement.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<JsonApiDocumentRepr>")]
 pub struct JsonApiDocument {
     /// The primary resource data, including an explicit JSON `null`.
     #[serde(
@@ -57,6 +61,94 @@ pub struct JsonApiDocument {
         skip_serializing_if = "Option::is_none"
     )]
     pub jsonapi: Option<JsonApiObject>,
+}
+
+#[derive(Deserialize)]
+struct JsonApiDocumentRepr {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_primary_data",
+        skip_serializing_if = "Option::is_none"
+    )]
+    data: Option<PrimaryData>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    errors: Option<Vec<ErrorObject>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    included: Option<Vec<ResourceObject>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    links: Option<Map<String, Value>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    meta: Option<Map<String, Value>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    jsonapi: Option<JsonApiObject>,
+}
+
+impl From<ObjectOnly<JsonApiDocumentRepr>> for JsonApiDocument {
+    fn from(ObjectOnly(document): ObjectOnly<JsonApiDocumentRepr>) -> Self {
+        Self {
+            data: document.data,
+            errors: document.errors,
+            included: document.included,
+            links: document.links,
+            meta: document.meta,
+            jsonapi: document.jsonapi,
+        }
+    }
+}
+
+/// Restricts protocol objects to map representations rather than Serde's sequence form.
+struct ObjectOnly<T>(T);
+
+impl<'de, T> Deserialize<'de> for ObjectOnly<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T> Visitor<'de> for ObjectVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = ObjectOnly<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                T::deserialize(MapAccessDeserializer::new(map)).map(ObjectOnly)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
 }
 
 impl JsonApiDocument {
@@ -176,6 +268,7 @@ pub enum PrimaryData {
 
 /// A JSON:API resource object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<ResourceObjectRepr>")]
 pub struct ResourceObject {
     /// The resource type.
     #[serde(rename = "type")]
@@ -224,6 +317,38 @@ pub struct ResourceObject {
     pub meta: Option<Map<String, Value>>,
 }
 
+#[derive(Deserialize)]
+struct ResourceObjectRepr {
+    #[serde(rename = "type")]
+    type_name: String,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    lid: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    attributes: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    relationships: Option<BTreeMap<String, Relationship>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    links: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<ResourceObjectRepr>> for ResourceObject {
+    fn from(ObjectOnly(resource): ObjectOnly<ResourceObjectRepr>) -> Self {
+        Self {
+            type_name: resource.type_name,
+            id: resource.id,
+            lid: resource.lid,
+            attributes: resource.attributes,
+            relationships: resource.relationships,
+            links: resource.links,
+            meta: resource.meta,
+        }
+    }
+}
+
 impl ResourceObject {
     fn validate(&self) -> Result<(), DocumentValidationError> {
         validate_type(&self.type_name)?;
@@ -264,6 +389,7 @@ impl ResourceObject {
 
 /// A relationship object, containing linkage, links, or metadata.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<RelationshipRepr>")]
 pub struct Relationship {
     /// Resource linkage, including explicit JSON `null`.
     #[serde(
@@ -286,6 +412,26 @@ pub struct Relationship {
         skip_serializing_if = "Option::is_none"
     )]
     pub meta: Option<Map<String, Value>>,
+}
+
+#[derive(Deserialize)]
+struct RelationshipRepr {
+    #[serde(default, deserialize_with = "deserialize_relationship_data")]
+    data: Option<RelationshipData>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    links: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<RelationshipRepr>> for Relationship {
+    fn from(ObjectOnly(relationship): ObjectOnly<RelationshipRepr>) -> Self {
+        Self {
+            data: relationship.data,
+            links: relationship.links,
+            meta: relationship.meta,
+        }
+    }
 }
 
 impl Relationship {
@@ -323,6 +469,7 @@ pub enum RelationshipData {
 
 /// A JSON:API resource identifier object.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<ResourceIdentifierRepr>")]
 pub struct ResourceIdentifier {
     /// The resource type.
     #[serde(rename = "type")]
@@ -350,6 +497,29 @@ pub struct ResourceIdentifier {
     pub meta: Option<Map<String, Value>>,
 }
 
+#[derive(Deserialize)]
+struct ResourceIdentifierRepr {
+    #[serde(rename = "type")]
+    type_name: String,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    lid: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<ResourceIdentifierRepr>> for ResourceIdentifier {
+    fn from(ObjectOnly(identifier): ObjectOnly<ResourceIdentifierRepr>) -> Self {
+        Self {
+            type_name: identifier.type_name,
+            id: identifier.id,
+            lid: identifier.lid,
+            meta: identifier.meta,
+        }
+    }
+}
+
 impl ResourceIdentifier {
     fn validate(&self) -> Result<(), DocumentValidationError> {
         validate_type(&self.type_name)?;
@@ -364,6 +534,7 @@ impl ResourceIdentifier {
 
 /// A JSON:API error object.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<ErrorObjectRepr>")]
 pub struct ErrorObject {
     /// A unique identifier for this particular occurrence of the problem.
     #[serde(
@@ -423,6 +594,41 @@ pub struct ErrorObject {
     pub meta: Option<Map<String, Value>>,
 }
 
+#[derive(Deserialize)]
+struct ErrorObjectRepr {
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    links: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    code: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    detail: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    source: Option<ErrorSource>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<ErrorObjectRepr>> for ErrorObject {
+    fn from(ObjectOnly(error): ObjectOnly<ErrorObjectRepr>) -> Self {
+        Self {
+            id: error.id,
+            links: error.links,
+            status: error.status,
+            code: error.code,
+            title: error.title,
+            detail: error.detail,
+            source: error.source,
+            meta: error.meta,
+        }
+    }
+}
+
 impl ErrorObject {
     fn validate(&self) -> Result<(), DocumentValidationError> {
         if self.id.is_none()
@@ -458,6 +664,7 @@ impl ErrorObject {
 
 /// Source information identifying the request portion associated with an error.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<ErrorSourceRepr>")]
 pub struct ErrorSource {
     /// A JSON Pointer to the request document location.
     #[serde(
@@ -482,8 +689,29 @@ pub struct ErrorSource {
     pub header: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ErrorSourceRepr {
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    pointer: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    parameter: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    header: Option<String>,
+}
+
+impl From<ObjectOnly<ErrorSourceRepr>> for ErrorSource {
+    fn from(ObjectOnly(source): ObjectOnly<ErrorSourceRepr>) -> Self {
+        Self {
+            pointer: source.pointer,
+            parameter: source.parameter,
+            header: source.header,
+        }
+    }
+}
+
 /// JSON:API version and capability information.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<JsonApiObjectRepr>")]
 pub struct JsonApiObject {
     /// The JSON:API version string.
     #[serde(
@@ -513,6 +741,29 @@ pub struct JsonApiObject {
         skip_serializing_if = "Option::is_none"
     )]
     pub meta: Option<Map<String, Value>>,
+}
+
+#[derive(Deserialize)]
+struct JsonApiObjectRepr {
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    version: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    ext: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    profile: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<JsonApiObjectRepr>> for JsonApiObject {
+    fn from(ObjectOnly(jsonapi): ObjectOnly<JsonApiObjectRepr>) -> Self {
+        Self {
+            version: jsonapi.version,
+            ext: jsonapi.ext,
+            profile: jsonapi.profile,
+            meta: jsonapi.meta,
+        }
+    }
 }
 
 impl JsonApiObject {

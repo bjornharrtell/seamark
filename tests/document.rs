@@ -68,6 +68,30 @@ fn serializes_a_resource_document_with_json_api_member_names() {
 }
 
 #[test]
+fn document_and_nested_objects_must_be_json_objects() {
+    for value in [json!([]), json!("document"), json!(null), json!(7)] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(value.clone()).is_err(),
+            "expected non-object document root {value} to be rejected"
+        );
+    }
+
+    for value in [
+        json!({"data": ["ports", "1"]}),
+        json!({"data": {"type": "ports", "id": "1", "relationships": {"owner": ["people", "2"]}}}),
+        json!({"data": {"type": "ports", "id": "1", "relationships": {"owner": {"data": ["people", "2"]}}}}),
+        json!({"errors": [["400"]]}),
+        json!({"errors": [{"status": "400", "source": ["/data"]}]}),
+        json!({"meta": {}, "jsonapi": ["1.1"]}),
+    ] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(value.clone()).is_err(),
+            "expected JSON:API object shapes to reject array values: {value}"
+        );
+    }
+}
+
+#[test]
 fn round_trips_null_and_collection_primary_data() {
     for data in [
         PrimaryData::Null,
