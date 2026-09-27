@@ -287,7 +287,7 @@ invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
 implementations. At this revision, the complete all-features suite passes with
-202 integration tests and 6 unit tests, including 11 isolated SQLite tests
+203 integration tests and 6 unit tests, including 11 isolated SQLite tests
 and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
@@ -534,6 +534,9 @@ Content-Type parameters are rejected before authorization or adapter execution.
 Atomic Content-Type likewise rejects empty or multiply-spaced extension/profile
 URI lists before its guard or handler. The broader media-negotiation matrix
 remains partial.
+`base_mutation_and_relationship_routes_reject_unacceptable_accept_before_execution`
+verifies 406 negotiation on resource POST/PATCH/DELETE and relationship
+GET/PATCH/POST/DELETE routes before authorization or adapter execution.
 The conformance matrix cites these cases but remains partial.
 `validates_included_resources_reachable_from_any_collection_member` adds
 collection-root coverage: an included resource linked only from the second
