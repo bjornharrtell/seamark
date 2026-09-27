@@ -330,6 +330,24 @@ async fn negotiates_and_executes_atomic_http_requests() {
         assert!(error.get("errors").is_some());
     }
 
+    let malformed_operation = r#"{"atomic:operations":[{"op":"unknown"}]}"#;
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            malformed_operation,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = error_document(response, malformed_operation).await;
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
+
     let denied = atomic_http::router(
         registry(),
         database.clone(),

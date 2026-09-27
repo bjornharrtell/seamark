@@ -158,6 +158,8 @@ Atomic operation-execution failure coverage now explicitly verifies the
 permitted 422 status, JSON:API response headers, and a resolvable
 `/atomic:operations/0` source pointer for the failed operation. Other error
 categories remain partial.
+The same route test verifies that an unsupported operation code returns 400
+with a source pointer to its operation object.
 The Atomic HTTP regression also verifies that guard limit failures return 413
 with matching error status and JSON:API headers before an intentionally failing
 operation handler can run; endpoint error mappings remain partial overall.
