@@ -1387,6 +1387,39 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         query_cases::single_resource_owner_document()
     );
 
+    let missing_resource_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports/999?include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_resource_response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing_resource_response
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap(),
+        "application/vnd.api+json"
+    );
+    assert_eq!(
+        missing_resource_response.headers().get(VARY).unwrap(),
+        "Accept"
+    );
+    let missing_resource_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(missing_resource_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        missing_resource_document,
+        query_cases::single_resource_not_found_document("999")
+    );
+
     let invalid_resource_query = app
         .oneshot(
             Request::builder()
@@ -1411,9 +1444,9 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         invalid_resource_document["errors"][0]["source"]["parameter"],
         "filter"
     );
-    assert_eq!(authorization_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(authorization_calls.load(Ordering::SeqCst), 5);
     assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(query_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 5);
     database.close().await.unwrap();
 }
 

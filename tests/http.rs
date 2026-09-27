@@ -400,14 +400,37 @@ async fn empty_collection_is_an_empty_data_array() {
 #[tokio::test]
 async fn missing_single_resource_returns_a_structured_not_found_error() {
     let adapter = Arc::new(TestAdapter::default());
+    *adapter.resource_result.lock().unwrap() = Some(port_record());
     let (app, _) = test_app(adapter.clone(), true);
+
+    let existing_response = app
+        .clone()
+        .oneshot(request("/ports/1", None))
+        .await
+        .unwrap();
+    assert_eq!(existing_response.status(), StatusCode::OK);
+    assert_jsonapi_headers(&existing_response);
+    let existing_body = serde_json::to_value(document(existing_response).await).unwrap();
+    assert_eq!(existing_body["data"]["id"], "1");
+
+    *adapter.resource_result.lock().unwrap() = None;
 
     let response = app.oneshot(request("/ports/missing", None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_jsonapi_headers(&response);
     let body = serde_json::to_value(error_document(response).await).unwrap();
-    assert_eq!(body["errors"][0]["code"], "resource_not_found");
-    assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        body,
+        json!({
+            "errors": [{
+                "status": "404",
+                "code": "resource_not_found",
+                "title": "Resource not found",
+                "detail": "No `ports` resource has id `missing`."
+            }]
+        })
+    );
+    assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

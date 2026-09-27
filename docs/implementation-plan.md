@@ -524,6 +524,10 @@ and invokes the application include loader with that root.
 adapter-independent response projection. The shared PostgreSQL and SQLite
 query integration tests execute `/ports/1?include=owner` with root and included
 sparse fieldsets, asserting the exact document, included identity, and linkage.
+Each database-backed route test also verifies that the existing row returns
+HTTP 200 while `/ports/999?include=owner` returns HTTP 404 with the exact
+shared `resource_not_found` error document, not successful null data; the
+HTTP-adapter control asserts the same success/missing pair.
 Shared string, i64, and UUID identifier cases also exercise typed single-row
 lookups. The HTTP route tests reject collection-only query components,
 unregistered fields, and relationships with exact parameter sources and zero
