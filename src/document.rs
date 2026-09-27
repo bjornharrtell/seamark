@@ -1104,13 +1104,17 @@ fn is_valid_link(link: &Value) -> bool {
         Value::Null => true,
         Value::String(href) => is_valid_uri_reference(href),
         Value::Object(link_object) => {
-            let Some(Value::String(href)) = link_object.get("href") else {
+            let has_href_or_meta =
+                link_object.contains_key("href") || link_object.contains_key("meta");
+            let valid_href = link_object
+                .get("href")
+                .is_none_or(|value| value.as_str().is_some_and(is_valid_uri_reference));
+            if !has_href_or_meta || !valid_href {
                 return false;
-            };
-            is_valid_uri_reference(href)
-                && link_object
-                    .get("rel")
-                    .is_none_or(|value| value.as_str().is_some_and(is_valid_link_relation_type))
+            }
+            link_object
+                .get("rel")
+                .is_none_or(|value| value.as_str().is_some_and(is_valid_link_relation_type))
                 && link_object.get("title").is_none_or(Value::is_string)
                 && link_object.get("type").is_none_or(Value::is_string)
                 && link_object.get("hreflang").is_none_or(|value| {

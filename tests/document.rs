@@ -480,6 +480,30 @@ fn accepts_metadata_only_documents() {
 }
 
 #[test]
+fn link_objects_require_href_or_meta() {
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "links": {
+            "href-only": {"href": "/ports"},
+            "meta-only": {"meta": {"count": 1}},
+            "href-and-meta": {"href": "/ports", "meta": {"count": 1}}
+        }
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+
+    let missing_href_and_meta: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "links": {"self": {}}
+    }))
+    .unwrap();
+    assert_eq!(
+        missing_href_and_meta.validate(),
+        Err(DocumentValidationError::InvalidLinkObject)
+    );
+}
+
+#[test]
 fn rejects_documents_without_data_errors_or_meta() {
     assert_eq!(
         JsonApiDocument::default().validate(),

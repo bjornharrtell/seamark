@@ -81,3 +81,7 @@ The linkage identifier regression accepts a typed `id` control, rejects
 an omitted linkage `type` while decoding the submitted document. The existing
 programmatic empty-type case separately verifies document validation rejects
 an empty `type`.
+`link_objects_require_href_or_meta` rejects a link object with neither member
+and accepts `href`-only, `meta`-only, and combined `href`/`meta` controls.
+The link validator now applies the JSON:API alternate `meta` form without
+weakening URI-reference validation when `href` is present.

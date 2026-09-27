@@ -171,6 +171,9 @@ typed linkage `id`, rejects omitted `type` during document decoding, and
 asserts document validation rejects both missing identity members and
 simultaneous `id`/`lid`. The existing `rejects_identifiers_without_type_or_identity`
 also validates the empty-type case.
+`link_objects_require_href_or_meta` rejects an empty link object and accepts
+`href`-only, `meta`-only, and combined controls; present `href` values remain
+validated as URI references.
 Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
 two pages (`2,3` then `1`), projected root attributes, and matching owner
 includes against both database engines.
