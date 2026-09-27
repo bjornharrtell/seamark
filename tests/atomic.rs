@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use axum::http::HeaderMap;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use seamark::atomic::{
-    AtomicExecutionError, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsDocument,
-    AtomicOperationsError, AtomicOperationsGuard, AtomicResult, LocalIdMap, PlannedAtomicOperation,
-    PlannedOperation, execute_atomic_operations, plan_atomic_operations,
+    AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome,
+    AtomicOperationsDocument, AtomicOperationsError, AtomicOperationsGuard,
+    AtomicResourceReference, AtomicResult, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
+    execute_atomic_operations, plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
 use seamark::document::{RelationshipData, ResourceIdentifier};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
@@ -31,6 +32,40 @@ fn document(value: Value) -> AtomicOperationsDocument {
 
 fn plan(value: Value) -> Result<Vec<PlannedAtomicOperation>, AtomicOperationsError> {
     plan_atomic_operations(&registry(), &document(value))
+}
+
+struct TestHrefResolver;
+
+impl AtomicHrefResolver for TestHrefResolver {
+    fn resolve_relationship(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        if href == "/articles/7/relationships/author" {
+            Ok(Some(AtomicResourceReference {
+                type_name: "articles".to_owned(),
+                id: Some("7".to_owned()),
+                lid: None,
+                relationship: Some("author".to_owned()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn resolve_resource(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        if href == "/articles/7" {
+            Ok(Some(AtomicResourceReference {
+                type_name: "articles".to_owned(),
+                id: Some("7".to_owned()),
+                lid: None,
+                relationship: None,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn resolve_collection(&self, href: &str) -> Result<Option<String>, String> {
+        Ok((href == "/articles").then(|| "articles".to_owned()))
+    }
 }
 
 #[test]
@@ -387,6 +422,54 @@ fn rejects_local_ids_referenced_by_their_own_add_operation() {
     }));
     assert!(matches!(
         plan_atomic_operations(&registry, &request),
+        Err(AtomicOperationsError::InvalidOperation { index: 0, .. })
+    ));
+}
+
+#[test]
+fn resolves_resource_and_collection_href_targets_before_execution() {
+    let registry = registry();
+    let planned = plan_atomic_operations_with_href_resolver(
+        &registry,
+        &document(json!({
+            "atomic:operations": [
+                {"op": "add", "href": "/articles", "data": {"type": "articles", "attributes": {"title": "Created"}}},
+                {"op": "update", "href": "/articles/7", "data": {"type": "articles", "attributes": {"title": "Updated"}}},
+                {"op": "remove", "href": "/articles/7"}
+            ]
+        })),
+        &TestHrefResolver,
+    )
+    .unwrap();
+    assert!(matches!(
+        &planned[0].operation,
+        PlannedOperation::AddResource { href: None, .. }
+    ));
+    assert!(matches!(
+        &planned[1].operation,
+        PlannedOperation::UpdateResource {
+            target: seamark::atomic::AtomicTarget::Reference(reference),
+            ..
+        } if reference.type_name == "articles" && reference.id.as_deref() == Some("7")
+    ));
+    assert!(matches!(
+        &planned[2].operation,
+        PlannedOperation::RemoveResource {
+            target: seamark::atomic::AtomicTarget::Reference(reference),
+        } if reference.type_name == "articles" && reference.id.as_deref() == Some("7")
+    ));
+
+    let mismatch = plan_atomic_operations_with_href_resolver(
+        &registry,
+        &document(json!({
+            "atomic:operations": [
+                {"op": "add", "href": "/articles", "data": {"type": "authors", "attributes": {"name": "Ada"}}}
+            ]
+        })),
+        &TestHrefResolver,
+    );
+    assert!(matches!(
+        mismatch,
         Err(AtomicOperationsError::InvalidOperation { index: 0, .. })
     ));
 }

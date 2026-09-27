@@ -39,6 +39,7 @@ impl AtomicOperationsGuard for TestGuard {
 
 struct TestHandler {
     fail: bool,
+    require_resolved_targets: bool,
 }
 
 struct TestHrefResolver;
@@ -56,6 +57,23 @@ impl AtomicHrefResolver for TestHrefResolver {
             Ok(None)
         }
     }
+
+    fn resolve_resource(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        if href == "/articles/1" {
+            Ok(Some(AtomicResourceReference {
+                type_name: "articles".to_owned(),
+                id: Some("1".to_owned()),
+                lid: None,
+                relationship: None,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn resolve_collection(&self, href: &str) -> Result<Option<String>, String> {
+        Ok((href == "/articles").then(|| "articles".to_owned()))
+    }
 }
 
 #[async_trait]
@@ -68,6 +86,27 @@ impl AtomicOperationHandler for TestHandler {
     ) -> Result<AtomicOperationOutcome, String> {
         if self.fail {
             return Err("injected failure".to_owned());
+        }
+        if self.require_resolved_targets {
+            match operation {
+                PlannedOperation::AddResource { href: None, .. }
+                | PlannedOperation::UpdateResource {
+                    target: seamark::atomic::AtomicTarget::Reference(_),
+                    ..
+                }
+                | PlannedOperation::RemoveResource {
+                    target: seamark::atomic::AtomicTarget::Reference(_),
+                }
+                | PlannedOperation::UpdateRelationship {
+                    reference:
+                        AtomicResourceReference {
+                            relationship: Some(_),
+                            ..
+                        },
+                    ..
+                } => {}
+                _ => return Err("href target was not resolved before execution".to_owned()),
+            }
         }
         let result = match operation {
             PlannedOperation::AddResource { data, .. } => AtomicResult {
@@ -123,7 +162,10 @@ async fn negotiates_and_executes_atomic_http_requests() {
         registry(),
         database.clone(),
         Arc::new(TestGuard { allowed: true }),
-        Arc::new(TestHandler { fail: false }),
+        Arc::new(TestHandler {
+            fail: false,
+            require_resolved_targets: false,
+        }),
     );
     let valid_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada"}}}]}"#;
 
@@ -210,7 +252,10 @@ async fn negotiates_and_executes_atomic_http_requests() {
         registry(),
         database.clone(),
         Arc::new(TestGuard { allowed: false }),
-        Arc::new(TestHandler { fail: false }),
+        Arc::new(TestHandler {
+            fail: false,
+            require_resolved_targets: false,
+        }),
     );
     let response = denied
         .oneshot(request(
@@ -227,7 +272,10 @@ async fn negotiates_and_executes_atomic_http_requests() {
         registry(),
         database.clone(),
         Arc::new(TestGuard { allowed: true }),
-        Arc::new(TestHandler { fail: true }),
+        Arc::new(TestHandler {
+            fail: true,
+            require_resolved_targets: false,
+        }),
     );
     let response = failing
         .oneshot(request(
@@ -244,7 +292,10 @@ async fn negotiates_and_executes_atomic_http_requests() {
         registry(),
         database,
         Arc::new(TestGuard { allowed: true }),
-        Arc::new(TestHandler { fail: false }),
+        Arc::new(TestHandler {
+            fail: false,
+            require_resolved_targets: true,
+        }),
         Arc::new(TestHrefResolver),
     );
     let response = href_router
@@ -252,10 +303,18 @@ async fn negotiates_and_executes_atomic_http_requests() {
             "/operations",
             ATOMIC_MEDIA_TYPE,
             ATOMIC_MEDIA_TYPE,
-            r#"{"atomic:operations":[{"op":"update","href":"/articles/1/relationships/author","data":null}]}"#,
+            r#"{"atomic:operations":[{"op":"add","href":"/articles","data":{"type":"articles","attributes":{"title":"Created"}}},{"op":"update","href":"/articles/1","data":{"type":"articles","attributes":{"title":"Updated"}}},{"op":"remove","href":"/articles/1"},{"op":"update","href":"/articles/1/relationships/author","data":null}]}"#,
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(document(response).await, json!({"atomic:results": [{}]}));
+    assert_eq!(
+        document(response).await,
+        json!({"atomic:results": [
+            {"data": {"type": "articles", "id": "created"}},
+            {},
+            {},
+            {}
+        ]})
+    );
 }

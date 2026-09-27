@@ -6,12 +6,14 @@ use async_trait::async_trait;
 use axum::http::HeaderMap;
 use sea_orm::entity::prelude::*;
 use sea_orm::{
-    ConnectionTrait, Database, DatabaseConnection, DbBackend, EntityTrait, Schema, Value,
+    ColumnTrait, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction, DbBackend,
+    EntityTrait, QueryFilter, Schema, Set, Value,
 };
 use seamark::atomic::{
-    AtomicExecutionError, AtomicHrefResolver, AtomicOperationsDocument, AtomicOperationsGuard,
-    AtomicResourceReference, PlannedAtomicOperation, PlannedOperation, execute_atomic_operations,
-    plan_atomic_operations, plan_atomic_operations_with_href_resolver,
+    AtomicExecutionError, AtomicHrefResolver, AtomicOperationOutcome, AtomicOperationsDocument,
+    AtomicOperationsGuard, AtomicResourceReference, LocalIdMap, PlannedAtomicOperation,
+    PlannedOperation, execute_atomic_operations, plan_atomic_operations,
+    plan_atomic_operations_with_href_resolver,
 };
 use seamark::document::ResourceIdentifier;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
@@ -55,6 +57,41 @@ mod article {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+mod tag {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "seamark_m5_mutation_tags")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub tag_id: i32,
+        pub name: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+mod article_tag {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "seamark_m5_mutation_article_tags")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub article_id: i32,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub tag_id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 struct TestGuard;
 
 struct ArticleAuthorHrefResolver {
@@ -73,6 +110,23 @@ impl AtomicHrefResolver for ArticleAuthorHrefResolver {
         } else {
             Ok(None)
         }
+    }
+
+    fn resolve_resource(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        if href == format!("/articles/{}", self.article_id) {
+            Ok(Some(AtomicResourceReference {
+                type_name: "articles".to_owned(),
+                id: Some(self.article_id.clone()),
+                lid: None,
+                relationship: None,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn resolve_collection(&self, href: &str) -> Result<Option<String>, String> {
+        Ok((href == "/articles").then(|| "articles".to_owned()))
     }
 }
 
@@ -96,7 +150,9 @@ fn registry() -> ResourceRegistry {
         ResourceDefinition::new("authors", "author_id").attribute("name", "name", false, false),
         ResourceDefinition::new("articles", "article_id")
             .attribute("title", "title", false, false)
-            .relationship("author", "author_id", "authors"),
+            .relationship("author", "author_id", "authors")
+            .relationship("tags", "tag_links", "tags"),
+        ResourceDefinition::new("tags", "tag_id").attribute("name", "name", false, false),
     ])
     .unwrap()
 }
@@ -104,7 +160,7 @@ fn registry() -> ResourceRegistry {
 fn encode_value(field: &str, value: &JsonValue) -> Result<Value, String> {
     match (field, value) {
         ("author_id", JsonValue::Null) => Ok(Value::Int(None)),
-        ("author_id" | "article_id", JsonValue::String(value)) => value
+        ("author_id" | "article_id" | "tag_id", JsonValue::String(value)) => value
             .parse::<i32>()
             .map(|value| Value::Int(Some(value)))
             .map_err(|error| error.to_string()),
@@ -115,8 +171,83 @@ fn encode_value(field: &str, value: &JsonValue) -> Result<Value, String> {
 
 fn decode_identifier(field: &str, value: &Value) -> Result<String, String> {
     match (field, value) {
-        ("author_id" | "article_id", Value::Int(Some(value))) => Ok(value.to_string()),
+        ("author_id" | "article_id" | "tag_id", Value::Int(Some(value))) => Ok(value.to_string()),
         _ => Err(format!("unsupported identifier `{value:?}` for `{field}`")),
+    }
+}
+
+struct ArticleTagExecutor;
+
+#[async_trait]
+impl SeaOrmAtomicOperationExecutor for ArticleTagExecutor {
+    fn supports(&self, operation: &PlannedOperation) -> bool {
+        match operation {
+            PlannedOperation::AddRelationshipMembers {
+                reference,
+                model_field,
+                ..
+            }
+            | PlannedOperation::RemoveRelationshipMembers {
+                reference,
+                model_field,
+                ..
+            } => reference.type_name == "articles" && model_field == "tag_links",
+            _ => false,
+        }
+    }
+
+    async fn execute(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        let (reference, identifiers, add) = match operation {
+            PlannedOperation::AddRelationshipMembers {
+                reference, data, ..
+            } => (reference, data, true),
+            PlannedOperation::RemoveRelationshipMembers {
+                reference, data, ..
+            } => (reference, data, false),
+            _ => return Err("unsupported article-tag operation".to_owned()),
+        };
+        let article = local_ids.resolve_reference(reference)?;
+        let article_id = article
+            .id
+            .ok_or_else(|| "article target has no persistent identifier".to_owned())?
+            .parse::<i32>()
+            .map_err(|error| format!("invalid article identifier: {error}"))?;
+        let tag_ids = identifiers
+            .iter()
+            .map(|identifier| {
+                local_ids
+                    .resolve(identifier)?
+                    .id
+                    .ok_or_else(|| "tag target has no persistent identifier".to_owned())?
+                    .parse::<i32>()
+                    .map_err(|error| format!("invalid tag identifier: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if add {
+            for tag_id in tag_ids {
+                article_tag::ActiveModel {
+                    article_id: Set(article_id),
+                    tag_id: Set(tag_id),
+                }
+                .insert(transaction)
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+        } else {
+            article_tag::Entity::delete_many()
+                .filter(article_tag::Column::ArticleId.eq(article_id))
+                .filter(article_tag::Column::TagId.is_in(tag_ids))
+                .exec(transaction)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(AtomicOperationOutcome::default())
     }
 }
 
@@ -135,8 +266,19 @@ fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatcher {
         decode_identifier,
     )
     .unwrap();
-    let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> =
-        vec![Arc::new(author), Arc::new(article)];
+    let tag = SeaOrmResourceMutationHandler::<tag::Entity, _, _>::new(
+        registry,
+        "tags",
+        encode_value,
+        decode_identifier,
+    )
+    .unwrap();
+    let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
+        Arc::new(ArticleTagExecutor),
+        Arc::new(author),
+        Arc::new(article),
+        Arc::new(tag),
+    ];
     SeaOrmAtomicOperationDispatcher::new(executors)
 }
 
@@ -149,7 +291,7 @@ async fn database() -> DatabaseConnection {
 async fn create_tables(database: &DatabaseConnection) {
     database
         .execute_unprepared(
-            "DROP TABLE IF EXISTS seamark_m5_mutation_articles; DROP TABLE IF EXISTS seamark_m5_mutation_authors;",
+            "DROP TABLE IF EXISTS seamark_m5_mutation_article_tags; DROP TABLE IF EXISTS seamark_m5_mutation_articles; DROP TABLE IF EXISTS seamark_m5_mutation_authors; DROP TABLE IF EXISTS seamark_m5_mutation_tags;",
         )
         .await
         .unwrap();
@@ -157,6 +299,8 @@ async fn create_tables(database: &DatabaseConnection) {
     for statement in [
         schema.create_table_from_entity(author::Entity),
         schema.create_table_from_entity(article::Entity),
+        schema.create_table_from_entity(tag::Entity),
+        schema.create_table_from_entity(article_tag::Entity),
     ] {
         database
             .execute(database.get_database_backend().build(&statement))
@@ -181,6 +325,25 @@ async fn execute(
         database,
         &operations,
         &headers,
+        &TestGuard,
+        &dispatcher(registry),
+    )
+    .await
+}
+
+async fn execute_with_href_resolver(
+    database: &DatabaseConnection,
+    registry: &ResourceRegistry,
+    request: JsonValue,
+    href_resolver: &dyn AtomicHrefResolver,
+) -> Result<Vec<seamark::atomic::AtomicResult>, AtomicExecutionError> {
+    let document = document(request);
+    let operations =
+        plan_atomic_operations_with_href_resolver(registry, &document, href_resolver).unwrap();
+    execute_atomic_operations(
+        database,
+        &operations,
+        &HeaderMap::new(),
         &TestGuard,
         &dispatcher(registry),
     )
@@ -232,6 +395,169 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
     assert_eq!(article.title, "Engine");
     assert_eq!(article.author_id, Some(author_id));
 
+    let tag_results = execute(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [
+                {"op": "add", "data": {"type": "tags", "lid": "tag-local", "attributes": {"name": "featured"}}},
+                {
+                    "op": "add",
+                    "ref": {"type": "articles", "id": article_id.to_string(), "relationship": "tags"},
+                    "data": [{"type": "tags", "lid": "tag-local"}]
+                }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    let tag_id = tag_results[0].data.as_ref().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let links = article_tag::Entity::find().all(&database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].article_id, article_id);
+    assert_eq!(links[0].tag_id, tag_id.parse::<i32>().unwrap());
+
+    let failed_to_many = execute(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [
+                {"op": "add", "data": {"type": "tags", "lid": "rolled-back-tag", "attributes": {"name": "temporary"}}},
+                {
+                    "op": "add",
+                    "ref": {"type": "articles", "id": article_id.to_string(), "relationship": "tags"},
+                    "data": [{"type": "tags", "lid": "rolled-back-tag"}]
+                },
+                {
+                    "op": "update",
+                    "ref": {"type": "articles", "id": "999999"},
+                    "data": {"type": "articles", "id": "999999", "attributes": {"title": "missing"}}
+                }
+            ]
+        }),
+    )
+    .await;
+    assert!(matches!(
+        failed_to_many,
+        Err(AtomicExecutionError::Operation { index: 2, .. })
+    ));
+    assert!(
+        tag::Entity::find()
+            .all(&database)
+            .await
+            .unwrap()
+            .iter()
+            .all(|tag| tag.name != "temporary")
+    );
+    assert_eq!(
+        article_tag::Entity::find()
+            .all(&database)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    execute(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [{
+                "op": "remove",
+                "ref": {"type": "articles", "id": article_id.to_string(), "relationship": "tags"},
+                "data": [{"type": "tags", "id": tag_id}]
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        article_tag::Entity::find()
+            .all(&database)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let href_resolver = ArticleAuthorHrefResolver {
+        article_id: article_id.to_string(),
+    };
+    let collection_results = execute_with_href_resolver(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "href": "/articles",
+                "data": {
+                    "type": "articles",
+                    "lid": "href-created",
+                    "attributes": {"title": "Created through collection href"}
+                }
+            }]
+        }),
+        &href_resolver,
+    )
+    .await
+    .unwrap();
+    let href_article_id = collection_results[0].data.as_ref().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let resource_href_resolver = ArticleAuthorHrefResolver {
+        article_id: href_article_id.clone(),
+    };
+    execute_with_href_resolver(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "href": format!("/articles/{href_article_id}"),
+                "data": {
+                    "type": "articles",
+                    "attributes": {"title": "Updated through resource href"}
+                }
+            }]
+        }),
+        &resource_href_resolver,
+    )
+    .await
+    .unwrap();
+    let href_article_pk = href_article_id.parse::<i32>().unwrap();
+    assert_eq!(
+        article::Entity::find_by_id(href_article_pk)
+            .one(&database)
+            .await
+            .unwrap()
+            .unwrap()
+            .title,
+        "Updated through resource href"
+    );
+    execute_with_href_resolver(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [{
+                "op": "remove",
+                "href": format!("/articles/{href_article_id}")
+            }]
+        }),
+        &resource_href_resolver,
+    )
+    .await
+    .unwrap();
+    assert!(
+        article::Entity::find_by_id(href_article_pk)
+            .one(&database)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
     execute(
         &database,
         &registry,
@@ -260,9 +586,6 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
     assert_eq!(article.title, "Rebuilt");
     assert_eq!(article.author_id, None);
 
-    let href_resolver = ArticleAuthorHrefResolver {
-        article_id: article_id.to_string(),
-    };
     let href_document = document(json!({
         "atomic:operations": [{
             "op": "update",
@@ -332,7 +655,7 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
 
     database
         .execute_unprepared(
-            "DROP TABLE seamark_m5_mutation_articles; DROP TABLE seamark_m5_mutation_authors;",
+            "DROP TABLE seamark_m5_mutation_article_tags; DROP TABLE seamark_m5_mutation_articles; DROP TABLE seamark_m5_mutation_authors; DROP TABLE seamark_m5_mutation_tags;",
         )
         .await
         .unwrap();

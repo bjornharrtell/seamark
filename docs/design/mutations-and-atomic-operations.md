@@ -33,19 +33,23 @@ operation; relationship linkages can resolve it through the request-scoped
 
 `atomic_http::router` provides a mergeable `POST /operations` Axum router;
 `router_with_href_resolver` additionally accepts an application route resolver
-for relationship `href` targets. Both require the quoted Atomic Operations
-extension in `Content-Type` and `Accept`, reject query parameters, validate
-request documents, and emit JSON:API result/error documents with
-`Vary: Accept`.
+for relationship, resource, and collection `href` targets. Resolved targets
+are registry-validated before transaction start: resource references become
+normal resource targets, and collection references must match the added
+resource's type. Unresolved targets remain available to custom handlers. Both
+routers require the quoted Atomic Operations extension in `Content-Type` and
+`Accept`, reject query parameters, validate request documents, and emit
+JSON:API result/error documents with `Vary: Accept`.
 
 `SeaOrmResourceMutationHandler<E, F, I>` maps a public resource to one typed
 SeaORM entity and performs add/update/remove plus to-one relationship FK
 updates. Applications supply explicit value and identifier codecs. A
 `SeaOrmAtomicOperationDispatcher` composes typed handlers and application
-executors; unsupported to-many relations and `href` resource targets remain
-available for custom handlers. The typed handler supports route-resolved
-relationship hrefs after the planner normalizes them to registry-checked
-references.
+executors. The typed handler supports route-resolved resource `href` updates
+and deletes and collection `href` adds after the planner normalizes or
+validates them. Relationship `href` targets are normalized to
+registry-checked references. Unsupported to-many relationships and unresolved
+`href` targets remain available for custom handlers.
 
 `execute_atomic_operations` runs planned operations sequentially in one
 SeaORM transaction. A required guard authorizes the request and applies
@@ -57,6 +61,6 @@ operation fails. HTTP tests cover negotiation, success, and error paths.
 
 This is a partial persistence integration, not complete extension support.
 Applications still define each resource's entity, value/identifier codecs,
-relationship route resolver, resource-level authorization, and custom
-to-many persistence. It does not implement every normative
+route mappings, resource-level authorization, and custom to-many persistence.
+It does not implement every normative
 operation/result/error case. Exact changeset and hook APIs remain provisional.

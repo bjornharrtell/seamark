@@ -364,11 +364,11 @@ pub enum AtomicTarget {
     Href(String),
 }
 
-/// Resolves application routes that target a JSON:API relationship.
+/// Resolves application routes used as Atomic Operations `href` targets.
 ///
-/// Return `Ok(None)` when the URI-reference is not a relationship route.
-/// Resolved references are validated against the resource registry and local
-/// IDs before any transaction begins.
+/// Return `Ok(None)` when the URI-reference is not a route of that target
+/// kind. Resolved references are validated against the resource registry and
+/// local IDs before any transaction begins.
 pub trait AtomicHrefResolver: Send + Sync {
     /// Maps a relationship URI-reference to its resource and public relationship.
     ///
@@ -377,6 +377,32 @@ pub trait AtomicHrefResolver: Send + Sync {
     /// Returns a description when the URI-reference is a route but cannot be
     /// resolved to a relationship target.
     fn resolve_relationship(&self, href: &str) -> Result<Option<AtomicResourceReference>, String>;
+
+    /// Maps a resource URI-reference to its registered persistent identity.
+    ///
+    /// The default leaves resource routes unresolved for application-specific
+    /// operation handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the URI-reference is a resource route but
+    /// cannot be resolved.
+    fn resolve_resource(&self, _href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        Ok(None)
+    }
+
+    /// Maps a collection URI-reference to its registered public resource type.
+    ///
+    /// The default leaves collection routes unresolved for application-specific
+    /// operation handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the URI-reference is a collection route but
+    /// cannot be resolved.
+    fn resolve_collection(&self, _href: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 /// An error during Atomic Operations request validation or planning.
@@ -454,9 +480,9 @@ pub fn plan_atomic_operations(
 /// Validates operations and resolves relationship `href` targets through the
 /// application's route table.
 ///
-/// Resource collection/resource `href` targets remain in the plan as URI
-/// references for application handlers. Relationship routes are normalized to
-/// registered resource/relationship references.
+/// Resolved resource and relationship routes are normalized to registered
+/// references. Collection routes are checked against the added resource type.
+/// Unresolved routes remain URI references for application-specific handlers.
 ///
 /// # Errors
 ///
@@ -502,6 +528,35 @@ fn plan_atomic_operations_inner(
                 ));
             }
         }
+        let href_resource = if operation.op != "add" && href_relationship.is_none() {
+            href_resolver
+                .zip(operation.href.as_deref())
+                .map(|(resolver, href)| resolver.resolve_resource(href))
+                .transpose()
+                .map_err(|message| fail(format!("could not resolve resource `href`: {message}")))?
+                .flatten()
+        } else {
+            None
+        };
+        if let Some(reference) = &href_resource {
+            validate_reference(registry, reference, &local_ids)
+                .map_err(|message| fail(format!("invalid resource `href`: {message}")))?;
+            if reference.relationship.is_some() {
+                return Err(fail(
+                    "resource `href` resolved to a relationship target".to_owned(),
+                ));
+            }
+        }
+        let href_collection = if operation.op == "add" && href_relationship.is_none() {
+            href_resolver
+                .zip(operation.href.as_deref())
+                .map(|(resolver, href)| resolver.resolve_collection(href))
+                .transpose()
+                .map_err(|message| fail(format!("could not resolve collection `href`: {message}")))?
+                .flatten()
+        } else {
+            None
+        };
         let kind = operation.op.as_str();
 
         let planned_operation = match kind {
@@ -544,6 +599,14 @@ fn plan_atomic_operations_inner(
                     }
                 } else {
                     let data = parse_resource_data(operation, index, &path)?;
+                    if href_collection
+                        .as_deref()
+                        .is_some_and(|type_name| type_name != data.type_name)
+                    {
+                        return Err(fail(
+                            "collection `href` type must match the resource data type".to_owned(),
+                        ));
+                    }
                     if data.id.is_some() && data.lid.is_some() {
                         return Err(fail(
                             "resource data must not contain both `id` and `lid`".to_owned(),
@@ -555,7 +618,11 @@ fn plan_atomic_operations_inner(
                         insert_local_id(&mut local_ids, &data.type_name, lid, index, &path)?;
                     }
                     PlannedOperation::AddResource {
-                        href: operation.href.clone(),
+                        href: if href_collection.is_some() {
+                            None
+                        } else {
+                            operation.href.clone()
+                        },
                         data,
                         changeset,
                     }
@@ -592,6 +659,13 @@ fn plan_atomic_operations_inner(
                     let changeset =
                         validate_resource_data(registry, &data, &local_ids, index, &path, false)?;
                     let target = resource_target(operation, &data, index, &path)?;
+                    let target = if let (AtomicTarget::Href(_), Some(reference)) =
+                        (&target, href_resource.as_ref())
+                    {
+                        AtomicTarget::Reference(reference.clone())
+                    } else {
+                        target
+                    };
                     if let AtomicTarget::Reference(reference) = &target {
                         if reference.type_name != data.type_name {
                             return Err(fail(
@@ -653,8 +727,12 @@ fn plan_atomic_operations_inner(
                             "removing a resource must not include `data`".to_owned(),
                         ));
                     }
-                    let target = operation_target(operation)
-                        .ok_or_else(|| fail("remove requires `ref` or `href`".to_owned()))?;
+                    let target = if let Some(reference) = href_resource {
+                        AtomicTarget::Reference(reference)
+                    } else {
+                        operation_target(operation)
+                            .ok_or_else(|| fail("remove requires `ref` or `href`".to_owned()))?
+                    };
                     PlannedOperation::RemoveResource { target }
                 }
             }
