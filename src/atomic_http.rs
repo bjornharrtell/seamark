@@ -20,7 +20,7 @@ use crate::atomic::{
 use crate::document::is_valid_absolute_uri;
 use crate::document::{ErrorObject, ErrorSource, JsonApiDocument};
 use crate::json::parse_unique_members;
-use crate::media::{is_http_token, is_valid_quoted_string};
+use crate::media::{is_http_token, unquote_http_quoted_string};
 use crate::registry::ResourceRegistry;
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -471,11 +471,11 @@ fn parse_parameters(value: &str) -> Option<(String, Vec<MediaParameter>)> {
         }
         let (value, quoted) = match raw_value {
             None => (None, false),
-            Some(raw_value) if is_valid_quoted_string(raw_value) => {
-                (Some(raw_value[1..raw_value.len() - 1].to_owned()), true)
-            }
-            Some(raw_value) if is_http_token(raw_value) => (Some(raw_value.to_owned()), false),
-            Some(_) => return None,
+            Some(raw_value) => match unquote_http_quoted_string(raw_value) {
+                Some(value) => (Some(value), true),
+                None if is_http_token(raw_value) => (Some(raw_value.to_owned()), false),
+                None => return None,
+            },
         };
         parameters.push(MediaParameter {
             name: name.to_owned(),

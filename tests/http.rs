@@ -925,6 +925,18 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
     assert!(adapter.commands.lock().unwrap().is_empty());
 
+    let mut escaped_profile = mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
+    escaped_profile.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(
+            r#"application/vnd.api+json;profile="https://example.com/\profile""#,
+        ),
+    );
+    let response = app.clone().oneshot(escaped_profile).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 2);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+
     let mut multiple_profiles = mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
     multiple_profiles.headers_mut().insert(
         CONTENT_TYPE,
@@ -934,7 +946,7 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
     );
     let response = app.oneshot(multiple_profiles).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 3);
     assert!(adapter.commands.lock().unwrap().is_empty());
 }
 
@@ -1468,20 +1480,17 @@ async fn supports_jsonapi_and_wildcard_accept_ranges_on_both_routes() {
 #[tokio::test]
 async fn ignores_profile_parameters_and_rejects_unsupported_extensions() {
     for path in ["/ports", "/ports/1"] {
-        let adapter = Arc::new(TestAdapter::default());
-        *adapter.resource_result.lock().unwrap() = Some(port_record());
-        let (app, _) = test_app(adapter, true);
-        let response = app
-            .oneshot(request(
-                path,
-                Some(
-                    "application/vnd.api+json;profile=\"https://example.test/unknown https://example.test/also-unknown\"",
-                ),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_jsonapi_headers(&response);
+        for accept in [
+            "application/vnd.api+json;profile=\"https://example.test/unknown https://example.test/also-unknown\"",
+            r#"application/vnd.api+json;profile="https://example.test/\unknown""#,
+        ] {
+            let adapter = Arc::new(TestAdapter::default());
+            *adapter.resource_result.lock().unwrap() = Some(port_record());
+            let (app, _) = test_app(adapter, true);
+            let response = app.oneshot(request(path, Some(accept))).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{accept}");
+            assert_jsonapi_headers(&response);
+        }
     }
 
     let adapter = Arc::new(TestAdapter::default());

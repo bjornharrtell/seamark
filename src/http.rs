@@ -18,7 +18,7 @@ use crate::document::{
     ResourceObject, is_valid_absolute_uri,
 };
 use crate::json::parse_unique_members;
-use crate::media::is_valid_accept_extension;
+use crate::media::{is_valid_accept_extension, unquote_http_quoted_string};
 use crate::query::{
     IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
     plan_resource_read,
@@ -1164,16 +1164,12 @@ fn validate_jsonapi_content_type(headers: &HeaderMap) -> Result<(), Response> {
             ));
         };
         if name.trim().eq_ignore_ascii_case("profile") {
-            let Some(profiles) = value
-                .trim()
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-            else {
+            let Some(profiles) = unquote_http_quoted_string(value.trim()) else {
                 return Err(unsupported_media_type(
                     "the JSON:API profile parameter must be quoted",
                 ));
             };
-            if profile_seen || !has_valid_uri_list(profiles) {
+            if profile_seen || !has_valid_uri_list(&profiles) {
                 return Err(unsupported_media_type(
                     "the JSON:API profile parameter is invalid",
                 ));
@@ -1922,8 +1918,8 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
         } else if name.eq_ignore_ascii_case("profile") {
             // Profiles are advisory; unrecognized profiles do not change this
             // endpoint's base JSON:API representation.
-            let profile_uris = value.strip_prefix('"')?.strip_suffix('"')?;
-            if has_profile || !has_valid_uri_list(profile_uris) {
+            let profile_uris = unquote_http_quoted_string(value)?;
+            if has_profile || !has_valid_uri_list(&profile_uris) {
                 return None;
             }
             has_profile = true;

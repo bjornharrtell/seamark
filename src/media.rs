@@ -27,6 +27,26 @@ pub(crate) fn is_valid_quoted_string(value: &str) -> bool {
     true
 }
 
+pub(crate) fn unquote_http_quoted_string(value: &str) -> Option<String> {
+    if !is_valid_quoted_string(value) {
+        return None;
+    }
+
+    let mut unquoted = Vec::with_capacity(value.len() - 2);
+    let mut quoted_pair = false;
+    for byte in &value.as_bytes()[1..value.len() - 1] {
+        if quoted_pair {
+            unquoted.push(*byte);
+            quoted_pair = false;
+        } else if *byte == b'\\' {
+            quoted_pair = true;
+        } else {
+            unquoted.push(*byte);
+        }
+    }
+    String::from_utf8(unquoted).ok()
+}
+
 pub(crate) fn is_valid_accept_extension(parameter: &str) -> bool {
     let parameter = parameter.trim();
     let (name, value) = match parameter.split_once('=') {

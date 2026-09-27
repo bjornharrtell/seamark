@@ -585,7 +585,9 @@ Base mutation requests specifically reject a valid-but-unsupported Atomic
 `ext` URI with 415 before authorization or adapter execution.
 Atomic Content-Type likewise rejects empty or multiply-spaced extension/profile
 URI lists before its guard or handler. The broader media-negotiation matrix
-remains partial.
+remains partial. Base and Atomic parsers decode valid HTTP quoted-pairs in
+quoted profile/extension values before URI validation; route regressions cover
+escaped characters in Content-Type and pre-q Accept parameters.
 `base_mutation_and_relationship_routes_reject_unacceptable_accept_before_execution`
 verifies 406 negotiation on resource POST/PATCH/DELETE and relationship
 GET/PATCH/POST/DELETE routes before authorization or adapter execution.
