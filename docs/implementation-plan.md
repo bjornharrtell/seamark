@@ -90,7 +90,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 121 integration
+implementations. The complete all-features suite passes with 122 integration
 tests and 5 unit tests, including 6 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -149,8 +149,9 @@ resources, relationship objects without linkage, non-empty links, or metadata
 defined member. An empty links object remains allowed when linkage supplies
 relationship content. It validates link `href` URI references, registered-token or
 absolute-URI relation types, BCP 47 `hreflang` syntax, JSON Pointer syntax for
-error sources, HTTP status strings in the 100-599 range, and absolute URIs in
-`jsonapi.ext` and `jsonapi.profile`. Generated base and Atomic HTTP error tests
+error sources, HTTP status strings in the 100-599 range, an optional string
+`jsonapi.version`, and absolute URIs in `jsonapi.ext` and `jsonapi.profile`.
+Generated base and Atomic HTTP error tests
 assert that each error object's `status` matches the HTTP response status;
 Atomic HTTP tests also verify that every emitted source pointer resolves in the
 original request document. The Atomic malformed-request test submits two
