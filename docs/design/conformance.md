@@ -57,6 +57,12 @@ and `executes_sqlite_filters_sort_pagination_fieldsets_and_includes` run the
 same cases through their database-backed executors and assert exact ordered
 IDs. `src/seaorm.rs` maps `FilterValue::Null` to `column.is_null()`; non-null
 values still pass through the configured typed filter codec.
+Repeated-value OR filtering is also already shared: both database-backed tests
+run `first_page_with_owner` with `equals(name,'Alpha')` and
+`equals(name,'Beta')`, then assert exact sorted page IDs `2` and `1` (the full
+union). The shared matrix now adds the previously missing boolean complement,
+`equals(active,'false')` -> ID `2`, beside `equals(active,'true')` -> IDs `1`
+and `3`; both PostgreSQL and SQLite assert these exact results.
 
 The matrix must eventually cite concrete test names or conformance cases for
 every applicable normative requirement. Uncovered rows stay partial or
