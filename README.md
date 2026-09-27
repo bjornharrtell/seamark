@@ -12,7 +12,7 @@ Initial query support is deliberately focused: function-style filters, using Jso
 
 ## Implementation status
 
-The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The current HTTP slice uses a narrow adapter boundary, authorizes before adapter calls, negotiates JSON:API responses, and projects only registered fields. An adapter-independent filter/read planner and a separate SeaORM/PostgreSQL collection executor prototype now exist, but the HTTP routes still reject non-empty query strings. The executor requires application-supplied typed filter conversion, authorization/limit checks, model mapping, and included-resource loading. Mutations and full JSON:API 1.1 base-specification and Atomic Operations support remain unimplemented; this prototype is not a conformance claim.
+The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The current HTTP slice uses a narrow adapter boundary, authorizes before adapter calls, negotiates JSON:API responses, and projects only registered fields. An adapter-independent filter/read planner and a separate SeaORM/PostgreSQL collection executor prototype exist, but the HTTP routes still reject non-empty query strings. Atomic Operations request planning and a transaction runner prototype also exist; operation handlers remain application-supplied, and there is no HTTP Atomic Operations route or extension media-type negotiation yet. Mutations and full JSON:API 1.1 base-specification and Atomic Operations support remain incomplete; this prototype is not a conformance claim.
 
 ## Design documents
 

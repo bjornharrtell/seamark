@@ -20,7 +20,7 @@ full JSON:API conformance or release readiness.
 | 2 | **Minimal resource registry and explicit mappings.** Define a small registry of public resource types and explicit identifier, attribute, and relationship mappings independent of ORM entity naming. Keep this first mapping layer minimal and adapter-independent; defer SeaORM/PostgreSQL mapping to milestone 4. | Verified: 8 registry integration tests cover valid and invalid declarations, same-category duplicate public names, reserved `id`/`type` names, identifier/attribute/relationship backing-field collisions, relationship target resolution including self-reference, resource-scoped lookup, explicit filter/sort opt-in, and all-or-nothing batch validation. Only registered resources and declared fields are exposed. No ORM persistence or broader route/query behavior is part of this milestone. | Complete |
 | 3 | **Single Axum GET vertical slice.** Add exactly two GET route shapes (collection and single resource) backed by the registry and a narrow persistence-independent adapter. Implement JSON:API media-type negotiation and structured protocol errors; expose only supported capabilities and reject every unsupported query parameter. | Verified: all 13 HTTP tests and all full-project quality gates pass (40 integration tests total). Tests cover unknown types, authorization denial before any adapter call (zero adapter calls), empty collections and missing single-resource results, null-versus-omitted values, output restricted to declared attributes/relationships, accepted/rejected media types on both routes, structured errors for type/auth/negotiation/query/adapter failures, query-source reporting with leading separators, and unsupported query rejection. Negotiation ignores profile parameters, rejects unsupported extension ranges, applies specificity so exact `q=0` overrides wildcards, and combines repeated exact ranges by highest quality. Every tested success/error response has JSON:API Content-Type and `Vary: Accept`. Adapter IDs are normalized persistent IDs; invalid relationship target types become generic adapter errors. Keep filters, sorting, pagination, includes, sparse fieldsets, ORM/persistence, mutations, and Atomic Operations explicitly deferred. | Complete |
 | 4 | **Read planning and SeaORM/PostgreSQL mapping and execution.** Establish the production mapping from explicit public-resource declarations to SeaORM entities and PostgreSQL, then parse and validate the focused equality and null filter grammar, repeated-filter OR behavior, opt-in sorting, page-number/page-size pagination, sparse fieldsets, and included relationships. Apply authorization hooks and resource limits before execution. | **Verified prototype evidence:** 21 query tests cover parser and plan behavior; 2 PostgreSQL integration tests exercise persisted string/OR, null, and typed numeric predicates, sorting, pagination, identifiers, sparse fieldsets, application-provided include loading, and authorization/limit rejection before execution. The typed executor resolves mapped fields to SeaORM columns, uses an explicit filter-value encoder and model mapper, and has no in-memory query fallback. **Remaining before milestone completion:** wire planned requests through Axum/adapter boundaries; finalize reusable entity, identifier, and relationship mapping APIs; verify broader database types and relation cases; and complete the integration matrix for unsupported requests and authorization/resource limits. | In progress |
-| 5 | **Mutation planning and Atomic Operations.** Implement resource create/update/delete behavior and the complete Atomic Operations extension, including ordered operations, result reporting, local-ID references, and all-or-nothing execution through SeaORM transactions. | Unit tests cover operation parsing, validation, ordering, and local-ID resolution. PostgreSQL integration tests prove successful multi-operation execution and rollback when any operation fails. Verify the extension's normative request/response and error behavior, including media-type requirements. | Planned |
+| 5 | **Mutation planning and Atomic Operations.** Implement resource create/update/delete behavior and the complete Atomic Operations extension, including ordered operations, result reporting, local-ID references, and all-or-nothing execution through SeaORM transactions. | **Verified prototype evidence:** 8 Atomic Operations tests validate request/response shapes, add/update/remove and relationship-operation planning, explicit attribute/relationship mappings, ordered local IDs, URI-reference targets, result cardinality, pre-transaction authorization/limits, successful ordered PostgreSQL execution, and rollback after a later operation fails. The SeaORM runner requires an application handler, guard, and local-ID outcomes and commits only after all planned operations succeed. **Remaining before milestone completion:** connect operations to concrete CRUD/relationship mapping and Axum POST routing; negotiate the Atomic Operations extension in `Content-Type`/`Accept`; finish route-aware `href` relationship operations; and complete normative results/error/media-type tests. | In progress |
 | 6 | **Normative conformance and release hardening.** Close remaining JSON:API 1.1 base-specification and Atomic Operations gaps, document the exact support boundary, and harden the first database adapter. | Maintain a requirement-to-test matrix for the full normative base specification and extension. Run applicable conformance cases plus unit, Axum, and PostgreSQL integration suites in CI; document and justify any unsupported behavior before release. The release target is complete only when all applicable normative requirements are covered and passing. | Planned |
 
 ## Delivery and verification workflow
@@ -47,7 +47,7 @@ full JSON:API conformance or release readiness.
 
 ## Current implementation checkpoint
 
-Milestones 1, 2, and 3 are complete; milestone 4 is in progress. The crate
+Milestones 1, 2, and 3 are complete; milestones 4 and 5 are in progress. The crate
 provides JSON:API document, resource, relationship, and error structures with
 limited structural validation, an explicit public resource registry, and a
 read-only Axum collection/single-resource GET slice. The protocol model
@@ -65,11 +65,17 @@ sparse fieldsets, and nested include paths. A separate typed SeaORM executor
 executes predicates, sorting, and offset/limit in PostgreSQL; callers supply
 typed filter conversion, model mapping, an authorization/limit guard, and an
 include loader. **Verified:** all 63 integration tests (19 protocol, 8
-registry, 13 HTTP, 21 query, and 2 PostgreSQL) pass, including focused
+registry, 13 HTTP, 21 query, 7 Atomic Operations unit, and 3 PostgreSQL) pass, including focused
 PostgreSQL reads for database-side OR/string/null/numeric filters, sorting,
 pagination, fieldset projection, include loading, and pre-query guard
-rejections. Formatting, warning-free Clippy, rustdoc, and whitespace gates
-also pass. The current Axum
-handlers do not yet use the new query/executor layers. Mutations, Atomic
-Operations, and full normative conformance remain planned; no release
-conformance claim is made.
+rejections. M5 adds an Atomic Operations document/planner with operation and
+local-ID validation plus a transaction runner that invokes application
+handlers in order, checks result identities, and rolls back on failure. **The
+current M5 evidence is 8 Atomic Operations tests**, including a PostgreSQL
+test for local-ID linkage across two adds and rollback after a later update
+fails. Formatting, warning-free Clippy, all 71 integration tests with
+PostgreSQL 17, rustdoc, and whitespace checks pass. The current
+Axum handlers do not yet use the read executor or expose mutation/Atomic
+Operations routes. Concrete mutation mapping, extension media negotiation,
+and full normative conformance remain incomplete; no release conformance
+claim is made.
