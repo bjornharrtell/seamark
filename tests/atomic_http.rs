@@ -161,7 +161,7 @@ async fn error_document(response: Response<Body>, request_body: &str) -> Value {
     let errors = document["errors"]
         .as_array()
         .expect("error response document");
-    assert!(!errors.is_empty());
+    assert_eq!(errors.len(), 1);
     let request_document: Option<Value> = serde_json::from_str(request_body).ok();
     for error in errors {
         assert_eq!(error["status"], expected_status);
@@ -257,7 +257,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
             "/operations",
             ATOMIC_MEDIA_TYPE,
             ATOMIC_MEDIA_TYPE,
-            r#"{"atomic:operations":[{"op":"unknown"}]}"#,
+            r#"{"atomic:operations":[{"op":"unknown"},{"op":"also-unknown"}]}"#,
             StatusCode::BAD_REQUEST,
         ),
     ] {
