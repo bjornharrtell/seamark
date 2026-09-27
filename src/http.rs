@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, RawQuery, State};
 use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -21,7 +21,9 @@ use crate::query::{
     IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
     plan_resource_read,
 };
-use crate::registry::{ResourceDefinition, ResourceRegistry};
+use crate::registry::{
+    RelationshipCardinality, RelationshipMapping, ResourceDefinition, ResourceRegistry,
+};
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
 
@@ -61,6 +63,125 @@ pub enum QueryAdapterError {
     LimitExceeded,
     /// The adapter does not implement single-resource query execution.
     ResourceReadUnsupported,
+}
+
+/// A validated base JSON:API mutation presented to an application adapter.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MutationCommand {
+    /// Create one resource in the addressed collection.
+    Create {
+        /// Public fields mapped to internal persistence names.
+        changeset: ResourceMutationChangeset,
+    },
+    /// Update the supplied fields on one existing resource.
+    Update {
+        /// Persistent resource identifier from the request URL.
+        id: String,
+        /// Only fields present in the request are included.
+        changeset: ResourceMutationChangeset,
+    },
+    /// Delete one existing resource.
+    Delete {
+        /// Persistent resource identifier from the request URL.
+        id: String,
+    },
+    /// Read the linkage of one relationship.
+    ReadRelationship {
+        /// Persistent identifier of the relationship owner.
+        id: String,
+        /// Registered public relationship mapping.
+        relationship: RelationshipMapping,
+    },
+    /// Modify the linkage of one relationship.
+    ModifyRelationship {
+        /// Persistent identifier of the relationship owner.
+        id: String,
+        /// Registered public relationship mapping.
+        relationship: RelationshipMapping,
+        /// Linkage mutation selected by the HTTP method.
+        mutation: RelationshipMutation,
+    },
+}
+
+/// Public fields mapped to a registered resource's internal model fields.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResourceMutationChangeset {
+    /// Present attributes keyed by internal field name.
+    pub attributes: BTreeMap<String, Value>,
+    /// Present relationship linkage keyed by internal field name.
+    pub relationships: BTreeMap<String, RelationshipData>,
+}
+
+/// A to-many relationship linkage change.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RelationshipMutation {
+    /// Replace the complete to-one or to-many linkage.
+    Replace(RelationshipData),
+    /// Idempotently add the supplied to-many linkage members.
+    Add(Vec<crate::document::ResourceIdentifier>),
+    /// Idempotently remove the supplied to-many linkage members.
+    Remove(Vec<crate::document::ResourceIdentifier>),
+}
+
+/// The result of a base JSON:API mutation adapter operation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MutationOutcome {
+    /// The updated or created resource representation.
+    Resource(AdapterResource),
+    /// The current relationship linkage after the operation.
+    Relationship(RelationshipData),
+    /// A successful resource deletion.
+    Deleted,
+}
+
+/// An application mutation adapter failure category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationAdapterError {
+    /// The addressed resource does not exist.
+    NotFound,
+    /// A related resource does not exist.
+    RelatedResourceNotFound,
+    /// The request conflicts with current application state.
+    Conflict,
+    /// The application does not permit the requested operation.
+    Unsupported,
+    /// The operation failed for an internal reason.
+    Failed,
+}
+
+/// Executes validated base JSON:API resource and relationship operations.
+///
+/// The adapter owns persistence and transaction boundaries. It must make each
+/// command atomic and return the resulting representation or linkage. For
+/// to-many `Add` and `Remove`, already-present additions and already-absent
+/// removals must succeed without creating duplicate linkage.
+#[async_trait]
+pub trait MutationResourceAdapter: Send + Sync + 'static {
+    /// Executes one validated mutation for a registered resource.
+    async fn execute(
+        &self,
+        resource: &ResourceDefinition,
+        command: MutationCommand,
+    ) -> Result<MutationOutcome, MutationAdapterError>;
+}
+
+/// The category of a base HTTP action presented to authorization policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationAction {
+    /// Create a resource.
+    Create,
+    /// Update a resource.
+    Update,
+    /// Delete a resource.
+    Delete,
+    /// Read relationship linkage.
+    ReadRelationship,
+    /// Replace relationship linkage.
+    ReplaceRelationship,
+    /// Add relationship linkage members.
+    AddRelationshipMembers,
+    /// Remove relationship linkage members.
+    RemoveRelationshipMembers,
 }
 
 /// A resource from the `included` member of a planned collection read.
@@ -148,6 +269,21 @@ pub trait RequestAuthorizer: Send + Sync + 'static {
         resource_id: Option<&str>,
         headers: &HeaderMap,
     ) -> bool;
+
+    /// Authorizes a base mutation or relationship action.
+    ///
+    /// Existing read-only authorizers retain their previous behavior. An
+    /// application that needs distinct mutation policy should override this
+    /// method.
+    async fn authorize_mutation(
+        &self,
+        _action: MutationAction,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        headers: &HeaderMap,
+    ) -> bool {
+        self.authorize(resource_type, resource_id, headers).await
+    }
 }
 
 /// An authorizer that permits all reads.
@@ -171,6 +307,7 @@ struct ApiState {
     adapter: Arc<dyn ResourceAdapter>,
     authorizer: Arc<dyn RequestAuthorizer>,
     query_adapter: Option<Arc<dyn QueryResourceAdapter>>,
+    mutation_adapter: Option<Arc<dyn MutationResourceAdapter>>,
     pagination: Option<PaginationConfig>,
 }
 
@@ -189,6 +326,29 @@ pub fn router(
         adapter,
         authorizer,
         query_adapter: None,
+        mutation_adapter: None,
+        pagination: None,
+    })
+}
+
+/// Builds the GET routes together with base resource and relationship
+/// mutation routes.
+///
+/// Mutations use the conventional collection, resource, and relationship
+/// linkage paths. Applications can compose a custom router instead when they
+/// need different paths; this function does not register Atomic Operations.
+pub fn router_with_mutations(
+    registry: Arc<ResourceRegistry>,
+    adapter: Arc<dyn ResourceAdapter>,
+    authorizer: Arc<dyn RequestAuthorizer>,
+    mutation_adapter: Arc<dyn MutationResourceAdapter>,
+) -> Router {
+    build_router(ApiState {
+        registry,
+        adapter,
+        authorizer,
+        query_adapter: None,
+        mutation_adapter: Some(mutation_adapter),
         pagination: None,
     })
 }
@@ -212,15 +372,58 @@ pub fn router_with_query(
         adapter,
         authorizer,
         query_adapter: Some(query_adapter),
+        mutation_adapter: None,
+        pagination: Some(pagination),
+    })
+}
+
+/// Builds planned GET routes together with base resource and relationship
+/// mutation routes.
+pub fn router_with_query_and_mutations(
+    registry: Arc<ResourceRegistry>,
+    adapter: Arc<dyn ResourceAdapter>,
+    authorizer: Arc<dyn RequestAuthorizer>,
+    query_adapter: Arc<dyn QueryResourceAdapter>,
+    mutation_adapter: Arc<dyn MutationResourceAdapter>,
+    pagination: PaginationConfig,
+) -> Router {
+    build_router(ApiState {
+        registry,
+        adapter,
+        authorizer,
+        query_adapter: Some(query_adapter),
+        mutation_adapter: Some(mutation_adapter),
         pagination: Some(pagination),
     })
 }
 
 fn build_router(state: ApiState) -> Router {
-    Router::new()
-        .route("/{resource_type}", get(get_collection))
-        .route("/{resource_type}/{id}", get(get_resource))
-        .with_state(Arc::new(state))
+    let mutation_routes = state.mutation_adapter.is_some();
+    let router = if mutation_routes {
+        Router::new()
+            .route(
+                "/{resource_type}",
+                get(get_collection).post(create_resource),
+            )
+            .route(
+                "/{resource_type}/{id}",
+                get(get_resource)
+                    .patch(update_resource)
+                    .delete(delete_resource),
+            )
+            .route(
+                "/{resource_type}/{id}/relationships/{relationship}",
+                get(get_relationship)
+                    .patch(replace_relationship)
+                    .post(add_relationship_members)
+                    .delete(remove_relationship_members),
+            )
+    } else {
+        Router::new()
+            .route("/{resource_type}", get(get_collection))
+            .route("/{resource_type}/{id}", get(get_resource))
+    };
+    router.with_state(Arc::new(state))
 }
 
 async fn get_collection(
@@ -483,6 +686,905 @@ async fn get_resource(
         }
     }
     respond_with_validated_document(StatusCode::OK, document)
+}
+
+async fn create_resource(
+    State(state): State<Arc<ApiState>>,
+    Path(resource_type): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = validate_mutation_request(&headers, query.as_deref(), true) {
+        return response;
+    }
+    let definition = match state.registry.resource(&resource_type) {
+        Ok(definition) => definition,
+        Err(_) => return unknown_resource_type(&resource_type),
+    };
+    let resource = match parse_mutation_document(&body) {
+        Ok(resource) => resource,
+        Err(response) => return response,
+    };
+    if resource.type_name != resource_type {
+        return mutation_error(
+            StatusCode::CONFLICT,
+            "resource_type_mismatch",
+            "Resource type does not match collection",
+            Some(format!(
+                "The request resource type `{}` does not match `{resource_type}`.",
+                resource.type_name
+            )),
+            Some("/data/type"),
+        );
+    }
+    if resource.id.is_some() {
+        return mutation_error(
+            StatusCode::FORBIDDEN,
+            "client_generated_id_not_supported",
+            "Client-generated IDs are not supported",
+            Some("This endpoint does not accept a client-assigned resource ID.".to_owned()),
+            Some("/data/id"),
+        );
+    }
+    let changeset = match map_resource_changeset(definition, &resource, true) {
+        Ok(changeset) => changeset,
+        Err(response) => return response,
+    };
+    let outcome = match execute_mutation(
+        &state,
+        MutationAction::Create,
+        definition,
+        None,
+        &headers,
+        MutationCommand::Create { changeset },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(response) => return response,
+    };
+    let MutationOutcome::Resource(record) = outcome else {
+        return mutation_adapter_error(MutationAdapterError::Failed);
+    };
+    if record.id.is_empty() {
+        return mutation_adapter_error(MutationAdapterError::Failed);
+    }
+    let resource = match project_resource(definition, &record) {
+        Ok(resource) => resource,
+        Err(_) => return mutation_adapter_error(MutationAdapterError::Failed),
+    };
+    let mut response = respond_with_validated_document(
+        StatusCode::CREATED,
+        JsonApiDocument {
+            data: Some(PrimaryData::One(resource)),
+            ..JsonApiDocument::default()
+        },
+    );
+    if let Ok(location) = HeaderValue::from_str(&resource_location(&resource_type, &record.id)) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::LOCATION, location);
+    }
+    response
+}
+
+async fn update_resource(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = validate_mutation_request(&headers, query.as_deref(), true) {
+        return response;
+    }
+    let definition = match state.registry.resource(&resource_type) {
+        Ok(definition) => definition,
+        Err(_) => return unknown_resource_type(&resource_type),
+    };
+    let resource = match parse_mutation_document(&body) {
+        Ok(resource) => resource,
+        Err(response) => return response,
+    };
+    if resource.type_name != resource_type {
+        return mutation_error(
+            StatusCode::CONFLICT,
+            "resource_type_mismatch",
+            "Resource type does not match URL",
+            Some(format!(
+                "The request resource type `{}` does not match `{resource_type}`.",
+                resource.type_name
+            )),
+            Some("/data/type"),
+        );
+    }
+    if resource.id.as_deref() != Some(id.as_str()) || resource.lid.is_some() {
+        return mutation_error(
+            StatusCode::CONFLICT,
+            "resource_id_mismatch",
+            "Resource ID does not match URL",
+            Some("The request resource ID must match the ID in the request URL.".to_owned()),
+            Some("/data/id"),
+        );
+    }
+    let changeset = match map_resource_changeset(definition, &resource, false) {
+        Ok(changeset) => changeset,
+        Err(response) => return response,
+    };
+    let outcome = match execute_mutation(
+        &state,
+        MutationAction::Update,
+        definition,
+        Some(&id),
+        &headers,
+        MutationCommand::Update {
+            id: id.clone(),
+            changeset,
+        },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(response) => return response,
+    };
+    let MutationOutcome::Resource(record) = outcome else {
+        return mutation_adapter_error(MutationAdapterError::Failed);
+    };
+    if record.id != id {
+        return mutation_adapter_error(MutationAdapterError::Failed);
+    }
+    resource_response(definition, record, StatusCode::OK)
+}
+
+async fn delete_resource(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = validate_mutation_request(&headers, query.as_deref(), false) {
+        return response;
+    }
+    let definition = match state.registry.resource(&resource_type) {
+        Ok(definition) => definition,
+        Err(_) => return unknown_resource_type(&resource_type),
+    };
+    match execute_mutation(
+        &state,
+        MutationAction::Delete,
+        definition,
+        Some(&id),
+        &headers,
+        MutationCommand::Delete { id: id.clone() },
+    )
+    .await
+    {
+        Ok(MutationOutcome::Deleted) => empty_success_response(),
+        Ok(_) => mutation_adapter_error(MutationAdapterError::Failed),
+        Err(response) => response,
+    }
+}
+
+async fn get_relationship(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id, relationship_name)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = validate_mutation_request(&headers, query.as_deref(), false) {
+        return response;
+    }
+    let definition = match state.registry.resource(&resource_type) {
+        Ok(definition) => definition,
+        Err(_) => return unknown_resource_type(&resource_type),
+    };
+    let relationship = match declared_relationship(definition, &relationship_name) {
+        Ok(relationship) => relationship,
+        Err(response) => return response,
+    };
+    let Some(cardinality) = relationship.cardinality() else {
+        return relationship_cardinality_required(&relationship_name);
+    };
+    match execute_mutation(
+        &state,
+        MutationAction::ReadRelationship,
+        definition,
+        Some(&id),
+        &headers,
+        MutationCommand::ReadRelationship {
+            id: id.clone(),
+            relationship: relationship.clone(),
+        },
+    )
+    .await
+    {
+        Ok(MutationOutcome::Relationship(data)) => {
+            if !relationship_data_matches_cardinality(&data, cardinality)
+                || !relationship_data_matches_target(&data, relationship.target_type())
+            {
+                return mutation_adapter_error(MutationAdapterError::Failed);
+            }
+            relationship_response(data)
+        }
+        Ok(_) => mutation_adapter_error(MutationAdapterError::Failed),
+        Err(response) => response,
+    }
+}
+
+async fn replace_relationship(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id, relationship_name)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    mutate_relationship(
+        state,
+        resource_type,
+        id,
+        relationship_name,
+        query,
+        headers,
+        body,
+        RelationshipHttpMethod::Replace,
+    )
+    .await
+}
+
+async fn add_relationship_members(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id, relationship_name)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    mutate_relationship(
+        state,
+        resource_type,
+        id,
+        relationship_name,
+        query,
+        headers,
+        body,
+        RelationshipHttpMethod::Add,
+    )
+    .await
+}
+
+async fn remove_relationship_members(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id, relationship_name)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    mutate_relationship(
+        state,
+        resource_type,
+        id,
+        relationship_name,
+        query,
+        headers,
+        body,
+        RelationshipHttpMethod::Remove,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum RelationshipHttpMethod {
+    Replace,
+    Add,
+    Remove,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn mutate_relationship(
+    state: Arc<ApiState>,
+    resource_type: String,
+    id: String,
+    relationship_name: String,
+    query: Option<String>,
+    headers: HeaderMap,
+    body: Bytes,
+    method: RelationshipHttpMethod,
+) -> Response {
+    if let Err(response) = validate_mutation_request(&headers, query.as_deref(), true) {
+        return response;
+    }
+    let definition = match state.registry.resource(&resource_type) {
+        Ok(definition) => definition,
+        Err(_) => return unknown_resource_type(&resource_type),
+    };
+    let relationship = match declared_relationship(definition, &relationship_name) {
+        Ok(relationship) => relationship,
+        Err(response) => return response,
+    };
+    let Some(cardinality) = relationship.cardinality() else {
+        return relationship_cardinality_required(&relationship_name);
+    };
+    if !matches!(method, RelationshipHttpMethod::Replace)
+        && cardinality != RelationshipCardinality::ToMany
+    {
+        return unsupported_relationship_operation(&relationship_name);
+    }
+    let data = match parse_relationship_document(&body, cardinality, relationship.target_type()) {
+        Ok(data) => data,
+        Err(response) => return response,
+    };
+    let (action, mutation) = match (method, data) {
+        (RelationshipHttpMethod::Replace, data) => (
+            MutationAction::ReplaceRelationship,
+            RelationshipMutation::Replace(data),
+        ),
+        (RelationshipHttpMethod::Add, RelationshipData::Many(identifiers)) => (
+            MutationAction::AddRelationshipMembers,
+            RelationshipMutation::Add(identifiers),
+        ),
+        (RelationshipHttpMethod::Remove, RelationshipData::Many(identifiers)) => (
+            MutationAction::RemoveRelationshipMembers,
+            RelationshipMutation::Remove(identifiers),
+        ),
+        _ => return unsupported_relationship_operation(&relationship_name),
+    };
+    match execute_mutation(
+        &state,
+        action,
+        definition,
+        Some(&id),
+        &headers,
+        MutationCommand::ModifyRelationship {
+            id: id.clone(),
+            relationship: relationship.clone(),
+            mutation,
+        },
+    )
+    .await
+    {
+        Ok(MutationOutcome::Relationship(data)) => {
+            if !relationship_data_matches_cardinality(&data, cardinality)
+                || !relationship_data_matches_target(&data, relationship.target_type())
+            {
+                return mutation_adapter_error(MutationAdapterError::Failed);
+            }
+            relationship_response(data)
+        }
+        Ok(_) => mutation_adapter_error(MutationAdapterError::Failed),
+        Err(response) => response,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_mutation_request(
+    headers: &HeaderMap,
+    query: Option<&str>,
+    requires_body: bool,
+) -> Result<(), Response> {
+    if !accepts_jsonapi(headers) {
+        return Err(request_error_response(
+            RequestValidationError::NotAcceptable,
+        ));
+    }
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        return Err(query_parse_error(QueryParseError {
+            parameter: first_query_parameter(query).unwrap_or_else(|| "query".to_owned()),
+            detail: "query parameters are not supported on mutation routes".to_owned(),
+        }));
+    }
+    if requires_body {
+        validate_jsonapi_content_type(headers)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_jsonapi_content_type(headers: &HeaderMap) -> Result<(), Response> {
+    let Some(value) = headers.get(CONTENT_TYPE) else {
+        return Err(unsupported_media_type(
+            "a JSON:API Content-Type header is required",
+        ));
+    };
+    let Ok(value) = value.to_str() else {
+        return Err(unsupported_media_type("the Content-Type header is invalid"));
+    };
+    let mut segments = split_quoted(value, ';').into_iter();
+    if !segments
+        .next()
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(JSONAPI_MEDIA_TYPE))
+    {
+        return Err(unsupported_media_type(
+            "request bodies must use the JSON:API media type",
+        ));
+    }
+    let mut profile_seen = false;
+    for parameter in segments {
+        let Some((name, value)) = parameter.trim().split_once('=') else {
+            return Err(unsupported_media_type(
+                "the Content-Type parameter is invalid",
+            ));
+        };
+        if name.trim().eq_ignore_ascii_case("profile") {
+            let Some(profiles) = value
+                .trim()
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+            else {
+                return Err(unsupported_media_type(
+                    "the JSON:API profile parameter must be quoted",
+                ));
+            };
+            if profile_seen || !has_valid_uri_list(profiles) {
+                return Err(unsupported_media_type(
+                    "the JSON:API profile parameter is invalid",
+                ));
+            }
+            profile_seen = true;
+        } else {
+            return Err(unsupported_media_type(
+                "only the JSON:API profile parameter is supported on this route",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn unsupported_media_type(detail: &str) -> Response {
+    protocol_error(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "unsupported_media_type",
+        "Unsupported media type",
+        Some(detail.to_owned()),
+        None,
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
+    let document = serde_json::from_slice::<JsonApiDocument>(body).map_err(|error| {
+        mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid JSON:API document",
+            Some(format!("The request document could not be parsed: {error}")),
+            Some("/data"),
+        )
+    })?;
+    if document.errors.is_some() || document.included.is_some() || document.data.is_none() {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid mutation document",
+            Some("A mutation request must contain one primary resource in `data`.".to_owned()),
+            Some("/data"),
+        ));
+    }
+    match document.data {
+        Some(PrimaryData::One(resource)) => Ok(resource),
+        _ => Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid mutation document",
+            Some("A mutation request must contain one resource object in `data`.".to_owned()),
+            Some("/data"),
+        )),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn map_resource_changeset(
+    definition: &ResourceDefinition,
+    resource: &ResourceObject,
+    creating: bool,
+) -> Result<ResourceMutationChangeset, Response> {
+    let mut changeset = ResourceMutationChangeset::default();
+    if let Some(attributes) = &resource.attributes {
+        for (public_name, value) in attributes {
+            let Some(mapping) = definition.attribute_by_name(public_name) else {
+                return Err(unknown_mutation_field(
+                    public_name,
+                    &format!("/data/attributes/{}", escape_json_pointer(public_name)),
+                ));
+            };
+            changeset
+                .attributes
+                .insert(mapping.model_field().to_owned(), value.clone());
+        }
+    }
+    if let Some(relationships) = &resource.relationships {
+        for (public_name, relationship) in relationships {
+            let Some(mapping) = definition.relationship_by_name(public_name) else {
+                return Err(unknown_mutation_field(
+                    public_name,
+                    &format!("/data/relationships/{}", escape_json_pointer(public_name)),
+                ));
+            };
+            let Some(data) = relationship.data.clone() else {
+                return Err(mutation_error(
+                    StatusCode::BAD_REQUEST,
+                    "relationship_data_required",
+                    "Relationship data is required",
+                    Some("Mutated relationships must include a `data` member.".to_owned()),
+                    Some(&format!(
+                        "/data/relationships/{}/data",
+                        escape_json_pointer(public_name)
+                    )),
+                ));
+            };
+            let Some(cardinality) = mapping.cardinality() else {
+                return Err(relationship_cardinality_required(public_name));
+            };
+            if !relationship_data_matches_cardinality(&data, cardinality) {
+                return Err(mutation_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_relationship_linkage",
+                    "Relationship linkage has the wrong shape",
+                    Some(
+                        "The linkage shape does not match the declared relationship cardinality."
+                            .to_owned(),
+                    ),
+                    Some(&format!(
+                        "/data/relationships/{}/data",
+                        escape_json_pointer(public_name)
+                    )),
+                ));
+            }
+            if !relationship_data_matches_target(&data, mapping.target_type()) {
+                return Err(mutation_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_relationship_linkage",
+                    "Relationship linkage type is invalid",
+                    Some(format!(
+                        "All linkage must identify resources of type `{}`.",
+                        mapping.target_type()
+                    )),
+                    Some(&format!(
+                        "/data/relationships/{}/data",
+                        escape_json_pointer(public_name)
+                    )),
+                ));
+            }
+            changeset
+                .relationships
+                .insert(mapping.model_field().to_owned(), data);
+        }
+    }
+    if creating && resource.lid.is_some() && resource.id.is_some() {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_resource_identity",
+            "Resource identity is invalid",
+            Some("A resource object must not contain both `id` and `lid`.".to_owned()),
+            Some("/data"),
+        ));
+    }
+    Ok(changeset)
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_relationship_document(
+    body: &[u8],
+    cardinality: RelationshipCardinality,
+    target_type: &str,
+) -> Result<RelationshipData, Response> {
+    let document = serde_json::from_slice::<Value>(body).map_err(|error| {
+        mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid JSON:API document",
+            Some(format!("The request document could not be parsed: {error}")),
+            Some("/data"),
+        )
+    })?;
+    let Some(object) = document.as_object() else {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid JSON:API document",
+            Some("A JSON:API document must be an object.".to_owned()),
+            Some("/"),
+        ));
+    };
+    let Some(raw_data) = object.get("data") else {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "relationship_data_required",
+            "Relationship data is required",
+            Some("A relationship mutation document must contain `data`.".to_owned()),
+            Some("/data"),
+        ));
+    };
+    if object.contains_key("errors") || object.contains_key("included") {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid relationship document",
+            Some(
+                "A relationship mutation document must not contain `errors` or `included`."
+                    .to_owned(),
+            ),
+            Some("/data"),
+        ));
+    }
+    let data = serde_json::from_value::<RelationshipData>(raw_data.clone()).map_err(|error| {
+        mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_relationship_linkage",
+            "Invalid relationship linkage",
+            Some(error.to_string()),
+            Some("/data"),
+        )
+    })?;
+    if !relationship_data_matches_cardinality(&data, cardinality) {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_relationship_linkage",
+            "Relationship linkage has the wrong shape",
+            Some(
+                "The linkage shape does not match the declared relationship cardinality."
+                    .to_owned(),
+            ),
+            Some("/data"),
+        ));
+    }
+    if !relationship_data_matches_target(&data, target_type) {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_relationship_linkage",
+            "Relationship linkage type is invalid",
+            Some(format!(
+                "All linkage must identify resources of type `{target_type}`."
+            )),
+            Some("/data"),
+        ));
+    }
+    Ok(data)
+}
+
+fn relationship_data_matches_cardinality(
+    data: &RelationshipData,
+    cardinality: RelationshipCardinality,
+) -> bool {
+    matches!(
+        (cardinality, data),
+        (
+            RelationshipCardinality::ToOne,
+            RelationshipData::Null | RelationshipData::One(_)
+        ) | (RelationshipCardinality::ToMany, RelationshipData::Many(_))
+    )
+}
+
+fn relationship_data_matches_target(data: &RelationshipData, target_type: &str) -> bool {
+    let valid_identifier = |identifier: &crate::document::ResourceIdentifier| {
+        identifier.type_name == target_type && identifier.id.is_some() && identifier.lid.is_none()
+    };
+    match data {
+        RelationshipData::Null => true,
+        RelationshipData::One(identifier) => valid_identifier(identifier),
+        RelationshipData::Many(identifiers) => identifiers.iter().all(valid_identifier),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn declared_relationship(
+    definition: &ResourceDefinition,
+    relationship_name: &str,
+) -> Result<RelationshipMapping, Response> {
+    definition
+        .relationship_by_name(relationship_name)
+        .cloned()
+        .ok_or_else(|| {
+            unknown_mutation_field(
+                relationship_name,
+                &format!(
+                    "/data/relationships/{}",
+                    escape_json_pointer(relationship_name)
+                ),
+            )
+        })
+}
+
+fn unknown_resource_type(resource_type: &str) -> Response {
+    protocol_error(
+        StatusCode::NOT_FOUND,
+        "unknown_resource_type",
+        "Resource type not found",
+        Some(format!(
+            "Resource type `{resource_type}` is not registered."
+        )),
+        None,
+    )
+}
+
+fn relationship_cardinality_required(relationship_name: &str) -> Response {
+    mutation_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "relationship_cardinality_required",
+        "Relationship operations are not configured",
+        Some(format!(
+            "Relationship `{relationship_name}` must declare to-one or to-many cardinality."
+        )),
+        None,
+    )
+}
+
+fn unsupported_relationship_operation(relationship_name: &str) -> Response {
+    mutation_error(
+        StatusCode::FORBIDDEN,
+        "unsupported_relationship_operation",
+        "Relationship operation is not supported",
+        Some(format!(
+            "This operation is not supported for relationship `{relationship_name}`."
+        )),
+        None,
+    )
+}
+
+fn unknown_mutation_field(field: &str, pointer: &str) -> Response {
+    mutation_error(
+        StatusCode::BAD_REQUEST,
+        "unknown_field",
+        "Unknown resource field",
+        Some(format!("Field `{field}` is not registered.")),
+        Some(pointer),
+    )
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+#[allow(clippy::result_large_err)]
+async fn execute_mutation(
+    state: &ApiState,
+    action: MutationAction,
+    definition: &ResourceDefinition,
+    resource_id: Option<&str>,
+    headers: &HeaderMap,
+    command: MutationCommand,
+) -> Result<MutationOutcome, Response> {
+    if !state
+        .authorizer
+        .authorize_mutation(action, definition.type_name(), resource_id, headers)
+        .await
+    {
+        return Err(forbidden_error());
+    }
+    let Some(adapter) = state.mutation_adapter.as_ref() else {
+        return Err(mutation_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "mutation_not_supported",
+            "Mutations are not configured",
+            Some("No base mutation adapter is configured for this router.".to_owned()),
+            None,
+        ));
+    };
+    adapter
+        .execute(definition, command)
+        .await
+        .map_err(mutation_adapter_error)
+}
+
+fn resource_response(
+    definition: &ResourceDefinition,
+    record: AdapterResource,
+    status: StatusCode,
+) -> Response {
+    match project_resource(definition, &record) {
+        Ok(resource) => respond_with_validated_document(
+            status,
+            JsonApiDocument {
+                data: Some(PrimaryData::One(resource)),
+                ..JsonApiDocument::default()
+            },
+        ),
+        Err(_) => mutation_adapter_error(MutationAdapterError::Failed),
+    }
+}
+
+fn relationship_response(data: RelationshipData) -> Response {
+    let mut response = Json(serde_json::json!({"data": data})).into_response();
+    set_jsonapi_headers(&mut response);
+    response
+}
+
+fn empty_success_response() -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .insert(VARY, HeaderValue::from_static("Accept"));
+    response
+}
+
+fn resource_location(resource_type: &str, id: &str) -> String {
+    format!(
+        "/{}/{}",
+        encode_path_segment(resource_type),
+        encode_path_segment(id)
+    )
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn mutation_adapter_error(error: MutationAdapterError) -> Response {
+    match error {
+        MutationAdapterError::NotFound => protocol_error(
+            StatusCode::NOT_FOUND,
+            "resource_not_found",
+            "Resource not found",
+            Some("The addressed resource does not exist.".to_owned()),
+            None,
+        ),
+        MutationAdapterError::RelatedResourceNotFound => protocol_error(
+            StatusCode::NOT_FOUND,
+            "related_resource_not_found",
+            "Related resource not found",
+            Some("A resource referenced by the mutation does not exist.".to_owned()),
+            None,
+        ),
+        MutationAdapterError::Conflict => protocol_error(
+            StatusCode::CONFLICT,
+            "resource_conflict",
+            "Resource mutation conflict",
+            Some("The requested mutation conflicts with the current state.".to_owned()),
+            None,
+        ),
+        MutationAdapterError::Unsupported => protocol_error(
+            StatusCode::FORBIDDEN,
+            "unsupported_operation",
+            "Operation is not supported",
+            Some("The application does not support this operation.".to_owned()),
+            None,
+        ),
+        MutationAdapterError::Failed => protocol_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "mutation_failed",
+            "Resource mutation failed",
+            Some("The resource could not be changed.".to_owned()),
+            None,
+        ),
+    }
+}
+
+fn mutation_error(
+    status: StatusCode,
+    code: &'static str,
+    title: &'static str,
+    detail: Option<String>,
+    pointer: Option<&str>,
+) -> Response {
+    let error = ErrorObject {
+        status: Some(status.as_u16().to_string()),
+        code: Some(code.to_owned()),
+        title: Some(title.to_owned()),
+        detail,
+        source: pointer.map(|pointer| ErrorSource {
+            pointer: Some(pointer.to_owned()),
+            ..ErrorSource::default()
+        }),
+        ..ErrorObject::default()
+    };
+    let mut response = (
+        status,
+        Json(JsonApiDocument {
+            errors: Some(vec![error]),
+            ..JsonApiDocument::default()
+        }),
+    )
+        .into_response();
+    set_jsonapi_headers(&mut response);
+    response
 }
 
 struct QueryParseError {

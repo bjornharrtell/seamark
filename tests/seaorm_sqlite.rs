@@ -16,6 +16,9 @@ mod bigint_identifier_cases;
 #[path = "support/uuid_identifier_cases.rs"]
 mod uuid_identifier_cases;
 
+#[path = "support/http_mutation_cases.rs"]
+mod http_mutation_cases;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1733,5 +1736,12 @@ async fn sqlite_bigint_identifiers_map_to_jsonapi_strings_and_mutate() {
 async fn sqlite_uuid_identifiers_map_to_canonical_jsonapi_strings_and_mutate() {
     let database = database().await;
     uuid_identifier_cases::run(&database).await;
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_base_http_mutations_preserve_linkage_and_rollback() {
+    let database = database().await;
+    http_mutation_cases::run_case(&database).await;
     database.close().await.unwrap();
 }

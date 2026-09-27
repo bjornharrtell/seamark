@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseTransaction, EntityTrait, IntoActiveModel, ModelTrait,
-    QueryFilter, Value,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
+    IntoActiveModel, ModelTrait, QueryFilter, TransactionTrait, Value,
     sea_query::{Condition, Expr},
 };
 use serde_json::{Value as JsonValue, json};
@@ -17,8 +17,86 @@ use crate::atomic::{
     AtomicResourceReference, AtomicResult, AtomicTarget, LocalIdMap, PlannedOperation,
 };
 use crate::document::{RelationshipData, ResourceIdentifier};
+use crate::http::{
+    MutationAdapterError, MutationCommand, MutationOutcome, MutationResourceAdapter,
+};
 use crate::registry::{RegistryError, ResourceDefinition, ResourceRegistry};
 use crate::seaorm::SeaOrmMutationValueCodec;
+
+/// Executes one base HTTP mutation with an explicit typed SeaORM mapping.
+#[async_trait]
+pub trait SeaOrmBaseMutationExecutor: Send + Sync {
+    /// Returns whether this executor owns the resource and command.
+    fn supports(&self, resource: &ResourceDefinition, command: &MutationCommand) -> bool;
+
+    /// Executes the command using the adapter's shared transaction.
+    async fn execute(
+        &self,
+        transaction: &DatabaseTransaction,
+        resource: &ResourceDefinition,
+        command: &MutationCommand,
+    ) -> Result<MutationOutcome, MutationAdapterError>;
+}
+
+/// Runs each base HTTP mutation through one SeaORM transaction.
+///
+/// Executors are checked in order; the first matching typed mapping handles
+/// the command. The adapter does not translate base HTTP commands into
+/// Atomic Operations.
+pub struct SeaOrmBaseMutationAdapter {
+    database: DatabaseConnection,
+    executors: Vec<Arc<dyn SeaOrmBaseMutationExecutor>>,
+}
+
+impl SeaOrmBaseMutationAdapter {
+    /// Creates an adapter with deterministic first-match executor ordering.
+    #[must_use]
+    pub fn new(
+        database: DatabaseConnection,
+        executors: Vec<Arc<dyn SeaOrmBaseMutationExecutor>>,
+    ) -> Self {
+        Self {
+            database,
+            executors,
+        }
+    }
+}
+
+#[async_trait]
+impl MutationResourceAdapter for SeaOrmBaseMutationAdapter {
+    async fn execute(
+        &self,
+        resource: &ResourceDefinition,
+        command: MutationCommand,
+    ) -> Result<MutationOutcome, MutationAdapterError> {
+        let executor = self
+            .executors
+            .iter()
+            .find(|executor| executor.supports(resource, &command))
+            .ok_or(MutationAdapterError::Unsupported)?;
+        let transaction = self
+            .database
+            .begin()
+            .await
+            .map_err(|_| MutationAdapterError::Failed)?;
+        match executor.execute(&transaction, resource, &command).await {
+            Ok(outcome) => {
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|_| MutationAdapterError::Failed)?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| MutationAdapterError::Failed)?;
+                Err(error)
+            }
+        }
+    }
+}
 
 /// Executes operations for one typed entity using explicit field/value mapping.
 #[async_trait]

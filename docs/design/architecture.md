@@ -5,8 +5,9 @@ adapter-independent resource registry and read planner, Axum read-only GET
 routes with opt-in collection and single-resource query planning, a
 PostgreSQL-backed SeaORM executor prototype integrated through the
 query-adapter boundary,
-and a standalone Atomic Operations `POST /operations` router, typed SeaORM
-resource mutation executors, and transaction runner. SQLite has an opt-in SeaORM feature and partial M7
+and a standalone Atomic Operations `POST /operations` router, opt-in base
+resource/relationship routes, typed SeaORM mutation executors, and transaction
+runners for both mutation contracts. SQLite has an opt-in SeaORM feature and partial M7
 query/mutation test coverage; cross-backend parity is not established. Complete JSON:API
 conformance is not implemented.
 
@@ -23,7 +24,28 @@ The design separates protocol handling, public API metadata, application policy,
 
 ## Routes and request flow
 
-The current read HTTP integration registers only collection and single-resource GET routes. Atomic Operations is exposed separately as a mergeable `POST /operations` router, so applications can combine it with the read routes. Resource definitions are intended to grow into conventional CRUD and relationship routes, with per-route overrides, in later milestones.
+The default HTTP integration registers collection and single-resource GET
+routes only. `router_with_mutations` and
+`router_with_query_and_mutations` opt into the conventional resource and
+relationship-linkage methods: `POST /{type}`, `PATCH|DELETE /{type}/{id}`, and
+`GET|PATCH|POST|DELETE /{type}/{id}/relationships/{name}`. Related-resource
+URLs are not registered. Relationship writes require explicit
+`to_one_relationship` or `to_many_relationship` registry declarations;
+`.relationship(...)` remains cardinality-unspecified and is suitable for
+read-only mapping. Applications that need different paths can compose
+application-owned Axum mutation routes with the read-only router. The helpers
+do not add a route-template language or silently remap paths.
+
+Base requests are validated and mapped to `MutationCommand` values before
+authorization and adapter execution. `MutationResourceAdapter` is distinct
+from the Atomic planner, handlers, and result document. Its command changesets
+key only supplied fields by internal registry mapping, so omitted PATCH fields
+remain absent and explicit `null` remains a value. `SeaOrmBaseMutationAdapter`
+dispatches to the first matching typed base executor in one transaction per
+command. The typed executor and application are responsible for related-target
+existence, idempotent to-many membership updates, model-specific result
+representations, and association persistence. Atomic operations continue to
+use their own request plan and transaction batch.
 
 The default GET router rejects non-empty query strings. The opt-in query router
 parses and plans collection queries plus single-resource includes and sparse
