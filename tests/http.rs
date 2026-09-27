@@ -222,7 +222,7 @@ async fn error_document(response: Response<Body>) -> JsonApiDocument {
     let expected_status = response.status().as_u16().to_string();
     let document = document(response).await;
     let errors = document.errors.as_ref().expect("error response document");
-    assert!(!errors.is_empty());
+    assert_eq!(errors.len(), 1);
     for error in errors {
         assert_eq!(error.status.as_deref(), Some(expected_status.as_str()));
     }
@@ -537,6 +537,22 @@ async fn rejects_every_nonempty_query_string_before_adapter_calls() {
     assert_eq!(body["errors"][0]["code"], "unsupported_query");
     assert_eq!(body["errors"][0]["source"]["parameter"], "page[number]");
     assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn requests_with_multiple_problems_return_one_first_error() {
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, _) = test_app(adapter, true);
+
+    let response = app
+        .oneshot(request("/ships?unsupported=value", None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let document = error_document(response).await;
+    let errors = document.errors.unwrap();
+    assert_eq!(errors[0].code.as_deref(), Some("unsupported_query"));
 }
 
 #[tokio::test]
