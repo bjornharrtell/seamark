@@ -1217,6 +1217,59 @@ async fn atomic_http_rejects_relationship_cardinality_mismatch_before_authorizat
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_non_array_relationship_add_and_remove_data_before_authorization() {
+    let database = database().await;
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        relationship_add_registry(),
+        database.clone(),
+        guard.clone(),
+        handler.clone(),
+    );
+
+    for (body, message) in [
+        (
+            r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1","relationship":"tags"},"data":{"type":"tags","id":"tag-1"}}]}"#,
+            "adding relationship members requires an array of identifiers",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"remove","ref":{"type":"articles","id":"1","relationship":"tags"},"data":null}]}"#,
+            "removing relationship members requires an array of identifiers",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = error_document(response, body).await;
+        assert_eq!(
+            error["errors"][0]["detail"],
+            format!("invalid operation 0 at `/atomic:operations/0`: {message}")
+        );
+        assert_eq!(
+            error["errors"][0]["source"]["pointer"],
+            "/atomic:operations/0"
+        );
+    }
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_rejects_operations_with_both_ref_and_href_before_execution() {
     let database = database().await;
     let guard = Arc::new(CountingGuard {
