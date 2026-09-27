@@ -142,6 +142,7 @@ impl QueryResourceAdapter for FailingQueryAdapter {
 #[derive(Default)]
 struct TestMutationAdapter {
     commands: Mutex<Vec<MutationCommand>>,
+    failure: Mutex<Option<MutationAdapterError>>,
 }
 
 #[async_trait]
@@ -152,6 +153,9 @@ impl MutationResourceAdapter for TestMutationAdapter {
         command: MutationCommand,
     ) -> Result<MutationOutcome, MutationAdapterError> {
         self.commands.lock().unwrap().push(command.clone());
+        if let Some(error) = *self.failure.lock().unwrap() {
+            return Err(error);
+        }
         match command {
             MutationCommand::Create { changeset } => Ok(MutationOutcome::Resource(
                 record_from_changeset(resource, "42", changeset),
@@ -620,6 +624,99 @@ async fn mutation_validation_and_authorization_precede_adapter_execution() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
     assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn base_mutation_routes_reject_query_parameters_before_authorization_or_adapter() {
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    let cases = [
+        (
+            "POST",
+            "/ports?fields[ports]=name",
+            r#"{"data":{"type":"ports"}}"#,
+        ),
+        (
+            "PATCH",
+            "/ports/1?fields[ports]=name",
+            r#"{"data":{"type":"ports","id":"1"}}"#,
+        ),
+        ("DELETE", "/ports/1?fields[ports]=name", ""),
+        ("GET", "/ports/1/relationships/owner?fields[ports]=name", ""),
+        (
+            "PATCH",
+            "/ports/1/relationships/owner?fields[ports]=name",
+            r#"{"data":null}"#,
+        ),
+    ];
+
+    for (method, uri, body) in cases {
+        let response = app
+            .clone()
+            .oneshot(mutation_request(method, uri, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("invalid_query"));
+        assert_eq!(
+            errors[0].source.as_ref().unwrap().parameter.as_deref(),
+            Some("fields[ports]")
+        );
+    }
+
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn base_mutation_adapter_errors_map_to_jsonapi_http_statuses() {
+    let cases = [
+        (
+            MutationAdapterError::NotFound,
+            StatusCode::NOT_FOUND,
+            "resource_not_found",
+        ),
+        (
+            MutationAdapterError::RelatedResourceNotFound,
+            StatusCode::NOT_FOUND,
+            "related_resource_not_found",
+        ),
+        (
+            MutationAdapterError::Conflict,
+            StatusCode::CONFLICT,
+            "resource_conflict",
+        ),
+        (
+            MutationAdapterError::Unsupported,
+            StatusCode::FORBIDDEN,
+            "unsupported_operation",
+        ),
+        (
+            MutationAdapterError::Failed,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "mutation_failed",
+        ),
+    ];
+
+    for (adapter_error, expected_status, expected_code) in cases {
+        let (app, adapter, authorizer) = mutation_test_app(true);
+        *adapter.failure.lock().unwrap() = Some(adapter_error);
+        let response = app
+            .oneshot(mutation_request("DELETE", "/ports/1", ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status);
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some(expected_code));
+        assert_eq!(errors[0].status.as_deref(), Some(expected_status.as_str()));
+        assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            adapter.commands.lock().unwrap().as_slice(),
+            [MutationCommand::Delete { id }] if id == "1"
+        ));
+    }
 }
 
 #[tokio::test]
