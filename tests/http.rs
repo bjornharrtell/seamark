@@ -1527,20 +1527,17 @@ async fn validates_profile_uri_lists_and_duplicate_accept_parameters() {
             error_document(response).await;
         }
 
-        let adapter = Arc::new(TestAdapter::default());
-        *adapter.resource_result.lock().unwrap() = Some(port_record());
-        let (app, _) = test_app(adapter, true);
-        let response = app
-            .oneshot(request(
-                path,
-                Some(
-                    "application/vnd.api+json;profile=\"https://example.test/one https://example.test/two\"",
-                ),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_jsonapi_headers(&response);
+        for accept in [
+            "application/vnd.api+json;profile=\"https://example.test/one https://example.test/two\"",
+            "application/vnd.api+json;profile=\"https://example.test/profiles/a,b\"",
+        ] {
+            let adapter = Arc::new(TestAdapter::default());
+            *adapter.resource_result.lock().unwrap() = Some(port_record());
+            let (app, _) = test_app(adapter, true);
+            let response = app.oneshot(request(path, Some(accept))).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{accept}");
+            assert_jsonapi_headers(&response);
+        }
     }
 }
 
