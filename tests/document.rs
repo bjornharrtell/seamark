@@ -396,6 +396,26 @@ fn validates_jsonapi_extension_and_profile_uris() {
 }
 
 #[test]
+fn jsonapi_version_must_be_a_string_when_present() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "jsonapi": {"version": "1.1"}
+    }))
+    .unwrap();
+    document.validate().unwrap();
+
+    for version in [json!(1.1), json!(false), json!({}), json!([]), json!(null)] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(json!({
+                "data": null,
+                "jsonapi": {"version": version}
+            }))
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn accepts_metadata_only_documents() {
     let mut meta = serde_json::Map::new();
     meta.insert("total".to_owned(), json!(0));
