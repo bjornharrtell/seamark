@@ -267,19 +267,23 @@ unless the server supplies allowed result `meta`; they do not return relationshi
 linkage in result `data`. `validates_relationship_results_for_add_update_and_remove_operations`
 accepts that shape and rejects result `data` at each operation index.
 `atomic_http_rejects_relationship_result_data_with_operation_pointer` verifies
-the endpoint maps an invalid server-generated relationship result to HTTP 500, returns a
-JSON:API error whose status matches the response, and points to the associated
-`/atomic:operations/0` request operation. The request-shape planner controls
-remain in `plans_ordered_resource_and_relationship_operations_with_local_ids`
-and `rejects_malformed_operation_shapes_and_unknown_registry_fields`; this is
+the endpoint maps an invalid server-generated relationship result to HTTP 500,
+returns a JSON:API error whose status matches the response, and points to the
+associated `/atomic:operations/0` request operation. The shared
+`execute_invalid_result_rollback_case` also proves PostgreSQL and SQLite both
+roll back a database write made before invalid result data is detected. Client
+operation failures remain HTTP 422. The request-shape planner controls remain
+in `plans_ordered_resource_and_relationship_operations_with_local_ids` and
+`rejects_malformed_operation_shapes_and_unknown_registry_fields`; this is
 selected operation coverage, not the complete normative matrix.
 
 `atomic_http_negotiates_qvalues_wildcards_and_extension_parameters` covers
 the required Atomic extension on concrete and wildcard Accept ranges,
 extension/range specificity and q=0 precedence, repeated ranges, valid
-three-digit qvalues, and rejection of malformed qvalues, absent/duplicate
-extensions, unsupported extension lists, and duplicate profiles before the
-guard or operation handler. Its qvalue grammar follows
+three-digit qvalues, and acceptance of a valueless token Accept extension after
+`q`; malformed qvalues, absent/duplicate extensions, unsupported extension
+lists, and duplicate profiles are rejected before the guard or operation
+handler. Its qvalue grammar follows
 [RFC 9110 quality values](https://www.rfc-editor.org/rfc/rfc9110.html#name-quality-values).
 `atomic_http_enforces_content_type_parameter_rules` also verifies duplicate
 extension/profile parameters are rejected and valid unknown profile URIs are
