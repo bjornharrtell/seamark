@@ -1655,6 +1655,7 @@ async fn atomic_http_rejects_relationship_result_data_with_operation_pointer() {
             "source": {"pointer": "/atomic:operations/0"}
         })
     );
+    assert!(error.get("atomic:results").is_none());
     assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     database.close().await.unwrap();
 }
