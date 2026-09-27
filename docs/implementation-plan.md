@@ -286,9 +286,9 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 197 integration
-tests and 5 unit tests, including 11 isolated SQLite tests and PostgreSQL
-integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
+implementations. At this revision, the complete all-features suite passes with
+198 integration tests and 5 unit tests, including 11 isolated SQLite tests
+and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
 coverage.
@@ -453,10 +453,15 @@ absolute URI strings (including valid URIs unknown to this implementation).
 Generated base and Atomic HTTP error tests
 assert that each error object's `status` matches the HTTP response status;
 Atomic HTTP tests also verify that every emitted source pointer resolves in the
-original request document. The Atomic malformed-request test submits two
-invalid operations and confirms that the single returned error points to the
-first operation. Base GET and Atomic HTTP tests also verify the
-permitted stop-at-first-problem strategy when a request has multiple faults,
+original request document.
+`typed_invalid_mutation_document_omits_source_pointer_before_authorization_or_adapter`
+verifies that a base mutation with valid JSON but a typed-invalid `jsonapi`
+member returns 400 without `source.pointer`, because Serde does not identify
+an exact failing request value; the regression also verifies rejection before
+authorization or mutation-adapter execution. The Atomic malformed-request
+test submits two invalid operations and confirms that the single returned
+error points to the first operation. Base GET and Atomic HTTP tests also verify
+the permitted stop-at-first-problem strategy when a request has multiple faults,
 so multi-error HTTP status selection is not used by these routes. The matrix
 remains partial: focused base-spec regressions reject a relationship object
 whose only member is an empty `links` object while retaining valid link-only,

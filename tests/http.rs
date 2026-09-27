@@ -750,6 +750,30 @@ async fn malformed_base_mutation_json_omits_source_pointer_before_authorization_
 }
 
 #[tokio::test]
+async fn typed_invalid_mutation_document_omits_source_pointer_before_authorization_or_adapter() {
+    let (app, adapter, authorizer) = mutation_test_app(false);
+    let response = app
+        .oneshot(mutation_request("POST", "/ports", r#"{"jsonapi":false}"#))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let errors = error_document(response).await.errors.unwrap();
+    assert_eq!(errors[0].code.as_deref(), Some("invalid_document"));
+    assert_eq!(errors[0].status.as_deref(), Some("400"));
+    assert!(
+        errors[0]
+            .source
+            .as_ref()
+            .and_then(|source| source.pointer.as_deref())
+            .is_none()
+    );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn base_mutation_routes_reject_query_parameters_before_authorization_or_adapter() {
     let (app, adapter, authorizer) = mutation_test_app(true);
     let cases = [

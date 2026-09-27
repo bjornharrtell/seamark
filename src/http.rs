@@ -1212,7 +1212,7 @@ fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
             "invalid_document",
             "Invalid JSON:API document",
             Some(format!("The request document could not be parsed: {error}")),
-            Some("/data"),
+            None,
         )
     })?;
     if document.errors.is_some() || document.included.is_some() || document.data.is_none() {
