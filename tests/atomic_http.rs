@@ -155,6 +155,19 @@ async fn document(response: Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+async fn error_document(response: Response<Body>) -> Value {
+    let expected_status = response.status().as_u16().to_string();
+    let document = document(response).await;
+    let errors = document["errors"]
+        .as_array()
+        .expect("error response document");
+    assert!(!errors.is_empty());
+    for error in errors {
+        assert_eq!(error["status"], expected_status);
+    }
+    document
+}
+
 #[tokio::test]
 async fn negotiates_and_executes_atomic_http_requests() {
     let database = database().await;
@@ -244,7 +257,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
         let content_type = response.headers()[CONTENT_TYPE].to_str().unwrap();
         assert!(content_type == "application/vnd.api+json" || content_type == ATOMIC_MEDIA_TYPE);
         assert_eq!(response.headers()[VARY], "Accept");
-        let error = document(response).await;
+        let error = error_document(response).await;
         assert!(error.get("errors").is_some());
     }
 
@@ -267,6 +280,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    error_document(response).await;
 
     let failing = atomic_http::router(
         registry(),
@@ -287,6 +301,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    error_document(response).await;
 
     let href_router = atomic_http::router_with_href_resolver(
         registry(),
