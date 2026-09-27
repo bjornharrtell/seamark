@@ -159,7 +159,7 @@ async fn post_operations(
         results: Some(results),
         ..AtomicOperationsDocument::default()
     };
-    if let Err(error) = response.validate_response(operations.len()) {
+    if let Err(error) = response.validate_response_for(&operations) {
         return atomic_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "invalid_atomic_response",

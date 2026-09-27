@@ -9,7 +9,10 @@ use sea_orm::{DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::document::{ErrorObject, JsonApiObject, RelationshipData, ResourceIdentifier};
+use crate::document::{
+    ErrorObject, JsonApiDocument, JsonApiObject, PrimaryData, RelationshipData, ResourceIdentifier,
+    ResourceObject,
+};
 use crate::registry::ResourceRegistry;
 
 /// The extension URI required for JSON:API Atomic Operations.
@@ -131,6 +134,87 @@ impl AtomicOperationsDocument {
                 expected: expected_results,
                 actual: results.len(),
             });
+        }
+        Ok(results)
+    }
+
+    /// Validates a response document against the operations that produced it.
+    ///
+    /// Resource add/update results may include a resource object as `data`;
+    /// relationship and remove results must be empty result objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the result count or document shape is invalid, or
+    /// if a result contains invalid resource data or data for an operation
+    /// that must not return it.
+    pub fn validate_response_for(
+        &self,
+        operations: &[PlannedAtomicOperation],
+    ) -> Result<&[AtomicResult], AtomicOperationsError> {
+        let results = self.validate_response(operations.len())?;
+        for (index, (result, operation)) in results.iter().zip(operations).enumerate() {
+            if let PlannedOperation::AddResource { data, .. } = &operation.operation {
+                if data.id.is_none() && result.data.is_none() {
+                    return Err(AtomicOperationsError::InvalidResult {
+                        index,
+                        message: "a server-assigned resource ID requires a resource representation"
+                            .to_owned(),
+                    });
+                }
+            }
+            let Some(data) = &result.data else {
+                continue;
+            };
+            let (expected_type, expected_id) = match &operation.operation {
+                PlannedOperation::AddResource { data, .. } => {
+                    (data.type_name.as_str(), data.id.as_deref())
+                }
+                PlannedOperation::UpdateResource { target, data, .. } => {
+                    let target_id = match target {
+                        AtomicTarget::Reference(reference) => reference.id.as_deref(),
+                        AtomicTarget::Href(_) => None,
+                    };
+                    (data.type_name.as_str(), target_id.or(data.id.as_deref()))
+                }
+                _ => {
+                    return Err(AtomicOperationsError::InvalidResult {
+                        index,
+                        message: "this operation must not return `data`".to_owned(),
+                    });
+                }
+            };
+            let resource =
+                serde_json::from_value::<ResourceObject>(data.clone()).map_err(|error| {
+                    AtomicOperationsError::InvalidResult {
+                        index,
+                        message: format!("result `data` must be a resource object: {error}"),
+                    }
+                })?;
+            JsonApiDocument {
+                data: Some(PrimaryData::One(resource.clone())),
+                ..JsonApiDocument::default()
+            }
+            .validate_response()
+            .map_err(|error| AtomicOperationsError::InvalidResult {
+                index,
+                message: format!("result resource is invalid: {error}"),
+            })?;
+            if resource.type_name != expected_type {
+                return Err(AtomicOperationsError::InvalidResult {
+                    index,
+                    message: format!(
+                        "result resource type `{}` does not match operation type `{expected_type}`",
+                        resource.type_name
+                    ),
+                });
+            }
+            if expected_id.is_some_and(|id| resource.id.as_deref() != Some(id)) {
+                return Err(AtomicOperationsError::InvalidResult {
+                    index,
+                    message: "result resource id does not match the operation target".to_owned(),
+                });
+            }
         }
         Ok(results)
     }
@@ -441,6 +525,13 @@ pub enum AtomicOperationsError {
         /// The number of returned results.
         actual: usize,
     },
+    /// One operation result contains invalid or disallowed data.
+    InvalidResult {
+        /// Zero-based result index.
+        index: usize,
+        /// A concise validation explanation.
+        message: String,
+    },
     /// One operation is malformed or incompatible with its operation code.
     InvalidOperation {
         /// Zero-based operation index.
@@ -466,6 +557,9 @@ impl fmt::Display for AtomicOperationsError {
                 formatter,
                 "Atomic Operations response has {actual} results for {expected} operations"
             ),
+            Self::InvalidResult { index, message } => {
+                write!(formatter, "invalid result {index}: {message}")
+            }
             Self::InvalidOperation {
                 index,
                 pointer,
@@ -1494,7 +1588,14 @@ fn validate_operation_result(
                     AtomicTarget::Reference(reference) => reference.type_name.as_str(),
                     AtomicTarget::Href(_) => data.type_name.as_str(),
                 };
-                resource_result_identity(expected_type, result_data)?;
+                let identifier = resource_result_identity(expected_type, result_data)?;
+                let expected_id = match target {
+                    AtomicTarget::Reference(reference) => reference.id.as_ref(),
+                    AtomicTarget::Href(_) => data.id.as_ref(),
+                };
+                if expected_id.is_some_and(|id| identifier.id.as_ref() != Some(id)) {
+                    return Err("resource result ID must match the operation target".to_owned());
+                }
             }
         }
         PlannedOperation::AddRelationshipMembers { .. }
@@ -1513,17 +1614,32 @@ fn resource_result_identity(
     expected_type: &str,
     data: &Value,
 ) -> Result<ResourceIdentifier, String> {
-    let identifier: ResourceIdentifier = serde_json::from_value(data.clone())
+    let resource: ResourceObject = serde_json::from_value(data.clone())
         .map_err(|error| format!("resource result data is malformed: {error}"))?;
-    if identifier.type_name != expected_type
-        || identifier.id.as_deref().is_none_or(str::is_empty)
-        || identifier.lid.is_some()
-    {
+    JsonApiDocument {
+        data: Some(PrimaryData::One(resource.clone())),
+        ..JsonApiDocument::default()
+    }
+    .validate_response()
+    .map_err(|error| format!("resource result data is invalid: {error}"))?;
+    if resource.type_name != expected_type {
         return Err(format!(
             "resource result data must contain a persistent `{expected_type}` identity"
         ));
     }
-    Ok(identifier)
+    let id = resource.id.ok_or_else(|| {
+        format!("resource result data must contain a persistent `{expected_type}` identity")
+    })?;
+    if id.is_empty() || resource.lid.is_some() {
+        return Err(format!(
+            "resource result data must contain a persistent `{expected_type}` identity"
+        ));
+    }
+    Ok(ResourceIdentifier {
+        type_name: resource.type_name,
+        id: Some(id),
+        ..ResourceIdentifier::default()
+    })
 }
 
 fn deserialize_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

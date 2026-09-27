@@ -332,6 +332,75 @@ fn validates_request_response_shapes_and_result_cardinality() {
 }
 
 #[test]
+fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
+    let add = plan(json!({
+        "atomic:operations": [{"op": "add", "data": {"type": "authors"}}]
+    }))
+    .unwrap();
+    let valid_resource_result = document(json!({
+        "atomic:results": [{"data": {"type": "authors", "id": "1"}}]
+    }));
+    valid_resource_result.validate_response_for(&add).unwrap();
+    let missing_resource_result = document(json!({"atomic:results": [{}]}));
+    assert!(matches!(
+        missing_resource_result.validate_response_for(&add),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+
+    let missing_id = document(json!({
+        "atomic:results": [{"data": {"type": "authors", "lid": "local"}}]
+    }));
+    assert!(matches!(
+        missing_id.validate_response_for(&add),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+    let mismatched_type = document(json!({
+        "atomic:results": [{"data": {"type": "tags", "id": "1"}}]
+    }));
+    assert!(matches!(
+        mismatched_type.validate_response_for(&add),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+
+    let update = plan(json!({
+        "atomic:operations": [{
+            "op": "update",
+            "ref": {"type": "articles", "id": "1"},
+            "data": {"type": "articles", "attributes": {"title": "Updated"}}
+        }]
+    }))
+    .unwrap();
+    let mismatched_id = document(json!({
+        "atomic:results": [{"data": {"type": "articles", "id": "2"}}]
+    }));
+    assert!(matches!(
+        mismatched_id.validate_response_for(&update),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+
+    let relationship_update = plan(json!({
+        "atomic:operations": [{
+            "op": "update",
+            "ref": {"type": "articles", "id": "1", "relationship": "author"},
+            "data": null
+        }]
+    }))
+    .unwrap();
+    let unexpected_data = document(json!({
+        "atomic:results": [{"data": {"type": "authors", "id": "2"}}]
+    }));
+    assert!(matches!(
+        unexpected_data.validate_response_for(&relationship_update),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+
+    let empty_relationship_result = document(json!({"atomic:results": [{}]}));
+    empty_relationship_result
+        .validate_response_for(&relationship_update)
+        .unwrap();
+}
+
+#[test]
 fn ignores_unrecognized_members_in_atomic_documents_and_operation_objects() {
     let operations = plan(json!({
         "future:document": {"ignored": true},
