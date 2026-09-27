@@ -3,18 +3,65 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use sea_orm::{
     ColumnTrait, Condition, DatabaseConnection, DbErr, EntityTrait, Order, QueryFilter, QueryOrder,
     QuerySelect, Value, sea_query::IntoCondition,
 };
+use serde_json::Value as JsonValue;
 
 use crate::http::AdapterResource;
 use crate::query::{
     FilterExpression, FilterValue, IncludeNode, PlannedField, ReadPlan, SortDirection,
 };
 use crate::registry::{ResourceDefinition, ResourceRegistry};
+
+/// Encodes parsed query string literals as typed SeaORM values.
+///
+/// Implementations should validate values for the mapped entity field and
+/// return an error for unsupported or malformed literals.
+pub trait SeaOrmFilterValueCodec: Send + Sync {
+    /// Converts a non-null query literal for a mapped model field.
+    fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String>;
+}
+
+impl<C> SeaOrmFilterValueCodec for Arc<C>
+where
+    C: SeaOrmFilterValueCodec + ?Sized,
+{
+    fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        self.as_ref().encode_filter_value(model_field, value)
+    }
+}
+
+/// Encodes mutation values and converts database identifiers to API strings.
+pub trait SeaOrmMutationValueCodec: Send + Sync {
+    /// Converts a validated JSON value for a mapped model field.
+    fn encode_mutation_value(&self, model_field: &str, value: &JsonValue) -> Result<Value, String>;
+
+    /// Converts a database identifier value to its public string form.
+    fn decode_identifier(&self, model_field: &str, value: &Value) -> Result<String, String>;
+}
+
+impl<C> SeaOrmMutationValueCodec for Arc<C>
+where
+    C: SeaOrmMutationValueCodec + ?Sized,
+{
+    fn encode_mutation_value(&self, model_field: &str, value: &JsonValue) -> Result<Value, String> {
+        self.as_ref().encode_mutation_value(model_field, value)
+    }
+
+    fn decode_identifier(&self, model_field: &str, value: &Value) -> Result<String, String> {
+        self.as_ref().decode_identifier(model_field, value)
+    }
+}
+
+/// A codec suitable for both SeaORM query filtering and mutation handling.
+pub trait SeaOrmValueCodec: SeaOrmFilterValueCodec + SeaOrmMutationValueCodec {}
+
+impl<T> SeaOrmValueCodec for T where T: SeaOrmFilterValueCodec + SeaOrmMutationValueCodec {}
 
 /// An included resource returned by an application-specific relationship loader.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,25 +209,25 @@ impl std::error::Error for SeaOrmExecutionError {
 /// The mapper converts typed SeaORM models into adapter records. Fieldset
 /// projection is enforced by the executor after mapping, so undeclared model
 /// values cannot escape merely because a mapper returned them.
-pub struct SeaOrmQueryExecutor<E, M, F>
+pub struct SeaOrmQueryExecutor<E, M, C>
 where
     E: EntityTrait,
     M: Fn(&E::Model) -> AdapterResource + Send + Sync,
-    F: Fn(&str, &str) -> Result<Value, String> + Send + Sync,
+    C: SeaOrmFilterValueCodec,
 {
     registry: ResourceRegistry,
     resource_type: String,
     mapper: M,
-    filter_value_encoder: F,
+    filter_value_codec: C,
     entity: PhantomData<fn() -> E>,
 }
 
-impl<E, M, F> SeaOrmQueryExecutor<E, M, F>
+impl<E, M, C> SeaOrmQueryExecutor<E, M, C>
 where
     E: EntityTrait,
     E::Column: FromStr,
     M: Fn(&E::Model) -> AdapterResource + Send + Sync,
-    F: Fn(&str, &str) -> Result<Value, String> + Send + Sync,
+    C: SeaOrmFilterValueCodec,
 {
     /// Creates an executor for a registered public resource type.
     ///
@@ -197,7 +244,7 @@ where
         registry: ResourceRegistry,
         resource_type: impl Into<String>,
         mapper: M,
-        filter_value_encoder: F,
+        filter_value_codec: C,
     ) -> Result<Self, SeaOrmExecutionError> {
         let resource_type = resource_type.into();
         let definition = registry
@@ -215,12 +262,13 @@ where
             registry,
             resource_type,
             mapper,
-            filter_value_encoder,
+            filter_value_codec,
             entity: PhantomData,
         })
     }
 
-    /// Executes the root query in PostgreSQL and projects its mapped results.
+    /// Executes the root query in the configured database backend and projects
+    /// its mapped results.
     ///
     /// Filters, sort order, offset, and limit are translated to SeaORM
     /// expressions and run by the database. If includes are requested, the
@@ -266,10 +314,7 @@ where
 
         let mut select = E::find();
         if let Some(filter) = &plan.filter {
-            select = select.filter(filter_condition::<E, F>(
-                filter,
-                &self.filter_value_encoder,
-            )?);
+            select = select.filter(filter_condition::<E, C>(filter, &self.filter_value_codec)?);
         }
         for sort in &plan.sort {
             let column = column::<E>(&sort.model_field)?;
@@ -337,27 +382,28 @@ where
         .map_err(|_| SeaOrmExecutionError::UnknownModelField(model_field.to_owned()))
 }
 
-fn filter_condition<E, F>(
+fn filter_condition<E, C>(
     expression: &FilterExpression,
-    encode_value: &F,
+    codec: &C,
 ) -> Result<Condition, SeaOrmExecutionError>
 where
     E: EntityTrait,
     E::Column: ColumnTrait + FromStr,
-    F: Fn(&str, &str) -> Result<Value, String>,
+    C: SeaOrmFilterValueCodec,
 {
     match expression {
         FilterExpression::Equals { model_field, value } => {
             let column = column::<E>(model_field)?;
             Ok(match value {
                 FilterValue::String(value) => {
-                    let value = encode_value(model_field, value).map_err(|message| {
-                        SeaOrmExecutionError::InvalidFilterValue {
-                            model_field: model_field.clone(),
-                            value: value.clone(),
-                            message,
-                        }
-                    })?;
+                    let value =
+                        codec
+                            .encode_filter_value(model_field, value)
+                            .map_err(|message| SeaOrmExecutionError::InvalidFilterValue {
+                                model_field: model_field.clone(),
+                                value: value.clone(),
+                                message,
+                            })?;
                     column.eq(value).into_condition()
                 }
                 FilterValue::Null => column.is_null().into_condition(),
@@ -366,19 +412,19 @@ where
         FilterExpression::And(children) => {
             let mut condition = Condition::all();
             for child in children {
-                condition = condition.add(filter_condition::<E, F>(child, encode_value)?);
+                condition = condition.add(filter_condition::<E, C>(child, codec)?);
             }
             Ok(condition)
         }
         FilterExpression::Or(children) => {
             let mut condition = Condition::any();
             for child in children {
-                condition = condition.add(filter_condition::<E, F>(child, encode_value)?);
+                condition = condition.add(filter_condition::<E, C>(child, codec)?);
             }
             Ok(condition)
         }
         FilterExpression::Not(child) => Ok(Condition::all()
-            .add(filter_condition::<E, F>(child, encode_value)?)
+            .add(filter_condition::<E, C>(child, codec)?)
             .not()),
     }
 }

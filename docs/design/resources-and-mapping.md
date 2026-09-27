@@ -18,7 +18,7 @@ violate JSON:API member-name constraints, in addition to rejecting reserved
 
 SeaORM is the persistence foundation. PostgreSQL is the first validated backend; SQLite is the M7 second backend behind an opt-in Cargo feature, with implementation and parity evidence still partial. Reads should translate supported plans into database-side selection and relationship loading. Writes should map validated requests to explicit, request-scoped changesets or commands that distinguish an omitted property from one explicitly set to `null`.
 
-The mapping must keep public resource definitions independent of persistence details while making the mapping explicit enough to validate and execute supported queries. The current executor resolves internal field strings through a typed entity's SeaORM `Column` parser and requires an application-provided filter-value encoder and model-to-adapter mapper. Relationship loading is supplied through an explicit loader hook rather than inferred from opaque registry strings. It does not require a generic multi-ORM abstraction or promise alternative resource-definition patterns in the initial release.
+The mapping must keep public resource definitions independent of persistence details while making the mapping explicit enough to validate and execute supported queries. The current executor resolves internal field strings through a typed entity's SeaORM `Column` parser and requires an application-provided `SeaOrmFilterValueCodec` and model-to-adapter mapper. Typed Atomic mutation handlers use `SeaOrmMutationValueCodec`; applications implementing both can use the combined `SeaOrmValueCodec` contract. Relationship loading is supplied through an explicit loader hook rather than inferred from opaque registry strings. It does not require a generic multi-ORM abstraction or promise alternative resource-definition patterns in the initial release.
 
 `SeaOrmQueryExecutor::new` is fallible and validates the registered
 identifier column and every filterable or sortable attribute against the
@@ -38,18 +38,22 @@ pagination, identifier serialization, sparse projection, and include loading.
 The PostgreSQL HTTP integration also executes planned collection queries
 through Axum and the SeaORM executor. This validates the prototype approach
 but does not freeze the declaration API. The registry still maps public names
-to opaque strings and does not automatically derive SeaORM relationships,
-identifier codecs, or CRUD behavior. Atomic Operations plans map registered public attribute and
+to opaque strings and does not automatically derive SeaORM relationships or
+CRUD behavior; identifier conversion is an explicit mutation-codec hook.
+Atomic Operations plans map registered public attribute and
 relationship names to internal model-field names in request-scoped changesets.
 Typed SeaORM handlers use these changesets for CRUD and to-one foreign-key
 writes; to-many persistence still requires an application executor. Derive and configuration syntax,
 generalized identifier conversion, relation metadata, hook ordering, and
-transaction details remain open. SQLite fixtures now exercise supported query
-behavior, enforced foreign-key linkage, typed Atomic CRUD/relationship updates,
-and rollback using isolated in-memory databases. PostgreSQL and SQLite now
-consume the same core port/person fixtures and string, typed numeric/boolean,
-and null filter expectations from `tests/support/query_cases.rs`. CI already runs
-`--all-features`, so the opt-in SQLite fixture participates in the existing
-test job. Shared PostgreSQL/SQLite fixtures and exact result comparisons,
-broader identifier/type coverage, and the remaining parity matrix are still
-required; the current SQLite tests are not a complete support claim.
+transaction details remain open. Shared query and mutation codec traits now
+provide typed boundaries for their respective executor paths, while mapping
+rules and concrete conversions remain application-defined. SQLite fixtures
+exercise supported query behavior, enforced foreign-key linkage, typed Atomic
+CRUD/relationship updates, and rollback using isolated in-memory databases.
+PostgreSQL and SQLite consume the same core port/person fixtures and string,
+typed numeric/boolean, and null filter expectations from
+`tests/support/query_cases.rs`. CI already runs `--all-features`, so the opt-in
+SQLite fixture participates in the existing test job. Full response and Atomic
+result comparisons, broader identifier/type coverage, and the remaining
+cross-backend parity matrix are still required; the current SQLite tests are
+not a complete support claim.
