@@ -86,6 +86,45 @@ fn round_trips_null_and_collection_primary_data() {
 }
 
 #[test]
+fn ignores_unrecognized_members_in_documents_and_base_objects() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "unrecognizedResourceMember": true,
+            "relationships": {
+                "owner": {
+                    "data": {
+                        "type": "people",
+                        "id": "2",
+                        "unrecognizedIdentifierMember": true
+                    },
+                    "unrecognizedRelationshipMember": true
+                }
+            }
+        },
+        "jsonapi": {"unrecognizedJsonApiMember": true},
+        "unrecognizedDocumentMember": true
+    }))
+    .unwrap();
+
+    document.validate_response().unwrap();
+    assert_eq!(
+        serde_json::to_value(document).unwrap(),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {
+                    "owner": {"data": {"type": "people", "id": "2"}}
+                }
+            },
+            "jsonapi": {}
+        })
+    );
+}
+
+#[test]
 fn accepts_local_id_resource_objects_but_requires_response_ids() {
     let document = JsonApiDocument {
         data: Some(PrimaryData::One(ResourceObject {
