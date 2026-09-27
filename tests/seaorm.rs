@@ -645,13 +645,12 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             .collect::<Vec<_>>(),
         vec!["11", "12"]
     );
-    assert!(unfielded_result.included.iter().all(|included| {
-        included
-            .resource
-            .attributes
-            .keys()
-            .all(|field| field == "display_name" || field == "private_note")
-    }));
+    for included in &unfielded_result.included {
+        assert_eq!(
+            included.resource.attributes,
+            query_cases::expected_person_attributes(&included.resource.id)
+        );
+    }
 
     let neighbors_query = ReadQuery {
         filters: vec!["equals(name,'Alpha')".to_owned()],
