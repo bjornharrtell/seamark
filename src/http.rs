@@ -17,6 +17,7 @@ use crate::document::{
     ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship, RelationshipData,
     ResourceObject, is_valid_absolute_uri,
 };
+use crate::json::parse_unique_members;
 use crate::query::{
     IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
     plan_resource_read,
@@ -1141,7 +1142,16 @@ fn unsupported_media_type(detail: &str) -> Response {
 
 #[allow(clippy::result_large_err)]
 fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
-    let document = serde_json::from_slice::<JsonApiDocument>(body).map_err(|error| {
+    let value = parse_unique_members(body).map_err(|error| {
+        mutation_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+            "Invalid JSON:API document",
+            Some(format!("The request document could not be parsed: {error}")),
+            Some("/data"),
+        )
+    })?;
+    let document = serde_json::from_value::<JsonApiDocument>(value).map_err(|error| {
         mutation_error(
             StatusCode::BAD_REQUEST,
             "invalid_document",
@@ -1267,7 +1277,7 @@ fn parse_relationship_document(
     cardinality: RelationshipCardinality,
     target_type: &str,
 ) -> Result<RelationshipData, Response> {
-    let document = serde_json::from_slice::<Value>(body).map_err(|error| {
+    let document = parse_unique_members(body).map_err(|error| {
         mutation_error(
             StatusCode::BAD_REQUEST,
             "invalid_document",
