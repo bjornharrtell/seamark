@@ -459,7 +459,8 @@ typed base-document object contexts, and exclude `@` values from Atomic
 resource-data mapping while preserving ordinary member validation. Invalid
 `@` names in resource attribute maps, relationship maps, link maps, and
 metadata maps now return invalid-member-name errors; valid annotations in
-those maps are discarded while ordinary values remain intact. Atomic document,
+those maps are discarded, including nested link-object, `meta`, and
+`describedby` annotations, while ordinary values remain intact. Atomic document,
 operation, resource-data, reference, result, link, and metadata maps reject
 malformed `@` names before ignoring unknown members. Other uncovered contexts
 remain open. HTTP
