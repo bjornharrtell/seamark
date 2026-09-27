@@ -662,4 +662,35 @@ mod tests {
         );
         assert!(!accepts_atomic_media_type(&headers));
     }
+
+    #[tokio::test]
+    async fn rollback_failures_map_to_server_errors_with_operation_pointer() {
+        let request_document = serde_json::json!({
+            "atomic:operations": [
+                {"op": "remove", "ref": {"type": "authors", "id": "1"}},
+                {"op": "remove", "ref": {"type": "authors", "id": "2"}}
+            ]
+        });
+        let response = atomic_execution_error(
+            AtomicExecutionError::Rollback {
+                index: 1,
+                operation: "operation failed".to_owned(),
+                rollback: sea_orm::DbErr::Custom("rollback failed".to_owned()),
+            },
+            &request_document,
+        );
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_CONTENT_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let document: Value = serde_json::from_slice(&bytes).unwrap();
+        let error = &document["errors"][0];
+        assert_eq!(error["code"], "rollback_failed");
+        assert_eq!(error["status"], "500");
+        assert_eq!(error["source"]["pointer"], "/atomic:operations/1");
+        assert!(request_document.pointer("/atomic:operations/1").is_some());
+    }
 }

@@ -287,7 +287,7 @@ invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
 implementations. At this revision, the complete all-features suite passes with
-199 integration tests and 5 unit tests, including 11 isolated SQLite tests
+199 integration tests and 6 unit tests, including 11 isolated SQLite tests
 and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
