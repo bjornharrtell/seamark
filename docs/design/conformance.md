@@ -178,6 +178,7 @@ The linkage identifier regression accepts a typed `id` control, rejects
 an omitted linkage `type` while decoding the submitted document. The existing
 programmatic empty-type case separately verifies document validation rejects
 an empty `type`.
+
 `link_objects_require_href_or_meta` rejects a link object with neither member
 and accepts `href`-only, `meta`-only, and combined `href`/`meta` controls.
 The link validator now applies the JSON:API alternate `meta` form without
@@ -257,3 +258,30 @@ confirm relationship errors roll back a newly created source or a preceding
 scalar update. A custom executor that directly supports the whole operation
 retains first-match precedence. Ordered associations, non-nullable direct FKs,
 and other unconfigured association shapes remain incomplete.
+
+### M5 relationship results and Atomic Accept negotiation
+
+Per the Atomic extension's [result-object rule](https://jsonapi.org/ext/atomic/#result-objects),
+relationship add, update, and remove operations return empty result objects
+unless the server supplies allowed result `meta`; they do not return relationship
+linkage in result `data`. `validates_relationship_results_for_add_update_and_remove_operations`
+accepts that shape and rejects result `data` at each operation index.
+`atomic_http_rejects_relationship_result_data_with_operation_pointer` verifies
+the endpoint maps an invalid server-generated relationship result to HTTP 500, returns a
+JSON:API error whose status matches the response, and points to the associated
+`/atomic:operations/0` request operation. The request-shape planner controls
+remain in `plans_ordered_resource_and_relationship_operations_with_local_ids`
+and `rejects_malformed_operation_shapes_and_unknown_registry_fields`; this is
+selected operation coverage, not the complete normative matrix.
+
+`atomic_http_negotiates_qvalues_wildcards_and_extension_parameters` covers
+the required Atomic extension on concrete and wildcard Accept ranges,
+extension/range specificity and q=0 precedence, repeated ranges, valid
+three-digit qvalues, and rejection of malformed qvalues, absent/duplicate
+extensions, unsupported extension lists, and duplicate profiles before the
+guard or operation handler. Its qvalue grammar follows
+[RFC 9110 quality values](https://www.rfc-editor.org/rfc/rfc9110.html#name-quality-values).
+`atomic_http_enforces_content_type_parameter_rules` also verifies duplicate
+extension/profile parameters are rejected and valid unknown profile URIs are
+ignored. Broader media negotiation, processing-error mappings, and Atomic
+request/result cases remain partial.

@@ -170,3 +170,15 @@ route mappings, resource-level authorization, and persistence for association
 shapes outside the configured join-table and nullable direct-FK helpers. It
 does not implement every normative operation/result/error case. Exact
 changeset and hook APIs remain provisional.
+
+Atomic relationship operation results are validated separately from base HTTP
+relationship linkage responses. Add, update, and remove relationship operations
+must not return result `data`; an empty result object is valid, and result
+`meta` remains permitted. The planner/response validator and HTTP route tests
+cover these shapes and ensure an invalid server-generated result maps to HTTP 500 with a pointer
+to its request operation. Atomic `Accept` negotiation requires the quoted
+Atomic extension, validates HTTP qvalue syntax, accounts for media-range
+specificity and q=0, and rejects duplicate or unsupported extension parameters.
+These focused protocol controls do not complete M5/M6 conformance or replace
+application-defined authorization, route resolution, codecs, limits, or
+association executors.
