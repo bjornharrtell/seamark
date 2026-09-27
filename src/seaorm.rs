@@ -14,7 +14,7 @@ use serde_json::Value as JsonValue;
 
 use crate::http::AdapterResource;
 use crate::query::{
-    FilterExpression, FilterValue, IncludeNode, PlannedField, ReadPlan, SortDirection,
+    FilterExpression, FilterValue, IncludeNode, Page, PlannedField, ReadPlan, SortDirection,
 };
 use crate::registry::{ResourceDefinition, ResourceRegistry};
 
@@ -99,7 +99,8 @@ where
 
 /// Authorizes a planned read and applies application-specific execution limits.
 ///
-/// Both checks run before the executor constructs or sends a database query.
+/// The executor validates the plan and applies these configured limits before
+/// authorization or constructing a database query.
 #[async_trait]
 pub trait SeaOrmReadGuard: Send + Sync {
     /// Returns whether the caller may execute this plan.
@@ -163,6 +164,8 @@ pub enum SeaOrmExecutionError {
         /// The public relationship name supplied by the plan.
         public_name: String,
     },
+    /// The page values in a manually constructed read plan are inconsistent.
+    InvalidPagePlan(&'static str),
     /// An internal field name could not be resolved to an entity column.
     UnknownModelField(String),
     /// An include plan requires an application-specific loader.
@@ -227,6 +230,7 @@ impl fmt::Display for SeaOrmExecutionError {
                 formatter,
                 "include relationship `{public_name}` is not registered on resource `{resource_type}`"
             ),
+            Self::InvalidPagePlan(detail) => write!(formatter, "invalid pagination plan: {detail}"),
             Self::UnknownModelField(field) => {
                 write!(formatter, "model field `{field}` is not a SeaORM column")
             }
@@ -358,16 +362,17 @@ where
                 actual: plan.resource_type.clone(),
             });
         }
+        validate_page_plan(plan.page)?;
         validate_fieldset_mappings(&self.registry, plan)?;
         validate_include_mappings(&self.registry, &plan.resource_type, &plan.includes)?;
         validate_filter_mappings(definition, plan)?;
         validate_sort_mappings(definition, plan)?;
-        if !guard.authorize(plan).await {
-            return Err(SeaOrmExecutionError::NotAuthorized);
-        }
         guard
             .validate_limits(plan)
             .map_err(SeaOrmExecutionError::LimitExceeded)?;
+        if !guard.authorize(plan).await {
+            return Err(SeaOrmExecutionError::NotAuthorized);
+        }
         if !plan.includes.is_empty() && include_loader.is_none() {
             return Err(SeaOrmExecutionError::IncludeLoaderRequired);
         }
@@ -432,6 +437,41 @@ where
             included,
         })
     }
+}
+
+fn validate_page_plan(page: Page) -> Result<(), SeaOrmExecutionError> {
+    if page.number == 0 {
+        return Err(SeaOrmExecutionError::InvalidPagePlan(
+            "page number must be positive",
+        ));
+    }
+    if page.size == 0 {
+        return Err(SeaOrmExecutionError::InvalidPagePlan(
+            "page size must be positive",
+        ));
+    }
+    if page.limit == 0 {
+        return Err(SeaOrmExecutionError::InvalidPagePlan(
+            "page limit must be positive",
+        ));
+    }
+    if page.limit != page.size {
+        return Err(SeaOrmExecutionError::InvalidPagePlan(
+            "page limit must match page size",
+        ));
+    }
+    let expected_offset =
+        (page.number - 1)
+            .checked_mul(page.size)
+            .ok_or(SeaOrmExecutionError::InvalidPagePlan(
+                "page offset overflows",
+            ))?;
+    if page.offset != expected_offset {
+        return Err(SeaOrmExecutionError::InvalidPagePlan(
+            "page offset does not match page number and size",
+        ));
+    }
+    Ok(())
 }
 
 fn column<E>(model_field: &str) -> Result<E::Column, SeaOrmExecutionError>

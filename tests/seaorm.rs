@@ -31,7 +31,7 @@ use seamark::http::{
     QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
 use seamark::query::{
-    FilterExpression, FilterValue, IncludeNode, PaginationConfig, PlannedField, ReadPlan,
+    FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField, ReadPlan,
     ReadQuery, SortDirection, SortField, plan_read,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
@@ -264,6 +264,33 @@ impl SeaOrmReadGuard for CountingGuard {
 
     fn validate_limits(&self, _plan: &ReadPlan) -> Result<(), String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct BoundedGuard {
+    authorization_calls: Arc<AtomicUsize>,
+    limit_calls: Arc<AtomicUsize>,
+    authorized: bool,
+    maximum_page_size: u64,
+    maximum_offset: u64,
+}
+
+#[async_trait]
+impl SeaOrmReadGuard for BoundedGuard {
+    async fn authorize(&self, _plan: &ReadPlan) -> bool {
+        self.authorization_calls.fetch_add(1, Ordering::SeqCst);
+        self.authorized
+    }
+
+    fn validate_limits(&self, plan: &ReadPlan) -> Result<(), String> {
+        self.limit_calls.fetch_add(1, Ordering::SeqCst);
+        if plan.page.size > self.maximum_page_size {
+            return Err("page size limit exceeded".to_owned());
+        }
+        if plan.page.offset > self.maximum_offset {
+            return Err("offset limit exceeded".to_owned());
+        }
         Ok(())
     }
 }
@@ -844,6 +871,19 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         vec![query_cases::SECOND_PAGE_PORT_ID]
     );
 
+    let mut maximum_boundary_plan = plan(&ReadQuery::default());
+    maximum_boundary_plan.page = Page {
+        number: 11,
+        size: 10,
+        offset: 100,
+        limit: 10,
+    };
+    let maximum_boundary_result = executor
+        .collection(&database, &maximum_boundary_plan, &guard, None)
+        .await
+        .unwrap();
+    assert!(maximum_boundary_result.resources.is_empty());
+
     for page_number in ["1", "2"] {
         let result = executor
             .collection(
@@ -1264,10 +1304,125 @@ async fn authorization_limits_and_validation_failures_precede_queries() {
         PortFilterCodec,
     )
     .unwrap();
+    let invalid_pages = [
+        (
+            Page {
+                number: 0,
+                size: 1,
+                offset: 0,
+                limit: 1,
+            },
+            "page number must be positive",
+        ),
+        (
+            Page {
+                number: 1,
+                size: 0,
+                offset: 0,
+                limit: 0,
+            },
+            "page size must be positive",
+        ),
+        (
+            Page {
+                number: 1,
+                size: 1,
+                offset: 0,
+                limit: 0,
+            },
+            "page limit must be positive",
+        ),
+        (
+            Page {
+                number: 1,
+                size: 1,
+                offset: 0,
+                limit: 2,
+            },
+            "page limit must match page size",
+        ),
+        (
+            Page {
+                number: u64::MAX,
+                size: 2,
+                offset: 0,
+                limit: 2,
+            },
+            "page offset overflows",
+        ),
+        (
+            Page {
+                number: 2,
+                size: 5,
+                offset: 4,
+                limit: 5,
+            },
+            "page offset does not match page number and size",
+        ),
+    ];
+    let page_validation_calls = Arc::new(AtomicUsize::new(0));
+    let page_guard = CountingGuard {
+        calls: page_validation_calls.clone(),
+    };
+    for (page, expected_detail) in invalid_pages {
+        let mut invalid_plan = plan(&ReadQuery::default());
+        invalid_plan.page = page;
+        assert!(matches!(
+            executor
+                .collection(&database, &invalid_plan, &page_guard, None)
+                .await,
+            Err(SeaOrmExecutionError::InvalidPagePlan(detail))
+                if detail == expected_detail
+        ));
+    }
+    assert_eq!(page_validation_calls.load(Ordering::SeqCst), 0);
+
+    for (page, expected_detail) in [
+        (
+            Page {
+                number: 1,
+                size: 11,
+                offset: 0,
+                limit: 11,
+            },
+            "page size limit exceeded",
+        ),
+        (
+            Page {
+                number: 102,
+                size: 1,
+                offset: 101,
+                limit: 1,
+            },
+            "offset limit exceeded",
+        ),
+    ] {
+        let authorization_calls = Arc::new(AtomicUsize::new(0));
+        let limit_calls = Arc::new(AtomicUsize::new(0));
+        let bounded_guard = BoundedGuard {
+            authorization_calls: authorization_calls.clone(),
+            limit_calls: limit_calls.clone(),
+            authorized: false,
+            maximum_page_size: 10,
+            maximum_offset: 100,
+        };
+        let mut over_limit_plan = plan(&ReadQuery::default());
+        over_limit_plan.page = page;
+        assert!(matches!(
+            executor
+                .collection(&database, &over_limit_plan, &bounded_guard, None)
+                .await,
+            Err(SeaOrmExecutionError::LimitExceeded(message))
+                if message == expected_detail
+        ));
+        assert_eq!(authorization_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(limit_calls.load(Ordering::SeqCst), 1);
+    }
+
     let guard = AllowGuard {
         authorized: false,
-        maximum_page_size: 1,
-        maximum_offset: 1,
+        maximum_page_size: 10,
+        maximum_offset: 100,
     };
 
     let mut denied_plan = plan(&ReadQuery::default());

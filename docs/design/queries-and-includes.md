@@ -16,6 +16,13 @@ Filters apply only to public resource attributes explicitly registered as filter
 
 Pagination is a server contract using one-based page number and positive page size, translated to offset and limit. `PaginationConfig` requires the application to supply page defaults and any maximum page-size/offset policy; the library invents no defaults or caps. Requested values, multiplication overflow, and configured boundaries are validated before execution.
 
+Because `ReadPlan` and `Page` are publicly constructible, the SeaORM executor
+also checks that manually supplied page numbers, sizes, limits, and offsets
+form a consistent page before invoking the read guard. It then applies the
+guard's explicitly configured limits before authorization and SQL. Negative
+values cannot be represented by `Page`'s unsigned fields. This executor check
+adds no default page values or maximums.
+
 `ReadQuery` is the decoded input boundary for filters, sort, pagination,
 fieldsets, includes, and unsupported parameter names. `plan_read` produces an
 adapter-independent `ReadPlan` with ordered sort terms, per-resource sparse
@@ -28,8 +35,8 @@ Includes are part of JSON:API. The planner validates nested relationship paths
 and merges duplicates. The SeaORM executor accepts an explicit include-loader
 hook because relation traversal and authorization rules depend on application
 entities; it passes the include tree and fieldsets to that hook and projects
-the returned resources to declared fields. The required read guard authorizes
-the plan and applies application-specific page/include limits before database
+the returned resources to declared fields. The required read guard applies
+application-specific page/include limits before authorization and database
 work. Applications remain responsible for authorizing included records in
 their loader.
 
