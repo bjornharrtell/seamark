@@ -1491,6 +1491,51 @@ async fn atomic_http_rejects_resource_data_with_both_id_and_lid_before_authoriza
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_resource_add_without_string_type_before_authorization() {
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        DatabaseConnection::default(),
+        guard.clone(),
+        handler.clone(),
+    );
+
+    for body in [
+        r#"{"atomic:operations":[{"op":"add","data":{"attributes":{"name":"Ada"}}}]}"#,
+        r#"{"atomic:operations":[{"op":"add","data":{"type":1,"attributes":{"name":"Ada"}}}]}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        let error = error_document(response, body).await;
+        assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+        assert_eq!(
+            error["errors"][0]["source"]["pointer"],
+            "/atomic:operations/0"
+        );
+        assert!(error.get("atomic:results").is_none());
+    }
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn atomic_http_rejects_resource_remove_without_target_before_authorization_or_handler() {
     let database = database().await;
     let guard = Arc::new(CountingGuard {
