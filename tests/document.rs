@@ -685,11 +685,54 @@ fn validates_jsonapi_member_name_rules_for_types_and_fields() {
             "type": "shore craft",
             "id": "1",
             "attributes": {"well-known": "value", "naïve": true},
-            "relationships": {"@related": {"data": null}}
+            "relationships": {"related": {"data": null}}
         }
     }))
     .unwrap();
     valid.validate().unwrap();
+}
+
+#[test]
+fn ignores_at_members_when_interpreting_resource_relationships() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "attributes": {"@owner": "annotation"},
+            "relationships": {"@owner": true}
+        }
+    }))
+    .unwrap();
+    document.validate().unwrap();
+    let Some(PrimaryData::One(parsed_resource)) = document.data else {
+        panic!("expected a resource object");
+    };
+    assert!(parsed_resource.relationships.is_none());
+
+    let mut resource = resource("ports", "1");
+    resource.attributes = Some(serde_json::Map::from_iter([(
+        "@owner".to_owned(),
+        json!("annotation"),
+    )]));
+    resource.relationships = Some(BTreeMap::from([(
+        "@owner".to_owned(),
+        Relationship::default(),
+    )]));
+    JsonApiDocument {
+        data: Some(PrimaryData::One(resource)),
+        ..JsonApiDocument::default()
+    }
+    .validate()
+    .unwrap();
+
+    let invalid_relationship: Result<JsonApiDocument, _> = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {"owner": true}
+        }
+    }));
+    assert!(invalid_relationship.is_err());
 }
 
 #[test]

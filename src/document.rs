@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use language_tags::LanguageTag;
 use serde::de::value::MapAccessDeserializer;
-use serde::de::{MapAccess, Visitor};
+use serde::de::{Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use uriparse::URIReference;
@@ -333,7 +333,7 @@ struct ResourceObjectRepr {
     lid: Option<String>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     attributes: Option<Map<String, Value>>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_relationships")]
     relationships: Option<BTreeMap<String, Relationship>>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     links: Option<Map<String, Value>>,
@@ -366,6 +366,9 @@ impl ResourceObject {
         if let Some(attributes) = &self.attributes {
             for name in attributes.keys() {
                 validate_member_name(name)?;
+                if is_at_member(name) {
+                    continue;
+                }
                 if name == "type"
                     || name == "id"
                     || self
@@ -379,13 +382,14 @@ impl ResourceObject {
         }
         validate_links(self.links.as_ref())?;
         if let Some(relationships) = &self.relationships {
-            for name in relationships.keys() {
+            for (name, relationship) in relationships {
+                if is_at_member(name) {
+                    continue;
+                }
                 validate_member_name(name)?;
                 if name == "type" || name == "id" {
                     return Err(DocumentValidationError::ConflictingFieldName);
                 }
-            }
-            for relationship in relationships.values() {
                 relationship.validate()?;
             }
         }
@@ -894,7 +898,10 @@ fn validate_response_relationship_identifiers(
     resource: &ResourceObject,
 ) -> Result<(), DocumentValidationError> {
     if let Some(relationships) = &resource.relationships {
-        for relationship in relationships.values() {
+        for (name, relationship) in relationships {
+            if is_at_member(name) {
+                continue;
+            }
             let identifiers = match relationship.data.as_ref() {
                 Some(RelationshipData::One(identifier)) => std::slice::from_ref(identifier),
                 Some(RelationshipData::Many(identifiers)) => identifiers,
@@ -970,7 +977,10 @@ fn validate_included_reachability(
             reachable_included.insert(identity);
         }
         if let Some(relationships) = &resource.relationships {
-            for relationship in relationships.values() {
+            for (name, relationship) in relationships {
+                if is_at_member(name) {
+                    continue;
+                }
                 let identifiers = match relationship.data.as_ref() {
                     Some(RelationshipData::One(identifier)) => std::slice::from_ref(identifier),
                     Some(RelationshipData::Many(identifiers)) => identifiers,
@@ -1009,7 +1019,10 @@ fn validate_relationship_local_ids(
         let Some(relationships) = &resource.relationships else {
             continue;
         };
-        for relationship in relationships.values() {
+        for (name, relationship) in relationships {
+            if is_at_member(name) {
+                continue;
+            }
             let identifiers = match relationship.data.as_ref() {
                 Some(RelationshipData::One(identifier)) => std::slice::from_ref(identifier),
                 Some(RelationshipData::Many(identifiers)) => identifiers,
@@ -1060,6 +1073,10 @@ pub(crate) fn is_valid_member_name(name: &str) -> bool {
         return false;
     }
     true
+}
+
+fn is_at_member(name: &str) -> bool {
+    name.starts_with('@')
 }
 
 pub(crate) fn validate_links(
@@ -1201,4 +1218,27 @@ where
     D: Deserializer<'de>,
 {
     RelationshipData::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_relationships<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, Relationship>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Map::<String, Value>::deserialize(deserializer)?;
+    let had_members = !values.is_empty();
+    let mut relationships = BTreeMap::new();
+    for (name, value) in values {
+        if is_at_member(&name) {
+            continue;
+        }
+        let relationship = serde_json::from_value(value).map_err(D::Error::custom)?;
+        relationships.insert(name, relationship);
+    }
+    if had_members && relationships.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(relationships))
+    }
 }
