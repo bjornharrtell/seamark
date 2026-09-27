@@ -320,6 +320,12 @@ fn validates_request_response_shapes_and_result_cardinality() {
             "an operations request must not contain `errors`"
         ))
     );
+    assert_eq!(
+        document(json!({"atomic:results": [], "errors": [{"title": "bad"}]})).validate_response(0),
+        Err(AtomicOperationsError::InvalidDocument(
+            "an operations response must not contain `errors`"
+        ))
+    );
     for value in [
         json!({"data": null, "atomic:operations": []}),
         json!({"included": [], "atomic:operations": []}),
