@@ -803,6 +803,62 @@ fn resource_objects_and_identifiers_must_not_contain_both_id_and_lid() {
 }
 
 #[test]
+fn relationship_identifiers_require_type_and_exactly_one_identity() {
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": "2"}}
+            }
+        }
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+
+    let missing_type: Result<JsonApiDocument, _> = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"id": "2"}}
+            }
+        }
+    }));
+    assert!(missing_type.is_err());
+
+    let missing_identity: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people"}}
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        missing_identity.validate(),
+        Err(DocumentValidationError::MissingIdentifier)
+    );
+
+    let duplicate_identity: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": "2", "lid": "local"}}
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        duplicate_identity.validate(),
+        Err(DocumentValidationError::BothIdentifiers)
+    );
+}
+
+#[test]
 fn resource_fields_must_not_conflict_with_type_id_or_each_other() {
     let separate_names: JsonApiDocument = serde_json::from_value(json!({
         "data": {
