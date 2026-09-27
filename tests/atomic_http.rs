@@ -744,14 +744,14 @@ async fn negotiates_and_executes_atomic_http_requests() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     error_document(response, valid_body).await;
 
+    let limited_handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
     let limited = atomic_http::router(
         registry(),
         database.clone(),
         Arc::new(LimitedGuard),
-        Arc::new(TestHandler {
-            fail: true,
-            require_resolved_targets: false,
-        }),
+        limited_handler.clone(),
     );
     let response = limited
         .oneshot(request(
@@ -766,7 +766,17 @@ async fn negotiates_and_executes_atomic_http_requests() {
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     let error = error_document(response, valid_body).await;
-    assert_eq!(error["errors"][0]["status"], "413");
+    assert_eq!(
+        error["errors"][0],
+        json!({
+            "status": "413",
+            "code": "resource_limit",
+            "title": "Atomic Operations request exceeds limits",
+            "detail": "operation limit exceeded"
+        })
+    );
+    assert!(error.get("atomic:results").is_none());
+    assert_eq!(limited_handler.calls.load(Ordering::SeqCst), 0);
 
     let failing = atomic_http::router(
         registry(),
