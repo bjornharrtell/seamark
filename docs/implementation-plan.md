@@ -77,19 +77,22 @@ decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
 fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
-fieldsets. The registry rejects resource type and public field names that do
+fieldsets. A PostgreSQL route regression verifies invalid queries are rejected
+before adapter execution, maps SeaORM authorization and resource-limit failures
+to HTTP 403 and 413, and proves both guarded outcomes occur before SQL against
+an intentionally absent table. The registry rejects resource type and public field names that do
 not meet JSON:API member-name rules. The fallible
 `SeaOrmQueryExecutor::new` validates the registered identifier and all
 filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 109 integration
+implementations. The complete all-features suite passes with 110 integration
 tests and 5 unit tests, including 6 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
-checks pass. M4 remains in
-progress pending broader database type/relation cases, expanded
-authorization/resource-limit, and unsupported-request coverage.
+checks pass. M4 remains in progress pending broader database type/relation
+cases, expanded authorization/resource-limit, and unsupported-request
+coverage.
 
 M5 now adds an Atomic Operations document/planner with operation and local-ID
 validation, public-to-internal resource changesets, and relationship field

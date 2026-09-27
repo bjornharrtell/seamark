@@ -47,6 +47,17 @@ pub struct AdapterResource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdapterError;
 
+/// A query adapter failure with an HTTP-relevant category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryAdapterError {
+    /// The query could not be completed because of an internal failure.
+    ReadFailed,
+    /// The caller was denied access to the planned query.
+    NotAuthorized,
+    /// The planned query exceeded an application-configured execution limit.
+    LimitExceeded,
+}
+
 /// A resource from the `included` member of a planned collection read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdapterIncludedResource {
@@ -83,6 +94,11 @@ pub trait ResourceAdapter: Send + Sync + 'static {
 }
 
 /// Executes validated collection plans produced by [`router_with_query`].
+///
+/// Authorization and execution-limit failures should use their corresponding
+/// [`QueryAdapterError`] variants so the router can return client-appropriate
+/// JSON:API error responses. Other failures are treated as internal read
+/// errors.
 #[async_trait]
 pub trait QueryResourceAdapter: Send + Sync + 'static {
     /// Executes the plan for one registered resource.
@@ -90,7 +106,7 @@ pub trait QueryResourceAdapter: Send + Sync + 'static {
         &self,
         resource: &ResourceDefinition,
         plan: &ReadPlan,
-    ) -> Result<QueryCollectionResult, AdapterError>;
+    ) -> Result<QueryCollectionResult, QueryAdapterError>;
 }
 
 /// Authorizes access before a persistence adapter is called.
@@ -235,7 +251,7 @@ async fn get_collection(
         if let (Some(query_adapter), Some(plan)) = (state.query_adapter.as_ref(), plan.as_ref()) {
             match query_adapter.collection(definition, plan).await {
                 Ok(result) => (result.resources, result.included),
-                Err(_) => return adapter_error(),
+                Err(error) => return query_adapter_error(error),
             }
         } else {
             match state.adapter.collection(definition).await {
@@ -758,6 +774,20 @@ fn adapter_error() -> Response {
         Some("The resource could not be loaded.".to_owned()),
         None,
     )
+}
+
+fn query_adapter_error(error: QueryAdapterError) -> Response {
+    match error {
+        QueryAdapterError::ReadFailed => adapter_error(),
+        QueryAdapterError::NotAuthorized => forbidden_error(),
+        QueryAdapterError::LimitExceeded => protocol_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "resource_limit",
+            "Query exceeds configured limits",
+            Some("The requested query exceeds the server's configured limits.".to_owned()),
+            None,
+        ),
+    }
 }
 
 fn protocol_error(

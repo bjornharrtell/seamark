@@ -8,9 +8,11 @@ mod string_identifier_cases;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
+use axum::http::header::{CONTENT_TYPE, VARY};
 use axum::http::{Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
@@ -19,8 +21,8 @@ use sea_orm::{
 };
 use seamark::document::{Relationship, RelationshipData, ResourceIdentifier};
 use seamark::http::{
-    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryCollectionResult,
-    QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
+    QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
 use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
@@ -62,6 +64,23 @@ mod person {
         pub person_id: i32,
         pub display_name: String,
         pub private_note: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+mod unbacked_port {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "seamark_m4_unbacked_ports")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub port_key: i32,
+        pub title: String,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -256,18 +275,78 @@ struct PortHttpQueryAdapter {
     guard: AllowGuard,
 }
 
+struct UnbackedQueryGuard {
+    authorized: bool,
+    maximum_page_size: u64,
+}
+
+#[async_trait]
+impl SeaOrmReadGuard for UnbackedQueryGuard {
+    async fn authorize(&self, _plan: &ReadPlan) -> bool {
+        self.authorized
+    }
+
+    fn validate_limits(&self, plan: &ReadPlan) -> Result<(), String> {
+        if plan.page.size > self.maximum_page_size {
+            return Err("page size limit exceeded".to_owned());
+        }
+        Ok(())
+    }
+}
+
+type UnbackedQueryExecutor = SeaOrmQueryExecutor<
+    unbacked_port::Entity,
+    fn(&unbacked_port::Model) -> AdapterResource,
+    PortFilterCodec,
+>;
+
+struct UnbackedPortHttpQueryAdapter {
+    database: DatabaseConnection,
+    executor: UnbackedQueryExecutor,
+    guard: UnbackedQueryGuard,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl QueryResourceAdapter for UnbackedPortHttpQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let result = self
+            .executor
+            .collection(&self.database, plan, &self.guard, None)
+            .await
+            .map_err(|error| match error {
+                SeaOrmExecutionError::NotAuthorized => QueryAdapterError::NotAuthorized,
+                SeaOrmExecutionError::LimitExceeded(_) => QueryAdapterError::LimitExceeded,
+                _ => QueryAdapterError::ReadFailed,
+            })?;
+        Ok(QueryCollectionResult {
+            resources: result.resources,
+            included: Vec::new(),
+        })
+    }
+}
+
 #[async_trait]
 impl QueryResourceAdapter for PortHttpQueryAdapter {
     async fn collection(
         &self,
         _resource: &ResourceDefinition,
         plan: &ReadPlan,
-    ) -> Result<QueryCollectionResult, AdapterError> {
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
         let result = self
             .executor
             .collection(&self.database, plan, &self.guard, Some(&PortOwnerLoader))
             .await
-            .map_err(|_| AdapterError)?;
+            .map_err(|error| match error {
+                SeaOrmExecutionError::NotAuthorized => QueryAdapterError::NotAuthorized,
+                SeaOrmExecutionError::LimitExceeded(_) => QueryAdapterError::LimitExceeded,
+                _ => QueryAdapterError::ReadFailed,
+            })?;
         Ok(QueryCollectionResult {
             resources: result.resources,
             included: result
@@ -321,6 +400,54 @@ async fn database() -> DatabaseConnection {
     let url = std::env::var("SEAMARK_TEST_DATABASE_URL")
         .expect("set SEAMARK_TEST_DATABASE_URL to a dedicated PostgreSQL test database");
     Database::connect(url).await.unwrap()
+}
+
+fn assert_query_jsonapi_headers(response: &axum::response::Response) {
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        "application/vnd.api+json"
+    );
+    assert_eq!(response.headers().get(VARY).unwrap(), "Accept");
+}
+
+fn unbacked_port_resource(model: &unbacked_port::Model) -> AdapterResource {
+    AdapterResource {
+        id: model.port_key.to_string(),
+        attributes: BTreeMap::from([("title".to_owned(), json!(model.title))]),
+        ..AdapterResource::default()
+    }
+}
+
+fn unbacked_query_app(
+    database: DatabaseConnection,
+    read_guard: UnbackedQueryGuard,
+    calls: Arc<AtomicUsize>,
+) -> axum::Router {
+    let registry = Arc::new(
+        ResourceRegistry::new([
+            ResourceDefinition::new("ports", "port_key").attribute("name", "title", true, true)
+        ])
+        .unwrap(),
+    );
+    let executor = SeaOrmQueryExecutor::<unbacked_port::Entity, _, _>::new(
+        (*registry).clone(),
+        "ports",
+        unbacked_port_resource as fn(&unbacked_port::Model) -> AdapterResource,
+        PortFilterCodec,
+    )
+    .unwrap();
+    http::router_with_query(
+        registry,
+        Arc::new(EmptyAdapter),
+        Arc::new(AllowHttpRequest),
+        Arc::new(UnbackedPortHttpQueryAdapter {
+            database,
+            executor,
+            guard: read_guard,
+            calls,
+        }),
+        pagination(),
+    )
 }
 
 async fn create_tables(database: &DatabaseConnection) {
@@ -545,6 +672,102 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         .execute_unprepared("DROP TABLE seamark_m4_ports; DROP TABLE seamark_m4_people;")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql() {
+    let database = database().await;
+
+    let invalid_calls = Arc::new(AtomicUsize::new(0));
+    let invalid_app = unbacked_query_app(
+        database.clone(),
+        UnbackedQueryGuard {
+            authorized: true,
+            maximum_page_size: 10,
+        },
+        invalid_calls.clone(),
+    );
+    let invalid_response = invalid_app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?filter=equals%28unknown%2C%27x%27%29")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    assert_query_jsonapi_headers(&invalid_response);
+    let invalid_body: serde_json::Value = serde_json::from_slice(
+        &to_bytes(invalid_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(invalid_body["errors"][0]["code"], "invalid_query");
+    assert_eq!(invalid_calls.load(Ordering::SeqCst), 0);
+
+    let denied_calls = Arc::new(AtomicUsize::new(0));
+    let denied_app = unbacked_query_app(
+        database.clone(),
+        UnbackedQueryGuard {
+            authorized: false,
+            maximum_page_size: 10,
+        },
+        denied_calls.clone(),
+    );
+    let denied_response = denied_app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?sort=name")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_response.status(), StatusCode::FORBIDDEN);
+    assert_query_jsonapi_headers(&denied_response);
+    let denied_body: serde_json::Value = serde_json::from_slice(
+        &to_bytes(denied_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(denied_body["errors"][0]["status"], "403");
+    assert_eq!(denied_body["errors"][0]["code"], "forbidden");
+    assert_eq!(denied_calls.load(Ordering::SeqCst), 1);
+
+    let limited_calls = Arc::new(AtomicUsize::new(0));
+    let limited_app = unbacked_query_app(
+        database.clone(),
+        UnbackedQueryGuard {
+            authorized: true,
+            maximum_page_size: 1,
+        },
+        limited_calls.clone(),
+    );
+    let limited_response = limited_app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?page%5Bsize%5D=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(limited_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_query_jsonapi_headers(&limited_response);
+    let limited_body: serde_json::Value = serde_json::from_slice(
+        &to_bytes(limited_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(limited_body["errors"][0]["status"], "413");
+    assert_eq!(limited_body["errors"][0]["code"], "resource_limit");
+    assert_eq!(limited_calls.load(Ordering::SeqCst), 1);
+
+    database.close().await.unwrap();
 }
 
 #[tokio::test]
