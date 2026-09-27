@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod atomic;
+pub mod atomic_http;
 pub mod document;
 pub mod http;
 pub mod query;

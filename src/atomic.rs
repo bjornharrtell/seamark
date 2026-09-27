@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use async_trait::async_trait;
-use axum::http::Uri;
+use axum::http::{HeaderMap, Uri};
 use sea_orm::{DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -23,14 +23,16 @@ pub struct AtomicOperationsDocument {
     #[serde(
         rename = "atomic:operations",
         default,
-        deserialize_with = "deserialize_non_null"
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
     )]
     pub operations: Option<Vec<AtomicOperation>>,
     /// Results in positional correspondence with a successful request.
     #[serde(
         rename = "atomic:results",
         default,
-        deserialize_with = "deserialize_non_null"
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
     )]
     pub results: Option<Vec<AtomicResult>>,
     /// Errors for a failed request or response.
@@ -278,11 +280,15 @@ pub enum PlannedOperation {
         href: Option<String>,
         /// Validated resource data.
         data: AtomicResourceData,
+        /// Request-scoped changeset with public fields resolved to model fields.
+        changeset: AtomicResourceChangeset,
     },
     /// Add members to a to-many relationship.
     AddRelationshipMembers {
         /// The target relationship.
         reference: AtomicResourceReference,
+        /// The mapped internal relationship field.
+        model_field: String,
         /// New relationship linkage members.
         data: Vec<ResourceIdentifier>,
     },
@@ -292,11 +298,15 @@ pub enum PlannedOperation {
         target: AtomicTarget,
         /// Validated update data.
         data: AtomicResourceData,
+        /// Request-scoped changeset with public fields resolved to model fields.
+        changeset: AtomicResourceChangeset,
     },
     /// Replace a relationship's linkage.
     UpdateRelationship {
         /// The target relationship.
         reference: AtomicResourceReference,
+        /// The mapped internal relationship field.
+        model_field: String,
         /// Replacement linkage, including explicit `null`.
         data: RelationshipData,
     },
@@ -309,9 +319,40 @@ pub enum PlannedOperation {
     RemoveRelationshipMembers {
         /// The target relationship.
         reference: AtomicResourceReference,
+        /// The mapped internal relationship field.
+        model_field: String,
         /// Linkage members to remove.
         data: Vec<ResourceIdentifier>,
     },
+}
+
+/// An explicitly mapped resource mutation changeset.
+///
+/// `None` means that the corresponding property was omitted. An attribute
+/// explicitly set to JSON `null` remains present with a null value. Relationship
+/// keys use internal model fields, and their `data` preserves omitted linkage
+/// separately from explicit null or empty linkage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtomicResourceChangeset {
+    /// The public JSON:API type.
+    pub type_name: String,
+    /// The configured internal identifier field.
+    pub identifier_field: String,
+    /// The persistent or request-local resource identity, when supplied.
+    pub id: Option<String>,
+    /// The request-local resource identity, when supplied.
+    pub lid: Option<String>,
+    /// Attributes keyed by their mapped model fields.
+    pub attributes: Option<BTreeMap<String, Value>>,
+    /// Relationships keyed by their mapped model fields.
+    pub relationships: Option<BTreeMap<String, MappedRelationshipChange>>,
+}
+
+/// A mapped relationship included in a resource changeset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MappedRelationshipChange {
+    /// Linkage to persist, or `None` when the relationship object omitted `data`.
+    pub data: Option<RelationshipData>,
 }
 
 /// The target of a resource-level operation.
@@ -424,6 +465,7 @@ pub fn plan_atomic_operations(
                     let target = registry
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
+                    let model_field = target.model_field().to_owned();
                     validate_linkage(
                         registry,
                         target.target_type(),
@@ -434,6 +476,7 @@ pub fn plan_atomic_operations(
                     )?;
                     PlannedOperation::AddRelationshipMembers {
                         reference: reference.clone(),
+                        model_field,
                         data: identifiers,
                     }
                 } else {
@@ -446,10 +489,12 @@ pub fn plan_atomic_operations(
                     if let Some(lid) = &data.lid {
                         insert_local_id(&mut local_ids, &data.type_name, lid, index, &path)?;
                     }
-                    validate_resource_data(registry, &data, &local_ids, index, &path)?;
+                    let changeset =
+                        validate_resource_data(registry, &data, &local_ids, index, &path)?;
                     PlannedOperation::AddResource {
                         href: operation.href.clone(),
                         data,
+                        changeset,
                     }
                 }
             }
@@ -464,6 +509,7 @@ pub fn plan_atomic_operations(
                     let target = registry
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
+                    let model_field = target.model_field().to_owned();
                     validate_relationship_data(
                         registry,
                         target.target_type(),
@@ -474,11 +520,13 @@ pub fn plan_atomic_operations(
                     )?;
                     PlannedOperation::UpdateRelationship {
                         reference: reference.clone(),
+                        model_field,
                         data,
                     }
                 } else {
                     let data = parse_resource_data(operation, index, &path)?;
-                    validate_resource_data(registry, &data, &local_ids, index, &path)?;
+                    let changeset =
+                        validate_resource_data(registry, &data, &local_ids, index, &path)?;
                     let target = resource_target(operation, &data, index, &path)?;
                     if let AtomicTarget::Reference(reference) = &target {
                         if reference.type_name != data.type_name {
@@ -496,7 +544,11 @@ pub fn plan_atomic_operations(
                             ));
                         }
                     }
-                    PlannedOperation::UpdateResource { target, data }
+                    PlannedOperation::UpdateResource {
+                        target,
+                        data,
+                        changeset,
+                    }
                 }
             }
             "remove" => {
@@ -516,6 +568,7 @@ pub fn plan_atomic_operations(
                     let target = registry
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
+                    let model_field = target.model_field().to_owned();
                     validate_linkage(
                         registry,
                         target.target_type(),
@@ -526,6 +579,7 @@ pub fn plan_atomic_operations(
                     )?;
                     PlannedOperation::RemoveRelationshipMembers {
                         reference: reference.clone(),
+                        model_field,
                         data: identifiers,
                     }
                 } else {
@@ -678,7 +732,7 @@ fn validate_resource_data(
     local_ids: &BTreeSet<(String, String)>,
     index: usize,
     path: &str,
-) -> Result<(), AtomicOperationsError> {
+) -> Result<AtomicResourceChangeset, AtomicOperationsError> {
     let fail = |message: String| invalid_operation(index, path, &message);
     if data.type_name.is_empty() {
         return Err(fail("resource `type` must not be empty".to_owned()));
@@ -709,17 +763,23 @@ fn validate_resource_data(
             data.type_name
         ))
     })?;
+    let mut mapped_attributes = None;
     if let Some(attributes) = &data.attributes {
-        for name in attributes.keys() {
-            if definition.attribute_by_name(name).is_none() {
-                return Err(fail(format!(
+        let mut mapped = BTreeMap::new();
+        for (name, value) in attributes {
+            let mapping = definition.attribute_by_name(name).ok_or_else(|| {
+                fail(format!(
                     "attribute `{name}` is not registered on `{}`",
                     data.type_name
-                )));
-            }
+                ))
+            })?;
+            mapped.insert(mapping.model_field().to_owned(), value.clone());
         }
+        mapped_attributes = Some(mapped);
     }
+    let mut mapped_relationships = None;
     if let Some(relationships) = &data.relationships {
+        let mut mapped = BTreeMap::new();
         for (name, relationship) in relationships {
             let mapping = definition.relationship_by_name(name).ok_or_else(|| {
                 fail(format!(
@@ -737,9 +797,23 @@ fn validate_resource_data(
                     path,
                 )?;
             }
+            mapped.insert(
+                mapping.model_field().to_owned(),
+                MappedRelationshipChange {
+                    data: relationship.data.clone(),
+                },
+            );
         }
+        mapped_relationships = Some(mapped);
     }
-    Ok(())
+    Ok(AtomicResourceChangeset {
+        type_name: data.type_name.clone(),
+        identifier_field: definition.identifier_field().to_owned(),
+        id: data.id.clone(),
+        lid: data.lid.clone(),
+        attributes: mapped_attributes,
+        relationships: mapped_relationships,
+    })
 }
 
 fn validate_relationship_data(
@@ -1003,7 +1077,7 @@ pub trait AtomicOperationHandler: Send + Sync {
 #[async_trait]
 pub trait AtomicOperationsGuard: Send + Sync {
     /// Returns whether the caller may execute every operation in the request.
-    async fn authorize(&self, operations: &[PlannedAtomicOperation]) -> bool;
+    async fn authorize(&self, headers: &HeaderMap, operations: &[PlannedAtomicOperation]) -> bool;
 
     /// Checks operation count and any application-specific request limits.
     ///
@@ -1106,13 +1180,14 @@ impl std::error::Error for AtomicExecutionError {}
 pub async fn execute_atomic_operations<H>(
     database: &DatabaseConnection,
     operations: &[PlannedAtomicOperation],
+    headers: &HeaderMap,
     guard: &dyn AtomicOperationsGuard,
     handler: &H,
 ) -> Result<Vec<AtomicResult>, AtomicExecutionError>
 where
-    H: AtomicOperationHandler,
+    H: AtomicOperationHandler + ?Sized,
 {
-    if !guard.authorize(operations).await {
+    if !guard.authorize(headers, operations).await {
         return Err(AtomicExecutionError::NotAuthorized);
     }
     guard
@@ -1249,7 +1324,7 @@ fn validate_operation_result(
                 }
             }
         }
-        PlannedOperation::UpdateResource { target, data } => {
+        PlannedOperation::UpdateResource { target, data, .. } => {
             if let Some(result_data) = &result.data {
                 let expected_type = match target {
                     AtomicTarget::Reference(reference) => reference.type_name.as_str(),

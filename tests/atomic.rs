@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use axum::http::HeaderMap;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use seamark::atomic::{
     AtomicExecutionError, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsDocument,
@@ -138,6 +139,85 @@ fn accepts_server_assigned_resource_ids_and_preserves_omitted_vs_null_data() {
         Some(Value::Null)
     );
     assert_eq!(parsed.operations.as_ref().unwrap()[1].data, None);
+}
+
+#[test]
+fn maps_resource_and_relationship_changesets_to_internal_fields() {
+    let operations = plan(json!({
+        "atomic:operations": [
+            {"op": "add", "data": {"type": "authors", "lid": "author-local", "attributes": {"name": "Ada"}}},
+            {
+                "op": "update",
+                "ref": {"type": "articles", "id": "1"},
+                "data": {
+                    "type": "articles",
+                    "id": "1",
+                    "attributes": {"title": null},
+                    "relationships": {
+                        "author": {"data": {"type": "authors", "lid": "author-local"}},
+                        "tags": {}
+                    }
+                }
+            },
+            {
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": null
+            },
+            {"op": "update", "ref": {"type": "articles", "id": "2"}, "data": {"type": "articles", "id": "2"}}
+        ]
+    }))
+    .unwrap();
+
+    let PlannedOperation::AddResource { changeset, .. } = &operations[0].operation else {
+        panic!("expected an add-resource operation");
+    };
+    assert_eq!(
+        changeset.attributes.as_ref().unwrap().get("name"),
+        Some(&json!("Ada"))
+    );
+
+    let PlannedOperation::UpdateResource { changeset, .. } = &operations[1].operation else {
+        panic!("expected an update-resource operation");
+    };
+    assert_eq!(changeset.identifier_field, "article_id");
+    assert_eq!(
+        changeset.attributes.as_ref().unwrap().get("title"),
+        Some(&Value::Null)
+    );
+    let relationship = changeset
+        .relationships
+        .as_ref()
+        .unwrap()
+        .get("author_id")
+        .unwrap();
+    assert_eq!(
+        relationship.data,
+        Some(RelationshipData::One(ResourceIdentifier {
+            type_name: "authors".to_owned(),
+            lid: Some("author-local".to_owned()),
+            ..ResourceIdentifier::default()
+        }))
+    );
+    assert_eq!(
+        changeset.relationships.as_ref().unwrap()["tag_ids"].data,
+        None
+    );
+
+    let PlannedOperation::UpdateRelationship {
+        model_field, data, ..
+    } = &operations[2].operation
+    else {
+        panic!("expected an update-relationship operation");
+    };
+    assert_eq!(model_field, "author_id");
+    assert_eq!(data, &RelationshipData::Null);
+
+    let PlannedOperation::UpdateResource { changeset, .. } = &operations[3].operation else {
+        panic!("expected an update-resource operation");
+    };
+    assert_eq!(changeset.attributes, None);
+    assert_eq!(changeset.relationships, None);
 }
 
 #[test]
@@ -303,7 +383,11 @@ struct TestGuard {
 
 #[async_trait]
 impl AtomicOperationsGuard for TestGuard {
-    async fn authorize(&self, _operations: &[PlannedAtomicOperation]) -> bool {
+    async fn authorize(
+        &self,
+        _headers: &HeaderMap,
+        _operations: &[PlannedAtomicOperation],
+    ) -> bool {
         self.authorized
     }
 
@@ -433,7 +517,8 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
         authorized: true,
         maximum_operations: 5,
     };
-    let results = execute_atomic_operations(&database, &operations, &guard, &handler)
+    let headers = HeaderMap::new();
+    let results = execute_atomic_operations(&database, &operations, &headers, &guard, &handler)
         .await
         .unwrap();
     assert_eq!(results.len(), 2);
@@ -471,7 +556,14 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
         calls: AtomicUsize::new(0),
     };
     assert!(matches!(
-        execute_atomic_operations(&database, &failing_operations, &guard, &failing_handler).await,
+        execute_atomic_operations(
+            &database,
+            &failing_operations,
+            &headers,
+            &guard,
+            &failing_handler
+        )
+        .await,
         Err(AtomicExecutionError::Operation { index: 1, .. })
     ));
     let count = database
@@ -498,6 +590,7 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
         execute_atomic_operations(
             &database,
             &failing_operations,
+            &headers,
             &denied_guard,
             &untouched_handler
         )
@@ -513,6 +606,7 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
         execute_atomic_operations(
             &database,
             &failing_operations,
+            &headers,
             &limited_guard,
             &untouched_handler
         )
