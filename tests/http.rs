@@ -712,16 +712,37 @@ async fn base_mutation_routes_reject_duplicate_json_members_before_authorization
         let errors = error_document(response).await.errors.unwrap();
         assert_eq!(errors[0].code.as_deref(), Some("invalid_document"));
         assert_eq!(errors[0].status.as_deref(), Some("400"));
-        assert_eq!(
-            errors[0].source.as_ref().unwrap().pointer.as_deref(),
-            Some("/data")
-        );
+        assert!(errors[0].source.is_none());
         assert!(
             errors[0]
                 .detail
                 .as_deref()
                 .is_some_and(|detail| detail.contains("duplicate JSON object member"))
         );
+    }
+
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn malformed_base_mutation_json_omits_source_pointer_before_authorization_or_adapter() {
+    let (app, adapter, authorizer) = mutation_test_app(false);
+    for (method, uri, body) in [
+        ("POST", "/ports", "{not-json"),
+        ("PATCH", "/ports/1/relationships/owner", "{"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(mutation_request(method, uri, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("invalid_document"));
+        assert_eq!(errors[0].status.as_deref(), Some("400"));
+        assert!(errors[0].source.is_none());
     }
 
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);

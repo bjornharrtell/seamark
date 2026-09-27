@@ -1203,7 +1203,7 @@ fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
             "invalid_document",
             "Invalid JSON:API document",
             Some(format!("The request document could not be parsed: {error}")),
-            Some("/data"),
+            None,
         )
     })?;
     let document = serde_json::from_value::<JsonApiDocument>(value).map_err(|error| {
@@ -1345,7 +1345,7 @@ fn parse_relationship_document(
             "invalid_document",
             "Invalid JSON:API document",
             Some(format!("The request document could not be parsed: {error}")),
-            Some("/data"),
+            None,
         )
     })?;
     let Some(object) = document.as_object() else {
