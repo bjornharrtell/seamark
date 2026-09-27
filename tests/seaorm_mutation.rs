@@ -696,7 +696,7 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
 }
 
 #[test]
-fn nullable_foreign_key_executor_supports_only_add_and_remove() {
+fn nullable_foreign_key_executor_supports_add_remove_and_replacement() {
     let registry = registry();
     let handler = SeaOrmToManyForeignKeyMutationHandler::<article::Entity, _>::new(
         &registry,
@@ -732,7 +732,7 @@ fn nullable_foreign_key_executor_supports_only_add_and_remove() {
 
     assert!(handler.supports(&operations[0].operation));
     assert!(handler.supports(&operations[1].operation));
-    assert!(!handler.supports(&operations[2].operation));
+    assert!(handler.supports(&operations[2].operation));
 }
 
 #[test]

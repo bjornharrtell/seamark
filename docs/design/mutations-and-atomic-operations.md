@@ -3,7 +3,7 @@
 **Status: partial implementation.** An Atomic Operations planner, mapped
 changesets, a standalone Axum route, extension negotiation, typed SeaORM
 resource CRUD, to-one foreign-key writes, nullable direct-FK to-many
-add/remove, explicitly configured two-column join-table membership writes,
+add/remove/replacement, explicitly configured two-column join-table membership writes,
 and transaction orchestration are implemented. Other to-many association
 shapes and full normative conformance remain application-specific or
 incomplete.
