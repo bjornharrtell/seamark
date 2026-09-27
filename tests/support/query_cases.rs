@@ -311,6 +311,53 @@ pub fn assert_two_level_neighbors(result: &SeaOrmReadResult) {
     );
 }
 
+pub fn assert_single_resource_two_level_neighbors_document(document: &Value) {
+    assert_eq!(
+        document["data"],
+        json!({
+            "type": "ports",
+            "id": "2",
+            "attributes": {"name": "Beta"},
+            "relationships": {
+                "neighbors": {
+                    "data": [{"type": "ports", "id": "1"}]
+                }
+            }
+        })
+    );
+
+    let mut included = document["included"].as_array().unwrap().clone();
+    included.sort_by_key(|resource| resource["id"].as_str().unwrap().to_owned());
+    assert_eq!(
+        included,
+        vec![
+            json!({
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Alpha"},
+                "relationships": {
+                    "neighbors": {
+                        "data": [
+                            {"type": "ports", "id": "2"},
+                            {"type": "ports", "id": "3"}
+                        ]
+                    }
+                }
+            }),
+            json!({
+                "type": "ports",
+                "id": "3",
+                "attributes": {"name": "Gamma"},
+                "relationships": {
+                    "neighbors": {
+                        "data": [{"type": "ports", "id": "1"}]
+                    }
+                }
+            })
+        ]
+    );
+}
+
 pub fn assert_sorted_ports_page(result: &SeaOrmReadResult, page_number: u8) {
     let (expected_ports, expected_owner_id, expected_owner_name) = match page_number {
         1 => (&SORTED_FIRST_PAGE[..], "12", "Niko"),
