@@ -305,6 +305,10 @@ fn validates_request_response_shapes_and_result_cardinality() {
         Err(AtomicOperationsError::MissingOperations)
     );
     assert_eq!(
+        AtomicOperationsDocument::default().validate_response(0),
+        Err(AtomicOperationsError::MissingResults)
+    );
+    assert_eq!(
         document(json!({"atomic:results": []})).validate_request(),
         Err(AtomicOperationsError::InvalidDocument(
             "an operations request must not contain `atomic:results`"
@@ -335,6 +339,13 @@ fn validates_request_response_shapes_and_result_cardinality() {
         })
     );
     assert_eq!(
+        document(json!({"atomic:results": [{}]})).validate_response(2),
+        Err(AtomicOperationsError::ResultCountMismatch {
+            expected: 2,
+            actual: 1
+        })
+    );
+    assert_eq!(
         document(json!({"atomic:results": [{}, {}]}))
             .validate_response(2)
             .unwrap()
@@ -350,6 +361,44 @@ fn validates_request_response_shapes_and_result_cardinality() {
         .validate_request()
         .is_err()
     );
+}
+
+#[test]
+fn validates_atomic_resource_result_order() {
+    let operations = plan(json!({
+        "atomic:operations": [
+            {
+                "op": "update",
+                "ref": {"type": "authors", "id": "1"},
+                "data": {"type": "authors", "attributes": {"name": "First"}}
+            },
+            {
+                "op": "update",
+                "ref": {"type": "authors", "id": "2"},
+                "data": {"type": "authors", "attributes": {"name": "Second"}}
+            }
+        ]
+    }))
+    .unwrap();
+
+    let ordered = document(json!({
+        "atomic:results": [
+            {"data": {"type": "authors", "id": "1"}},
+            {"data": {"type": "authors", "id": "2"}}
+        ]
+    }));
+    assert_eq!(ordered.validate_response_for(&operations).unwrap().len(), 2);
+
+    let swapped = document(json!({
+        "atomic:results": [
+            {"data": {"type": "authors", "id": "2"}},
+            {"data": {"type": "authors", "id": "1"}}
+        ]
+    }));
+    assert!(matches!(
+        swapped.validate_response_for(&operations),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
 }
 
 #[test]
@@ -427,6 +476,21 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
         Err(AtomicOperationsError::InvalidResult { index: 0, .. })
     ));
 
+    let client_assigned_id_add = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {"type": "authors", "id": "requested", "attributes": {"name": "Ada"}}
+        }]
+    }))
+    .unwrap();
+    let mismatched_add_id = document(json!({
+        "atomic:results": [{"data": {"type": "authors", "id": "different"}}]
+    }));
+    assert!(matches!(
+        mismatched_add_id.validate_response_for(&client_assigned_id_add),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+
     let update = plan(json!({
         "atomic:operations": [{
             "op": "update",
@@ -462,6 +526,24 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
     let empty_relationship_result = document(json!({"atomic:results": [{}]}));
     empty_relationship_result
         .validate_response_for(&relationship_update)
+        .unwrap();
+
+    let remove = plan(json!({
+        "atomic:operations": [{
+            "op": "remove",
+            "ref": {"type": "authors", "id": "1"}
+        }]
+    }))
+    .unwrap();
+    let unexpected_remove_data = document(json!({
+        "atomic:results": [{"data": {"type": "authors", "id": "1"}}]
+    }));
+    assert!(matches!(
+        unexpected_remove_data.validate_response_for(&remove),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+    document(json!({"atomic:results": [{}]}))
+        .validate_response_for(&remove)
         .unwrap();
 }
 
