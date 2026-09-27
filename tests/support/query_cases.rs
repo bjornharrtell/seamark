@@ -70,6 +70,17 @@ pub const FIRST_PAGE_PORT_NAME: &str = "Beta";
 pub const FIRST_PAGE_OWNER_ID: &str = "12";
 pub const FIRST_PAGE_OWNER_NAME: &str = "Niko";
 pub const SECOND_PAGE_PORT_ID: &str = "1";
+pub const NEIGHBOR_PORT_IDS: [&str; 2] = ["2", "3"];
+
+// Application-defined self-referential to-many mapping shared by both backends.
+pub fn neighbor_ids(port_id: i32) -> &'static [i32] {
+    match port_id {
+        1 => &[2, 3],
+        2 => &[1],
+        3 => &[1],
+        _ => &[],
+    }
+}
 
 pub fn first_page_with_owner() -> ReadQuery {
     ReadQuery {

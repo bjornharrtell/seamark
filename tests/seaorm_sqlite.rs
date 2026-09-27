@@ -96,7 +96,8 @@ fn registry() -> ResourceRegistry {
             .attribute("capacity", "berth_count", true, false)
             .attribute("depth", "depth_m", true, true)
             .attribute("active", "active", true, true)
-            .relationship("owner", "owner_id", "people"),
+            .relationship("owner", "owner_id", "people")
+            .relationship("neighbors", "neighbor_ids", "ports"),
         ResourceDefinition::new("people", "person_id")
             .attribute("name", "display_name", false, true)
             .attribute("note", "private_note", false, false),
@@ -122,22 +123,40 @@ fn port_resource(model: &port::Model) -> AdapterResource {
             ("active".to_owned(), json!(model.active)),
             ("unregistered".to_owned(), json!("must not leak")),
         ]),
-        relationships: BTreeMap::from([(
-            "owner_id".to_owned(),
-            seamark::document::Relationship {
-                data: Some(match model.owner_id {
-                    Some(owner_id) => seamark::document::RelationshipData::One(
-                        seamark::document::ResourceIdentifier {
-                            type_name: "people".to_owned(),
-                            id: Some(owner_id.to_string()),
-                            ..seamark::document::ResourceIdentifier::default()
-                        },
-                    ),
-                    None => seamark::document::RelationshipData::Null,
-                }),
-                ..seamark::document::Relationship::default()
-            },
-        )]),
+        relationships: BTreeMap::from([
+            (
+                "owner_id".to_owned(),
+                seamark::document::Relationship {
+                    data: Some(match model.owner_id {
+                        Some(owner_id) => seamark::document::RelationshipData::One(
+                            seamark::document::ResourceIdentifier {
+                                type_name: "people".to_owned(),
+                                id: Some(owner_id.to_string()),
+                                ..seamark::document::ResourceIdentifier::default()
+                            },
+                        ),
+                        None => seamark::document::RelationshipData::Null,
+                    }),
+                    ..seamark::document::Relationship::default()
+                },
+            ),
+            (
+                "neighbor_ids".to_owned(),
+                seamark::document::Relationship {
+                    data: Some(seamark::document::RelationshipData::Many(
+                        query_cases::neighbor_ids(model.port_id)
+                            .iter()
+                            .map(|id| seamark::document::ResourceIdentifier {
+                                type_name: "ports".to_owned(),
+                                id: Some(id.to_string()),
+                                ..seamark::document::ResourceIdentifier::default()
+                            })
+                            .collect(),
+                    )),
+                    ..seamark::document::Relationship::default()
+                },
+            ),
+        ]),
     }
 }
 
@@ -183,27 +202,23 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
         includes: &[IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
     ) -> Result<Vec<IncludedResource>, String> {
-        if !includes
+        let mut included = Vec::new();
+        if includes
             .iter()
             .any(|include| include.public_name == "owner")
         {
-            return Ok(Vec::new());
-        }
-
-        let ids = roots
-            .iter()
-            .filter_map(|root| root.owner_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let people = person::Entity::find()
-            .filter(person::Column::PersonId.is_in(ids))
-            .all(database)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(people
-            .into_iter()
-            .map(|model| IncludedResource {
+            let ids = roots
+                .iter()
+                .filter_map(|root| root.owner_id)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let people = person::Entity::find()
+                .filter(person::Column::PersonId.is_in(ids))
+                .all(database)
+                .await
+                .map_err(|error| error.to_string())?;
+            included.extend(people.into_iter().map(|model| IncludedResource {
                 resource_type: "people".to_owned(),
                 resource: AdapterResource {
                     id: model.person_id.to_string(),
@@ -214,8 +229,29 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
                     ]),
                     ..AdapterResource::default()
                 },
-            })
-            .collect())
+            }));
+        }
+        if includes
+            .iter()
+            .any(|include| include.public_name == "neighbors")
+        {
+            let ids = roots
+                .iter()
+                .flat_map(|root| query_cases::neighbor_ids(root.port_id).iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let neighbors = port::Entity::find()
+                .filter(port::Column::PortId.is_in(ids))
+                .all(database)
+                .await
+                .map_err(|error| error.to_string())?;
+            included.extend(neighbors.into_iter().map(|model| IncludedResource {
+                resource_type: "ports".to_owned(),
+                resource: port_resource(&model),
+            }));
+        }
+        Ok(included)
     }
 }
 
@@ -526,6 +562,38 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         vec!["11", "12"]
     );
 
+    let neighbors_query = ReadQuery {
+        filters: vec!["equals(name,'Alpha')".to_owned()],
+        includes: vec!["neighbors".to_owned()],
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    };
+    let neighbors_result = executor
+        .collection(
+            &database,
+            &plan(&neighbors_query),
+            &AllowGuard,
+            Some(&PortOwnerLoader),
+        )
+        .await
+        .unwrap();
+    let neighbor_linkage = &neighbors_result.resources[0].relationships["neighbor_ids"].data;
+    let neighbor_ids = match neighbor_linkage {
+        Some(seamark::document::RelationshipData::Many(identifiers)) => identifiers
+            .iter()
+            .filter_map(|identifier| identifier.id.as_deref())
+            .collect::<Vec<_>>(),
+        other => panic!("expected to-many linkage, got {other:?}"),
+    };
+    assert_eq!(neighbor_ids, query_cases::NEIGHBOR_PORT_IDS);
+    let mut included_neighbor_ids = neighbors_result
+        .included
+        .iter()
+        .map(|included| included.resource.id.as_str())
+        .collect::<Vec<_>>();
+    included_neighbor_ids.sort_unstable();
+    assert_eq!(included_neighbor_ids, query_cases::NEIGHBOR_PORT_IDS);
+
     for (filter, expected_ids) in query_cases::FILTER_CASES {
         let query = ReadQuery {
             filters: vec![filter.to_owned()],
@@ -564,6 +632,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         pagination(),
     );
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/ports?filter=equals%28name%2C%27Beta%27%29&sort=-depth&page%5Bsize%5D=1&fields%5Bports%5D=name,owner&fields%5Bpeople%5D=name&include=owner")
@@ -576,6 +645,46 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     let response_document: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(response_document, query_cases::first_page_document());
+
+    let neighbors_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?filter=equals%28name%2C%27Alpha%27%29&include=neighbors&fields%5Bports%5D=name,neighbors")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(neighbors_response.status(), StatusCode::OK);
+    let neighbors_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(neighbors_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        neighbors_document["data"][0]["relationships"]["neighbors"]["data"],
+        json!([
+            {"type": "ports", "id": "2"},
+            {"type": "ports", "id": "3"}
+        ])
+    );
+    let mut included_neighbors = neighbors_document["included"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|resource| resource["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    included_neighbors.sort_unstable();
+    assert_eq!(included_neighbors, query_cases::NEIGHBOR_PORT_IDS);
+    for resource in neighbors_document["included"].as_array().unwrap() {
+        let expected_name = match resource["id"].as_str().unwrap() {
+            "2" => "Beta",
+            "3" => "Gamma",
+            id => panic!("unexpected included neighbor `{id}`"),
+        };
+        assert_eq!(resource["attributes"]["name"], expected_name);
+    }
 
     database.close().await.unwrap();
 }
