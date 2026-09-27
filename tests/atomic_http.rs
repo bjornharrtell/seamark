@@ -1015,7 +1015,8 @@ async fn atomic_http_rejects_non_request_members_in_operations_request() {
 }
 
 #[tokio::test]
-async fn atomic_http_rejects_resource_add_without_data_before_authorization_or_handler() {
+async fn atomic_http_rejects_resource_add_and_update_without_data_before_authorization_or_handler()
+{
     let database = database().await;
     let authorize_calls = Arc::new(AtomicUsize::new(0));
     let limit_calls = Arc::new(AtomicUsize::new(0));
@@ -1028,33 +1029,44 @@ async fn atomic_http_rejects_resource_add_without_data_before_authorization_or_h
         calls: AtomicUsize::new(0),
     });
     let app = atomic_http::router(registry(), database.clone(), guard, handler.clone());
-    let body = r#"{"atomic:operations":[{"op":"add"}]}"#;
-    let response = app
-        .oneshot(request(
-            "/operations",
-            ATOMIC_MEDIA_TYPE,
-            ATOMIC_MEDIA_TYPE,
-            body,
-        ))
-        .await
-        .unwrap();
+    for (body, detail) in [
+        (
+            r#"{"atomic:operations":[{"op":"add"}]}"#,
+            "an add operation requires `data`",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"}}]}"#,
+            "an update operation requires `data`",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
-    assert_eq!(response.headers()[VARY], "Accept");
-    let error = error_document(response, body).await;
-    assert_eq!(
-        error,
-        json!({
-            "errors": [{
-                "code": "invalid_atomic_operation",
-                "title": "Invalid Atomic Operations request",
-                "detail": "invalid operation 0 at `/atomic:operations/0`: an add operation requires `data`",
-                "status": "400",
-                "source": {"pointer": "/atomic:operations/0"}
-            }]
-        })
-    );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        let error = error_document(response, body).await;
+        assert_eq!(
+            error,
+            json!({
+                "errors": [{
+                    "code": "invalid_atomic_operation",
+                    "title": "Invalid Atomic Operations request",
+                    "detail": format!("invalid operation 0 at `/atomic:operations/0`: {detail}"),
+                    "status": "400",
+                    "source": {"pointer": "/atomic:operations/0"}
+                }]
+            })
+        );
+    }
     assert_eq!(authorize_calls.load(Ordering::SeqCst), 0);
     assert_eq!(limit_calls.load(Ordering::SeqCst), 0);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
