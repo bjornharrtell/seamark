@@ -139,6 +139,15 @@ expected result document. A resource `href` resolving to article `1` paired
 with data identifying article `2` returns HTTP 400
 `invalid_atomic_operation` at `/atomic:operations/0`; the pointer resolves in
 the submitted request. Resolved identity consistency is checked by the planner.
+The extension's [operation target rule](https://jsonapi.org/ext/atomic/#operation-objects)
+allows any RFC 3986 URI-reference, including a path-relative reference.
+`atomic_http_passes_relative_href_unchanged_to_application_resolver` sends
+`articles/1`; the resolver records the exact same string in both resolver
+callbacks, and the HTTP request returns 200 with one empty result object while
+the operation handler runs once. Seamark does not resolve or normalize that
+reference itself. The malformed `"not a URI reference"` case remains rejected
+by `accepts_uri_reference_targets_for_resource_mutations`; Atomic validation
+now shares the existing RFC URI-reference parser used for document links.
 The [Atomic Operations document-structure rule](https://jsonapi.org/ext/atomic/#document-structure)
 does not require `atomic:operations` to be non-empty; the [processing rule](https://jsonapi.org/ext/atomic/#processing)
 requires a returned `atomic:results` array to have the same length as the

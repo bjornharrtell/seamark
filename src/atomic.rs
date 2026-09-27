@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use async_trait::async_trait;
-use axum::http::{HeaderMap, Uri};
+use axum::http::HeaderMap;
 use sea_orm::{DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use crate::document::{
     ErrorObject, JsonApiDocument, JsonApiObject, ObjectOnly, PrimaryData, RelationshipData,
     ResourceIdentifier, ResourceObject, deserialize_attributes, deserialize_relationships,
-    is_at_member, validate_links,
+    is_at_member, is_valid_uri_reference, validate_links,
 };
 use crate::registry::ResourceRegistry;
 
@@ -1057,7 +1057,7 @@ fn validate_operation_target(
     if operation
         .href
         .as_deref()
-        .is_some_and(|href| href.parse::<Uri>().is_err())
+        .is_some_and(|href| !is_valid_uri_reference(href))
     {
         return Err(fail("`href` must be a valid URI-reference".to_owned()));
     }

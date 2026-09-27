@@ -1133,7 +1133,7 @@ fn is_valid_link(link: &Value) -> bool {
     }
 }
 
-fn is_valid_uri_reference(value: &str) -> bool {
+pub(crate) fn is_valid_uri_reference(value: &str) -> bool {
     URIReference::try_from(value).is_ok()
 }
 
