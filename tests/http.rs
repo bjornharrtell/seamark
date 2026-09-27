@@ -11,8 +11,8 @@ use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderValue, Request, Response, StatusCode};
 use seamark::document::{JsonApiDocument, Relationship, RelationshipData, ResourceIdentifier};
 use seamark::http::{
-    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryCollectionResult,
-    QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
+    QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
 use seamark::query::{
     FilterExpression, FilterValue, PaginationConfig, PlannedField, ReadPlan, SortDirection,
@@ -80,7 +80,7 @@ impl QueryResourceAdapter for TestQueryAdapter {
         &self,
         _resource: &ResourceDefinition,
         plan: &ReadPlan,
-    ) -> Result<QueryCollectionResult, AdapterError> {
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.plans.lock().unwrap().push(plan.clone());
         Ok(QueryCollectionResult {

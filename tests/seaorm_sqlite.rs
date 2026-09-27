@@ -28,8 +28,8 @@ use seamark::atomic::{
     execute_atomic_operations, plan_atomic_operations,
 };
 use seamark::http::{
-    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryCollectionResult,
-    QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
+    QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
 use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
@@ -233,12 +233,20 @@ impl QueryResourceAdapter for PortHttpQueryAdapter {
         &self,
         _resource: &ResourceDefinition,
         plan: &ReadPlan,
-    ) -> Result<QueryCollectionResult, AdapterError> {
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
         let result = self
             .executor
             .collection(&self.database, plan, &AllowGuard, Some(&PortOwnerLoader))
             .await
-            .map_err(|_| AdapterError)?;
+            .map_err(|error| match error {
+                seamark::seaorm::SeaOrmExecutionError::NotAuthorized => {
+                    QueryAdapterError::NotAuthorized
+                }
+                seamark::seaorm::SeaOrmExecutionError::LimitExceeded(_) => {
+                    QueryAdapterError::LimitExceeded
+                }
+                _ => QueryAdapterError::ReadFailed,
+            })?;
         Ok(QueryCollectionResult {
             resources: result.resources,
             included: result
