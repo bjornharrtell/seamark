@@ -1237,15 +1237,13 @@ async fn atomic_http_rejects_unresolved_local_ids_before_execution() {
 async fn database_failures_return_a_server_error_document() {
     let database = database().await;
     database.clone().close().await.unwrap();
-    let app = atomic_http::router(
-        registry(),
-        database,
-        Arc::new(TestGuard { allowed: true }),
-        Arc::new(TestHandler {
-            fail: false,
-            require_resolved_targets: false,
-        }),
-    );
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database, guard.clone(), handler.clone());
     let body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada"}}}]}"#;
     let response = app
         .oneshot(request(
@@ -1260,7 +1258,12 @@ async fn database_failures_return_a_server_error_document() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
-    error_document(response, body).await;
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"][0]["code"], "database_error");
+    assert_eq!(error["errors"][0]["status"], "500");
+    assert!(error["errors"][0].get("source").is_none());
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
