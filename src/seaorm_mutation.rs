@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseTransaction, EntityTrait, IntoActiveModel, ModelTrait,
     QueryFilter, Value,
+    sea_query::{Condition, Expr},
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -303,13 +304,240 @@ where
     }
 }
 
+/// Executes to-many relationship add/remove operations through a nullable
+/// foreign-key column on the related resource entity.
+///
+/// The relationship and both resource identifier mappings are explicit.
+/// Adding a member assigns an unowned member to the source; it does not
+/// reassign a member owned by a different source. Removing a member clears the
+/// foreign key only when it currently points to the requested source. The
+/// foreign-key column must be nullable to support removal. Association shapes
+/// that do not fit this mapping remain available to custom executors.
+pub struct SeaOrmToManyForeignKeyMutationHandler<E, C>
+where
+    E: EntityTrait,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::Model: IntoActiveModel<E::ActiveModel> + Send,
+    E::Column: ColumnTrait + FromStr,
+    C: SeaOrmMutationValueCodec,
+{
+    source_type: String,
+    model_field: String,
+    target_type: String,
+    target_identifier_field: String,
+    foreign_key_field: String,
+    value_codec: C,
+    entity: PhantomData<fn() -> E>,
+}
+
+#[derive(Clone, Copy)]
+enum ForeignKeyOperation {
+    Add,
+    Remove,
+}
+
+impl<E, C> SeaOrmToManyForeignKeyMutationHandler<E, C>
+where
+    E: EntityTrait,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::Model: IntoActiveModel<E::ActiveModel> + Send,
+    E::Column: ColumnTrait + FromStr,
+    C: SeaOrmMutationValueCodec,
+{
+    /// Creates a typed executor for a to-many relationship represented by a
+    /// nullable foreign key on the related entity.
+    ///
+    /// `foreign_key_field` is the target entity's SeaORM column that stores
+    /// the source resource identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source resource or relationship is not
+    /// registered, or either target entity column is unknown.
+    pub fn new(
+        registry: &ResourceRegistry,
+        source_type: &str,
+        relationship_name: &str,
+        foreign_key_field: impl Into<String>,
+        value_codec: C,
+    ) -> Result<Self, String> {
+        let source = registry
+            .resource(source_type)
+            .map_err(|error| error.to_string())?;
+        let relationship = source
+            .relationship_by_name(relationship_name)
+            .ok_or_else(|| {
+                format!("relationship `{relationship_name}` is not registered for `{source_type}`")
+            })?;
+        let target = registry
+            .resource(relationship.target_type())
+            .map_err(|error| error.to_string())?;
+        let foreign_key_field = foreign_key_field.into();
+        if foreign_key_field == target.identifier_field() {
+            return Err(
+                "to-many foreign-key and target identifier fields must be different".to_owned(),
+            );
+        }
+        E::Column::from_str(target.identifier_field()).map_err(|_| {
+            format!(
+                "target identifier field `{}` is not a SeaORM column",
+                target.identifier_field()
+            )
+        })?;
+        E::Column::from_str(&foreign_key_field).map_err(|_| {
+            format!("foreign-key field `{foreign_key_field}` is not a SeaORM column")
+        })?;
+
+        Ok(Self {
+            source_type: source_type.to_owned(),
+            model_field: relationship.model_field().to_owned(),
+            target_type: target.type_name().to_owned(),
+            target_identifier_field: target.identifier_field().to_owned(),
+            foreign_key_field,
+            value_codec,
+            entity: PhantomData,
+        })
+    }
+
+    fn supports_relationship_operation(&self, operation: &PlannedOperation) -> bool {
+        matches!(
+            operation,
+            PlannedOperation::AddRelationshipMembers {
+                reference,
+                model_field,
+                ..
+            } | PlannedOperation::RemoveRelationshipMembers {
+                reference,
+                model_field,
+                ..
+            } if reference.type_name == self.source_type && model_field == &self.model_field
+        )
+    }
+
+    fn encode(&self, model_field: &str, value: &JsonValue) -> Result<Value, String> {
+        self.value_codec.encode_mutation_value(model_field, value)
+    }
+}
+
+#[async_trait]
+impl<E, C> SeaOrmAtomicOperationExecutor for SeaOrmToManyForeignKeyMutationHandler<E, C>
+where
+    E: EntityTrait,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::Model: IntoActiveModel<E::ActiveModel> + Send,
+    E::Column: ColumnTrait + FromStr,
+    C: SeaOrmMutationValueCodec,
+{
+    fn supports(&self, operation: &PlannedOperation) -> bool {
+        self.supports_relationship_operation(operation)
+    }
+
+    async fn execute(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        let (reference, identifiers, action) = match operation {
+            PlannedOperation::AddRelationshipMembers {
+                reference, data, ..
+            } => (reference, data.as_slice(), ForeignKeyOperation::Add),
+            PlannedOperation::RemoveRelationshipMembers {
+                reference, data, ..
+            } => (reference, data.as_slice(), ForeignKeyOperation::Remove),
+            _ => return Err("unsupported to-many foreign-key operation".to_owned()),
+        };
+        if !self.supports_relationship_operation(operation) {
+            return Err("to-many foreign-key mapping does not match operation".to_owned());
+        }
+
+        let source = local_ids.resolve_reference(reference)?;
+        if source.type_name != self.source_type {
+            return Err("relationship owner type does not match foreign-key mapping".to_owned());
+        }
+        let source_id = source
+            .id
+            .ok_or_else(|| "relationship owner has no persistent identifier".to_owned())?;
+        let source_value = self.encode(&self.foreign_key_field, &JsonValue::String(source_id))?;
+        let target_values = identifiers
+            .iter()
+            .map(|identifier| {
+                let target = local_ids.resolve(identifier)?;
+                if target.type_name != self.target_type {
+                    return Err(format!(
+                        "relationship member type `{}` does not match `{}`",
+                        target.type_name, self.target_type
+                    ));
+                }
+                let id = target
+                    .id
+                    .ok_or_else(|| "relationship member has no persistent identifier".to_owned())?;
+                self.encode(&self.target_identifier_field, &JsonValue::String(id))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_identifier_column =
+            E::Column::from_str(&self.target_identifier_field).map_err(|_| {
+                format!(
+                    "target identifier field `{}` is not a SeaORM column",
+                    self.target_identifier_field
+                )
+            })?;
+        let foreign_key_column = E::Column::from_str(&self.foreign_key_field).map_err(|_| {
+            format!(
+                "foreign-key field `{}` is not a SeaORM column",
+                self.foreign_key_field
+            )
+        })?;
+        let null_value = match action {
+            ForeignKeyOperation::Add => None,
+            ForeignKeyOperation::Remove => {
+                Some(self.encode(&self.foreign_key_field, &JsonValue::Null)?)
+            }
+        };
+
+        for target_value in target_values {
+            let query = E::update_many()
+                .filter(target_identifier_column.eq(target_value))
+                .filter(match action {
+                    ForeignKeyOperation::Add => Condition::any()
+                        .add(foreign_key_column.is_null())
+                        .add(foreign_key_column.eq(source_value.clone())),
+                    ForeignKeyOperation::Remove => {
+                        Condition::all().add(foreign_key_column.eq(source_value.clone()))
+                    }
+                });
+            let assigned_value = match action {
+                ForeignKeyOperation::Add => source_value.clone(),
+                ForeignKeyOperation::Remove => null_value
+                    .clone()
+                    .ok_or_else(|| "missing encoded nullable foreign-key value".to_owned())?,
+            };
+            let result = query
+                .col_expr(foreign_key_column, Expr::value(assigned_value))
+                .exec(transaction)
+                .await
+                .map_err(|error| format!("to-many foreign-key update failed: {error}"))?;
+            if matches!(action, ForeignKeyOperation::Add) && result.rows_affected == 0 {
+                return Err(
+                    "relationship member was not found or already belongs to another owner"
+                        .to_owned(),
+                );
+            }
+        }
+
+        Ok(AtomicOperationOutcome::default())
+    }
+}
+
 /// A SeaORM CRUD executor bound to one public resource and entity type.
 ///
 /// Attribute and identifier conversion is explicit. Mapped to-one
 /// relationships are stored in the configured foreign-key field. To-many
-/// relationship operations and `href` targets remain application-defined and
-/// can be handled by another [`SeaOrmAtomicOperationExecutor`] in the
-/// dispatcher.
+/// relationships are declined by this resource executor; the dedicated
+/// relationship executors support explicitly configured join-table and
+/// nullable direct-foreign-key shapes. Other associations and `href` target
+/// behavior remain available to custom [`SeaOrmAtomicOperationExecutor`]
+/// implementations in the dispatcher.
 pub struct SeaOrmResourceMutationHandler<E, C>
 where
     E: EntityTrait,
