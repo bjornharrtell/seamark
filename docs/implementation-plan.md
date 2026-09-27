@@ -484,7 +484,8 @@ request/response rules still require coverage before M6 can be complete.
 Atomic operation-execution failure coverage now explicitly verifies the
 permitted 422 status, JSON:API response headers, and a resolvable
 `/atomic:operations/1` source pointer when the second operation fails after the
-first succeeds. Other error categories remain partial.
+first succeeds; the error document also omits `atomic:results` as required by
+the extension's document-structure rule. Other error categories remain partial.
 The same route test verifies that an unsupported operation code returns 400
 with a source pointer to its operation object.
 The Atomic HTTP regression also verifies that guard limit failures return 413
