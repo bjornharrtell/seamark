@@ -55,15 +55,63 @@ impl ResourceDefinition {
     /// Declares a public relationship and its internal field and target type.
     #[must_use]
     pub fn relationship(
-        mut self,
+        self,
         public_name: impl Into<String>,
         model_field: impl Into<String>,
         target_type: impl Into<String>,
     ) -> Self {
+        self.relationship_with_cardinality(
+            public_name.into(),
+            model_field.into(),
+            target_type.into(),
+            None,
+        )
+    }
+
+    /// Declares a to-one relationship and its internal field and target type.
+    #[must_use]
+    pub fn to_one_relationship(
+        self,
+        public_name: impl Into<String>,
+        model_field: impl Into<String>,
+        target_type: impl Into<String>,
+    ) -> Self {
+        self.relationship_with_cardinality(
+            public_name.into(),
+            model_field.into(),
+            target_type.into(),
+            Some(RelationshipCardinality::ToOne),
+        )
+    }
+
+    /// Declares a to-many relationship and its internal field and target type.
+    #[must_use]
+    pub fn to_many_relationship(
+        self,
+        public_name: impl Into<String>,
+        model_field: impl Into<String>,
+        target_type: impl Into<String>,
+    ) -> Self {
+        self.relationship_with_cardinality(
+            public_name.into(),
+            model_field.into(),
+            target_type.into(),
+            Some(RelationshipCardinality::ToMany),
+        )
+    }
+
+    fn relationship_with_cardinality(
+        mut self,
+        public_name: String,
+        model_field: String,
+        target_type: String,
+        cardinality: Option<RelationshipCardinality>,
+    ) -> Self {
         self.relationships.push(RelationshipMapping {
-            public_name: public_name.into(),
-            model_field: model_field.into(),
-            target_type: target_type.into(),
+            public_name,
+            model_field,
+            target_type,
+            cardinality,
         });
         self
     }
@@ -194,6 +242,7 @@ pub struct RelationshipMapping {
     public_name: String,
     model_field: String,
     target_type: String,
+    cardinality: Option<RelationshipCardinality>,
 }
 
 impl RelationshipMapping {
@@ -214,6 +263,21 @@ impl RelationshipMapping {
     pub fn target_type(&self) -> &str {
         &self.target_type
     }
+
+    /// Returns the declared relationship cardinality, if provided.
+    #[must_use]
+    pub const fn cardinality(&self) -> Option<RelationshipCardinality> {
+        self.cardinality
+    }
+}
+
+/// The declared resource-linkage cardinality for a relationship.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelationshipCardinality {
+    /// The relationship links to at most one resource identifier.
+    ToOne,
+    /// The relationship links to zero or more resource identifiers.
+    ToMany,
 }
 
 /// A registry of explicitly declared public resource types.

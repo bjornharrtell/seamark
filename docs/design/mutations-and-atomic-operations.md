@@ -1,7 +1,9 @@
 # Mutations and Atomic Operations
 
-**Status: partial implementation.** An Atomic Operations planner, mapped
-changesets, a standalone Axum route, extension negotiation, typed SeaORM
+**Status: partial implementation.** Base Axum resource and relationship-linkage
+routes use explicit application mutation adapters; `SeaOrmBaseMutationAdapter`
+provides one transaction per typed command. An Atomic Operations planner,
+mapped changesets, a standalone Axum route, extension negotiation, typed SeaORM
 resource CRUD, to-one foreign-key writes, nullable direct-FK to-many
 add/remove/replacement, explicitly configured two-column join-table membership writes,
 resource-level to-many adds and updates composed through typed relationship handlers,
@@ -14,6 +16,72 @@ incomplete.
 Mutation requests should be validated into explicit commands or changesets before writes. Changesets preserve whether a property was omitted or explicitly set, including to `null`, so updates do not infer changes from arbitrary ORM object graphs.
 
 Optimistic concurrency is application-defined initially. Built-in version, ETag, or If-Match support may be revisited later; the initial design does not prescribe framework-managed conflict behavior.
+
+## Base HTTP resource and relationship operations
+
+`http::router_with_mutations` adds ordinary JSON:API HTTP methods to the
+existing collection and resource GET routes. Its canonical paths are
+`POST /{type}`, `PATCH|DELETE /{type}/{id}`, and
+`GET|PATCH|POST|DELETE /{type}/{id}/relationships/{name}`. It deliberately
+does not register related-resource GET URLs. `router_with_query_and_mutations`
+composes these routes with the opt-in query router. The default `router`
+remains GET-only.
+
+`ResourceDefinition::to_one_relationship` and
+`ResourceDefinition::to_many_relationship` declare the cardinality needed to
+validate relationship linkage and method shape. Existing
+`ResourceDefinition::relationship` declarations remain cardinality-unspecified;
+they can be used for reads but mutation endpoints reject writes until
+cardinality is declared. Applications can use their own Axum routes with the
+read-only router to choose alternative URL shapes; the framework does not
+provide a path-template DSL.
+
+Resource POST accepts a primary resource object whose `type` matches the
+collection. The server assigns its identity: client-supplied `id` is not
+supported and returns 403. A successful create returns 201 with primary
+resource data and a `Location` header. Resource PATCH requires matching `type`
+and `id` and only changes submitted fields. Omitted attributes and
+relationships remain unchanged; an explicit attribute `null` or relationship
+`data: null` remains a distinct requested change. Every supplied relationship
+must contain `data`. Resource DELETE returns 204 after successful deletion.
+Create type mismatch and PATCH type/ID mismatch return 409; nonexistent
+resources or related targets return 404 through the adapter error mapping.
+These selected responses follow the JSON:API 1.1 [resource creation](https://jsonapi.org/format/1.1/#crud-creating),
+[resource update](https://jsonapi.org/format/1.1/#crud-updating), and
+[resource deletion](https://jsonapi.org/format/1.1/#crud-deleting) rules.
+
+Relationship GET returns `200` with resource linkage as primary `data`. PATCH
+replaces to-one or to-many linkage; POST and DELETE accept to-many linkage
+arrays only. Their `data` arrays may be empty. A successful write returns 200
+with the resulting linkage. Application executors must make POST idempotent
+(already-linked identifiers are not duplicated) and DELETE idempotent
+(already-absent linkage members are successful no-ops). Invalid method and
+cardinality combinations return 403. Unknown attributes/relationships,
+malformed documents, and unsupported media types are rejected before
+authorization or adapter execution; authorization denial also precedes any
+adapter call. These semantics and the 200/204 response alternatives follow
+the JSON:API 1.1 [fetching relationships](https://jsonapi.org/format/1.1/#fetching-relationships)
+and [updating to-many relationships](https://jsonapi.org/format/1.1/#crud-updating-to-many-relationships)
+rules.
+
+`MutationCommand`, `ResourceMutationChangeset`, and
+`MutationResourceAdapter` form the base HTTP persistence contract. The route
+layer resolves public names through the registry but does not translate
+commands into Atomic `PlannedOperation`s or use Atomic result documents.
+`SeaOrmBaseMutationAdapter` starts one `DatabaseTransaction` per command,
+dispatches to the first matching `SeaOrmBaseMutationExecutor`, and commits or
+rolls back that command. Applications provide typed executors for their
+entities and relationship shapes. These are application hooks, not a generic
+automatic mapping from registry strings to database relationships.
+
+The focused PostgreSQL/SQLite route cases in
+`tests/support/http_mutation_cases.rs` verify create/update/delete persistence,
+to-one linkage, to-many add/replace/remove, duplicate additions, empty arrays,
+absent-member removal, omitted-versus-null PATCH fields, missing parent/target
+404s, and rollback after an attribute write is followed by a missing related
+target. The cases use an explicit typed fixture executor to exercise the
+adapter contract; they do not claim that arbitrary application entities or
+association shapes are inferred automatically.
 
 ## Atomic Operations
 

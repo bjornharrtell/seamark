@@ -11,14 +11,17 @@ use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderValue, Request, Response, StatusCode};
 use seamark::document::{JsonApiDocument, Relationship, RelationshipData, ResourceIdentifier};
 use seamark::http::{
-    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
-    QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RequestAuthorizer,
-    ResourceAdapter,
+    self, AdapterError, AdapterIncludedResource, AdapterResource, MutationAdapterError,
+    MutationCommand, MutationOutcome, MutationResourceAdapter, QueryAdapterError,
+    QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RelationshipMutation,
+    RequestAuthorizer, ResourceAdapter, ResourceMutationChangeset,
 };
 use seamark::query::{
     FilterExpression, FilterValue, PaginationConfig, PlannedField, ReadPlan, SortDirection,
 };
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    RelationshipCardinality, RelationshipMapping, ResourceDefinition, ResourceRegistry,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -136,6 +139,101 @@ impl QueryResourceAdapter for FailingQueryAdapter {
     }
 }
 
+#[derive(Default)]
+struct TestMutationAdapter {
+    commands: Mutex<Vec<MutationCommand>>,
+}
+
+#[async_trait]
+impl MutationResourceAdapter for TestMutationAdapter {
+    async fn execute(
+        &self,
+        resource: &ResourceDefinition,
+        command: MutationCommand,
+    ) -> Result<MutationOutcome, MutationAdapterError> {
+        self.commands.lock().unwrap().push(command.clone());
+        match command {
+            MutationCommand::Create { changeset } => Ok(MutationOutcome::Resource(
+                record_from_changeset(resource, "42", changeset),
+            )),
+            MutationCommand::Update { id, changeset } => Ok(MutationOutcome::Resource(
+                record_from_changeset(resource, &id, changeset),
+            )),
+            MutationCommand::Delete { .. } => Ok(MutationOutcome::Deleted),
+            MutationCommand::ReadRelationship { relationship, .. } => {
+                Ok(MutationOutcome::Relationship(empty_linkage(&relationship)))
+            }
+            MutationCommand::ModifyRelationship {
+                relationship,
+                mutation,
+                ..
+            } => {
+                let data = match mutation {
+                    RelationshipMutation::Replace(data) => data,
+                    RelationshipMutation::Add(identifiers)
+                    | RelationshipMutation::Remove(identifiers) => {
+                        seamark::document::RelationshipData::Many(identifiers)
+                    }
+                };
+                if !linkage_matches_test_mapping(&data, &relationship) {
+                    return Err(MutationAdapterError::Failed);
+                }
+                Ok(MutationOutcome::Relationship(data))
+            }
+        }
+    }
+}
+
+fn record_from_changeset(
+    _definition: &ResourceDefinition,
+    id: &str,
+    changeset: ResourceMutationChangeset,
+) -> AdapterResource {
+    AdapterResource {
+        id: id.to_owned(),
+        attributes: changeset.attributes,
+        relationships: changeset
+            .relationships
+            .into_iter()
+            .map(|(field, data)| {
+                (
+                    field,
+                    seamark::document::Relationship {
+                        data: Some(data),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn empty_linkage(relationship: &RelationshipMapping) -> seamark::document::RelationshipData {
+    match relationship.cardinality() {
+        Some(RelationshipCardinality::ToOne) => seamark::document::RelationshipData::Null,
+        Some(RelationshipCardinality::ToMany) => {
+            seamark::document::RelationshipData::Many(Vec::new())
+        }
+        None => unreachable!("mutation routes require declared cardinality"),
+    }
+}
+
+fn linkage_matches_test_mapping(
+    data: &seamark::document::RelationshipData,
+    relationship: &RelationshipMapping,
+) -> bool {
+    matches!(
+        (relationship.cardinality(), data),
+        (
+            Some(RelationshipCardinality::ToOne),
+            seamark::document::RelationshipData::Null | seamark::document::RelationshipData::One(_)
+        ) | (
+            Some(RelationshipCardinality::ToMany),
+            seamark::document::RelationshipData::Many(_)
+        )
+    )
+}
+
 struct TestAuthorizer {
     allowed: bool,
     calls: AtomicUsize,
@@ -235,12 +333,52 @@ fn query_test_app(
     )
 }
 
+fn mutation_test_app(allowed: bool) -> (Router, Arc<TestMutationAdapter>, Arc<TestAuthorizer>) {
+    let ports = ResourceDefinition::new("ports", "port_id")
+        .attribute("name", "title", false, false)
+        .to_one_relationship("owner", "owner_id", "people")
+        .to_many_relationship("tags", "tag_links", "tags");
+    let people = ResourceDefinition::new("people", "person_id");
+    let tags = ResourceDefinition::new("tags", "tag_id");
+    let registry = Arc::new(ResourceRegistry::new([ports, people, tags]).unwrap());
+    let authorizer = Arc::new(TestAuthorizer {
+        allowed,
+        calls: AtomicUsize::new(0),
+    });
+    let mutation_adapter = Arc::new(TestMutationAdapter::default());
+    let app = http::router_with_mutations(
+        registry,
+        Arc::new(TestAdapter::default()),
+        authorizer.clone(),
+        mutation_adapter.clone(),
+    );
+    (app, mutation_adapter, authorizer)
+}
+
 fn request(uri: &str, accept: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().uri(uri);
     if let Some(accept) = accept {
         builder = builder.header(ACCEPT, accept);
     }
     builder.body(Body::empty()).unwrap()
+}
+
+fn mutation_request(method: &str, uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(ACCEPT, JSONAPI_MEDIA_TYPE)
+        .header(CONTENT_TYPE, JSONAPI_MEDIA_TYPE)
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
+
+fn read_request(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header(ACCEPT, JSONAPI_MEDIA_TYPE)
+        .body(Body::empty())
+        .unwrap()
 }
 
 fn request_with_accepts(uri: &str, accepts: &[&str]) -> Request<Body> {
@@ -275,6 +413,277 @@ fn assert_jsonapi_headers(response: &Response<Body>) {
         JSONAPI_MEDIA_TYPE
     );
     assert_eq!(response.headers().get(VARY).unwrap(), "Accept");
+}
+
+#[tokio::test]
+async fn base_resource_create_returns_created_representation_and_mapped_changeset() {
+    let (app, adapter, _) = mutation_test_app(true);
+    let response = app
+        .oneshot(mutation_request(
+            "POST",
+            "/ports",
+            r#"{"data":{"type":"ports","attributes":{"name":"West"},"relationships":{"owner":{"data":{"type":"people","id":"7"}}}}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_jsonapi_headers(&response);
+    assert_eq!(response.headers().get("location").unwrap(), "/ports/42");
+    let document = serde_json::to_value(document(response).await).unwrap();
+    assert_eq!(
+        document,
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "42",
+                "attributes": {"name": "West"},
+                "relationships": {"owner": {"data": {"type": "people", "id": "7"}}}
+            }
+        })
+    );
+    let commands = adapter.commands.lock().unwrap();
+    let MutationCommand::Create { changeset } = &commands[0] else {
+        panic!("expected a resource create command");
+    };
+    assert_eq!(changeset.attributes.get("title"), Some(&json!("West")));
+    assert!(!changeset.attributes.contains_key("name"));
+    assert_eq!(
+        changeset.relationships.get("owner_id"),
+        Some(&seamark::document::RelationshipData::One(
+            seamark::document::ResourceIdentifier {
+                type_name: "people".to_owned(),
+                id: Some("7".to_owned()),
+                ..Default::default()
+            }
+        ))
+    );
+}
+
+#[tokio::test]
+async fn base_resource_patch_preserves_omitted_fields_and_explicit_null() {
+    let (app, adapter, _) = mutation_test_app(true);
+    let response = app
+        .oneshot(mutation_request(
+            "PATCH",
+            "/ports/3",
+            r#"{"data":{"type":"ports","id":"3","attributes":{"name":null}}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_jsonapi_headers(&response);
+    let document = serde_json::to_value(document(response).await).unwrap();
+    assert_eq!(document["data"]["id"], "3");
+    assert_eq!(document["data"]["attributes"]["name"], Value::Null);
+    let commands = adapter.commands.lock().unwrap();
+    let MutationCommand::Update { id, changeset } = &commands[0] else {
+        panic!("expected a resource update command");
+    };
+    assert_eq!(id, "3");
+    assert_eq!(changeset.attributes.get("title"), Some(&Value::Null));
+    assert!(changeset.relationships.is_empty());
+}
+
+#[tokio::test]
+async fn base_resource_delete_returns_no_content() {
+    let (app, adapter, _) = mutation_test_app(true);
+    let request = Request::builder()
+        .method("DELETE")
+        .uri("/ports/3")
+        .header(ACCEPT, JSONAPI_MEDIA_TYPE)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(response.headers().get(CONTENT_TYPE).is_none());
+    assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap().len(), 0);
+    assert!(matches!(
+        adapter.commands.lock().unwrap().as_slice(),
+        [MutationCommand::Delete { id }] if id == "3"
+    ));
+}
+
+#[tokio::test]
+async fn relationship_linkage_routes_read_replace_add_and_remove() {
+    let (app, adapter, _) = mutation_test_app(true);
+    let response = app
+        .clone()
+        .oneshot(read_request("/ports/1/relationships/tags"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_jsonapi_headers(&response);
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), 1024 * 1024).await.unwrap()
+        )
+        .unwrap(),
+        json!({"data": []})
+    );
+
+    let response = app
+        .clone()
+        .oneshot(mutation_request(
+            "PATCH",
+            "/ports/1/relationships/owner",
+            r#"{"data":{"type":"people","id":"9"}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), 1024 * 1024).await.unwrap()
+        )
+        .unwrap(),
+        json!({"data": {"type": "people", "id": "9"}})
+    );
+
+    for (method, identifier) in [("POST", "4"), ("DELETE", "5")] {
+        let response = app
+            .clone()
+            .oneshot(mutation_request(
+                method,
+                "/ports/1/relationships/tags",
+                &format!(r#"{{"data":[{{"type":"tags","id":"{identifier}"}}]}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), 1024 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["data"][0]["id"], identifier);
+    }
+    let commands = adapter.commands.lock().unwrap();
+    assert!(matches!(
+        commands.as_slice(),
+        [
+            MutationCommand::ReadRelationship { .. },
+            MutationCommand::ModifyRelationship {
+                mutation: RelationshipMutation::Replace(_),
+                ..
+            },
+            MutationCommand::ModifyRelationship {
+                mutation: RelationshipMutation::Add(_),
+                ..
+            },
+            MutationCommand::ModifyRelationship {
+                mutation: RelationshipMutation::Remove(_),
+                ..
+            }
+        ]
+    ));
+}
+
+#[tokio::test]
+async fn mutation_validation_and_authorization_precede_adapter_execution() {
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    let response = app
+        .clone()
+        .oneshot(mutation_request(
+            "POST",
+            "/ports",
+            r#"{"data":{"type":"ports","attributes":{"secret":"hidden"}}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let document = error_document(response).await;
+    assert_eq!(
+        document.errors.as_ref().unwrap()[0]
+            .source
+            .as_ref()
+            .unwrap()
+            .pointer
+            .as_deref(),
+        Some("/data/attributes/secret")
+    );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+
+    let mut invalid_media_type = mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
+    invalid_media_type
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let response = app.oneshot(invalid_media_type).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+
+    let (app, adapter, authorizer) = mutation_test_app(false);
+    let response = app
+        .oneshot(mutation_request("DELETE", "/ports/1", ""))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    let cases = [
+        (
+            "POST",
+            "/ports",
+            r#"{"data":{"type":"ports","id":"client-id"}}"#,
+            StatusCode::FORBIDDEN,
+            "client_generated_id_not_supported",
+        ),
+        (
+            "POST",
+            "/ports",
+            r#"{"data":{"type":"people"}}"#,
+            StatusCode::CONFLICT,
+            "resource_type_mismatch",
+        ),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"type":"people","id":"1"}}"#,
+            StatusCode::CONFLICT,
+            "resource_type_mismatch",
+        ),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"type":"ports","id":"2"}}"#,
+            StatusCode::CONFLICT,
+            "resource_id_mismatch",
+        ),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"type":"ports","id":"1","relationships":{"owner":{}}}}"#,
+            StatusCode::BAD_REQUEST,
+            "relationship_data_required",
+        ),
+    ];
+    for (method, uri, body, expected_status, expected_code) in cases {
+        let response = app
+            .clone()
+            .oneshot(mutation_request(method, uri, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status, "{method} {uri}");
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some(expected_code));
+    }
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+
+    let response = app
+        .oneshot(mutation_request(
+            "POST",
+            "/ports/1/relationships/owner",
+            r#"{"data":[]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
