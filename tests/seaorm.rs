@@ -30,7 +30,7 @@ use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
     QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
-use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
+use seamark::query::{IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     IncludedResource, SeaOrmExecutionError, SeaOrmFilterValueCodec, SeaOrmIncludeLoader,
@@ -625,13 +625,47 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         PortFilterCodec,
     )
     .unwrap();
-    let query = query_cases::first_page_with_owner();
-    let read_plan = plan(&query);
     let guard = AllowGuard {
         authorized: true,
         maximum_page_size: 10,
         maximum_offset: 100,
     };
+    let mut unregistered_fieldset = plan(&ReadQuery::default());
+    unregistered_fieldset.fieldsets.insert(
+        "ports".to_owned(),
+        vec![PlannedField::Attribute {
+            public_name: "private".to_owned(),
+            model_field: "private".to_owned(),
+        }],
+    );
+    let error = executor
+        .collection(&database, &unregistered_fieldset, &guard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "field `private` is not a valid registered field on resource `ports`"
+    );
+    let mut mismapped_relationship_fieldset = plan(&ReadQuery::default());
+    mismapped_relationship_fieldset.fieldsets.insert(
+        "ports".to_owned(),
+        vec![PlannedField::Relationship {
+            public_name: "owner".to_owned(),
+            model_field: "owner_id".to_owned(),
+            target_type: "ports".to_owned(),
+        }],
+    );
+    let error = executor
+        .collection(&database, &mismapped_relationship_fieldset, &guard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "field `owner` is not a valid registered field on resource `ports`"
+    );
+
+    let query = query_cases::first_page_with_owner();
+    let read_plan = plan(&query);
     let result = executor
         .collection(&database, &read_plan, &guard, Some(&PortOwnerLoader))
         .await

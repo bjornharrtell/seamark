@@ -26,6 +26,12 @@ bound SeaORM entity at construction. Non-queryable attributes may remain
 computed mapper outputs. Relationship mapping/loading remains explicit and
 application-defined.
 
+At execution, sparse fieldset entries are revalidated against the exact
+registered public name, model field, and relationship target. The executor
+also intersects mapper output with registered attributes and relationships
+before applying a fieldset, so a manually constructed read plan cannot expose
+an unregistered mapper value through `SeaOrmReadResult`.
+
 ## Relationships and application integration
 
 Registered relationship metadata should identify target resource types and support validating linkage, loading requested related data, and applying explicit relationship-update rules. Applications will need integration points for validation, authorization, business rules, and custom mapping; their exact lifecycle and ordering are not settled here.

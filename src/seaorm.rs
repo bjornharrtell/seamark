@@ -135,6 +135,13 @@ pub enum SeaOrmExecutionError {
         /// The plan's public resource type.
         actual: String,
     },
+    /// A sparse fieldset contains a field or mapping not declared in the registry.
+    InvalidFieldsetField {
+        /// The public resource type selected by the fieldset.
+        resource_type: String,
+        /// The public field name supplied by the plan.
+        public_name: String,
+    },
     /// An internal field name could not be resolved to an entity column.
     UnknownModelField(String),
     /// An include plan requires an application-specific loader.
@@ -170,6 +177,13 @@ impl fmt::Display for SeaOrmExecutionError {
             Self::ResourceTypeMismatch { expected, actual } => write!(
                 formatter,
                 "read plan type `{actual}` does not match executor type `{expected}`"
+            ),
+            Self::InvalidFieldsetField {
+                resource_type,
+                public_name,
+            } => write!(
+                formatter,
+                "field `{public_name}` is not a valid registered field on resource `{resource_type}`"
             ),
             Self::UnknownModelField(field) => {
                 write!(formatter, "model field `{field}` is not a SeaORM column")
@@ -302,6 +316,7 @@ where
                 actual: plan.resource_type.clone(),
             });
         }
+        validate_fieldset_mappings(&self.registry, plan)?;
         if !guard.authorize(plan).await {
             return Err(SeaOrmExecutionError::NotAuthorized);
         }
@@ -383,6 +398,50 @@ where
         .map_err(|_| SeaOrmExecutionError::UnknownModelField(model_field.to_owned()))
 }
 
+fn validate_fieldset_mappings(
+    registry: &ResourceRegistry,
+    plan: &ReadPlan,
+) -> Result<(), SeaOrmExecutionError> {
+    for (resource_type, fields) in &plan.fieldsets {
+        let definition = registry
+            .resource(resource_type)
+            .map_err(|_| SeaOrmExecutionError::UnknownResourceType(resource_type.clone()))?;
+        for field in fields {
+            let (public_name, mapping_is_valid) = match field {
+                PlannedField::Attribute {
+                    public_name,
+                    model_field,
+                } => (
+                    public_name,
+                    definition
+                        .attribute_by_name(public_name)
+                        .is_some_and(|mapping| mapping.model_field() == model_field),
+                ),
+                PlannedField::Relationship {
+                    public_name,
+                    model_field,
+                    target_type,
+                } => (
+                    public_name,
+                    definition
+                        .relationship_by_name(public_name)
+                        .is_some_and(|mapping| {
+                            mapping.model_field() == model_field
+                                && mapping.target_type() == target_type
+                        }),
+                ),
+            };
+            if !mapping_is_valid {
+                return Err(SeaOrmExecutionError::InvalidFieldsetField {
+                    resource_type: resource_type.clone(),
+                    public_name: public_name.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn filter_condition<E, C>(
     expression: &FilterExpression,
     codec: &C,
@@ -435,21 +494,20 @@ fn project_record(
     mut resource: AdapterResource,
     fieldset: Option<&[PlannedField]>,
 ) -> AdapterResource {
+    resource.attributes.retain(|model_field, _| {
+        definition
+            .attributes()
+            .iter()
+            .any(|attribute| attribute.model_field() == model_field)
+    });
+    resource.relationships.retain(|model_field, _| {
+        definition
+            .relationships()
+            .iter()
+            .any(|relationship| relationship.model_field() == model_field)
+    });
     if let Some(fields) = fieldset {
         project_record_fields(&mut resource, fields);
-    } else {
-        resource.attributes.retain(|model_field, _| {
-            definition
-                .attributes()
-                .iter()
-                .any(|attribute| attribute.model_field() == model_field)
-        });
-        resource.relationships.retain(|model_field, _| {
-            definition
-                .relationships()
-                .iter()
-                .any(|relationship| relationship.model_field() == model_field)
-        });
     }
     resource
 }
