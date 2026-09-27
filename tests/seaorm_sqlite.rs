@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
-use axum::http::header::{CONTENT_TYPE, VARY};
+use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
@@ -37,6 +37,7 @@ use seamark::atomic::{
     AtomicOperationsGuard, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
     execute_atomic_operations, plan_atomic_operations,
 };
+use seamark::atomic_http;
 use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
     QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RequestAuthorizer,
@@ -56,6 +57,18 @@ use seamark::seaorm_mutation::{
 };
 use serde_json::json;
 use tower::ServiceExt;
+
+const ATOMIC_MEDIA_TYPE: &str = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\"";
+
+fn atomic_operations_request(body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/operations")
+        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
+        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
 
 mod port {
     use sea_orm::entity::prelude::*;
@@ -1598,6 +1611,96 @@ async fn persists_sqlite_atomic_crud_and_relationship_updates() {
             .unwrap()
             .display_name,
         "Mara"
+    );
+
+    let app = atomic_http::router(
+        Arc::new(registry.clone()),
+        database.clone(),
+        Arc::new(AllowAtomicGuard),
+        Arc::new(mutation_dispatcher(&registry)),
+    );
+    let successful_request = r#"{"atomic:operations":[{"op":"add","data":{"type":"people","lid":"http-owner","attributes":{"name":"HTTP owner","note":"private"}}},{"op":"add","data":{"type":"ports","lid":"http-port","attributes":{"name":"HTTP port","depth":7,"active":true},"relationships":{"owner":{"data":{"type":"people","lid":"http-owner"}}}}}]}"#;
+    let response = app
+        .clone()
+        .oneshot(atomic_operations_request(successful_request))
+        .await
+        .unwrap();
+    let response_status = response.status();
+    let response_content_type = response.headers().get(CONTENT_TYPE).unwrap().clone();
+    let response_vary = response.headers().get(VARY).unwrap().clone();
+    let response_body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let response_document: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+    assert_eq!(response_status, StatusCode::OK, "{response_document}");
+    assert_eq!(response_content_type, ATOMIC_MEDIA_TYPE);
+    assert_eq!(response_vary, "Accept");
+    assert_eq!(
+        response_document["atomic:results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let http_owner_id = response_document["atomic:results"][0]["data"]["id"]
+        .as_str()
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    let http_port_id = response_document["atomic:results"][1]["data"]["id"]
+        .as_str()
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(
+        response_document["atomic:results"][0]["data"]["type"],
+        "people"
+    );
+    assert_eq!(
+        response_document["atomic:results"][1]["data"]["type"],
+        "ports"
+    );
+    assert_eq!(
+        person::Entity::find_by_id(http_owner_id)
+            .one(&database)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_name,
+        "HTTP owner"
+    );
+    assert_eq!(
+        port::Entity::find_by_id(http_port_id)
+            .one(&database)
+            .await
+            .unwrap()
+            .unwrap()
+            .owner_id,
+        Some(http_owner_id)
+    );
+    let failed_request = r#"{"atomic:operations":[{"op":"add","data":{"type":"people","attributes":{"name":"HTTP rollback","note":"private"}}},{"op":"update","ref":{"type":"people","id":"999999"},"data":{"type":"people","attributes":{"name":"missing","note":"private"}}}]}"#;
+    let response = app
+        .oneshot(atomic_operations_request(failed_request))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE).unwrap(),
+        ATOMIC_MEDIA_TYPE
+    );
+    assert_eq!(response.headers().get(VARY).unwrap(), "Accept");
+    let error_document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
+    assert_eq!(
+        error_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(error_document.get("atomic:results").is_none());
+    let people = person::Entity::find().all(&database).await.unwrap();
+    assert_eq!(people.len(), 2);
+    assert!(
+        people
+            .iter()
+            .all(|person| person.display_name != "HTTP rollback")
     );
     database.close().await.unwrap();
 }

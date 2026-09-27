@@ -6,7 +6,9 @@ mod atomic_cases;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::http::HeaderMap;
+use axum::body::{Body, to_bytes};
+use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
+use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction, DbBackend,
@@ -18,6 +20,7 @@ use seamark::atomic::{
     PlannedOperation, execute_atomic_operations, plan_atomic_operations,
     plan_atomic_operations_with_href_resolver,
 };
+use seamark::atomic_http;
 use seamark::document::ResourceIdentifier;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
@@ -26,6 +29,19 @@ use seamark::seaorm_mutation::{
     SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
+use tower::ServiceExt;
+
+const ATOMIC_MEDIA_TYPE: &str = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\"";
+
+fn atomic_operations_request(body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/operations")
+        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
+        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
 
 mod author {
     use sea_orm::entity::prelude::*;
@@ -655,6 +671,87 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
     ));
     let authors = author::Entity::find().all(&database).await.unwrap();
     assert_eq!(authors.len(), 1);
+
+    let app = atomic_http::router(
+        Arc::new(registry.clone()),
+        database.clone(),
+        Arc::new(TestGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let successful_request = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","lid":"http-author","attributes":{"name":"HTTP author"}}},{"op":"add","data":{"type":"articles","lid":"http-article","attributes":{"title":"HTTP article"},"relationships":{"author":{"data":{"type":"authors","lid":"http-author"}}}}}]}"#;
+    let response = app
+        .clone()
+        .oneshot(atomic_operations_request(successful_request))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        response_document["atomic:results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let http_author_id = response_document["atomic:results"][0]["data"]["id"]
+        .as_str()
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    let http_article_id = response_document["atomic:results"][1]["data"]["id"]
+        .as_str()
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(
+        response_document["atomic:results"][0]["data"]["type"],
+        "authors"
+    );
+    assert_eq!(
+        response_document["atomic:results"][1]["data"]["type"],
+        "articles"
+    );
+    assert_eq!(
+        author::Entity::find_by_id(http_author_id)
+            .one(&database)
+            .await
+            .unwrap()
+            .unwrap()
+            .name,
+        "HTTP author"
+    );
+    assert_eq!(
+        article::Entity::find_by_id(http_article_id)
+            .one(&database)
+            .await
+            .unwrap()
+            .unwrap()
+            .author_id,
+        Some(http_author_id)
+    );
+
+    let failed_request = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"HTTP rollback"}}},{"op":"update","ref":{"type":"authors","id":"999999"},"data":{"type":"authors","attributes":{"name":"missing"}}}]}"#;
+    let response = app
+        .oneshot(atomic_operations_request(failed_request))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
+    assert_eq!(
+        error_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(error_document.get("atomic:results").is_none());
+    let authors = author::Entity::find().all(&database).await.unwrap();
+    assert_eq!(authors.len(), 2);
+    assert!(authors.iter().all(|author| author.name != "HTTP rollback"));
 
     database
         .execute_unprepared(
