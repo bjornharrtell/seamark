@@ -39,7 +39,11 @@ pub trait SeaOrmAtomicOperationExecutor: Send + Sync {
     ) -> Result<AtomicOperationOutcome, String>;
 }
 
-/// Dispatches planned operations to the first supporting typed executor.
+/// Dispatches planned operations to typed executors.
+///
+/// If no executor handles an `UpdateResource` operation directly, a resource
+/// update containing to-many linkage is composed from its typed resource
+/// executor and matching relationship executors within the same transaction.
 pub struct SeaOrmAtomicOperationDispatcher {
     executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>>,
 }
@@ -63,6 +67,71 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
         for executor in &self.executors {
             if executor.supports(operation) {
                 return executor.execute(transaction, operation, local_ids).await;
+            }
+        }
+        if let PlannedOperation::UpdateResource {
+            target: AtomicTarget::Reference(reference),
+            data,
+            changeset,
+        } = operation
+        {
+            let has_to_many = changeset
+                .relationships
+                .as_ref()
+                .is_some_and(|relationships| {
+                    relationships.values().any(|relationship| {
+                        matches!(&relationship.data, Some(RelationshipData::Many(_)))
+                    })
+                });
+            if has_to_many {
+                let mut resource_changeset = changeset.clone();
+                if let Some(relationships) = resource_changeset.relationships.as_mut() {
+                    relationships.retain(|_, relationship| {
+                        !matches!(&relationship.data, Some(RelationshipData::Many(_)))
+                    });
+                }
+                let resource_operation = PlannedOperation::UpdateResource {
+                    target: AtomicTarget::Reference(reference.clone()),
+                    data: data.clone(),
+                    changeset: resource_changeset,
+                };
+                let resource_executor = self
+                    .executors
+                    .iter()
+                    .find(|executor| executor.supports(&resource_operation))
+                    .ok_or_else(|| {
+                        "no SeaORM mutation executor supports the resource update".to_owned()
+                    })?;
+                let outcome = resource_executor
+                    .execute(transaction, &resource_operation, local_ids)
+                    .await?;
+
+                for (model_field, relationship) in
+                    changeset.relationships.as_ref().into_iter().flatten()
+                {
+                    let Some(RelationshipData::Many(identifiers)) = &relationship.data else {
+                        continue;
+                    };
+                    let relationship_operation = PlannedOperation::UpdateRelationship {
+                        reference: reference.clone(),
+                        model_field: model_field.clone(),
+                        data: RelationshipData::Many(identifiers.clone()),
+                    };
+                    let relationship_executor = self
+                        .executors
+                        .iter()
+                        .find(|executor| executor.supports(&relationship_operation))
+                        .ok_or_else(|| {
+                            format!(
+                                "no SeaORM relationship executor supports field `{model_field}`"
+                            )
+                        })?;
+                    relationship_executor
+                        .execute(transaction, &relationship_operation, local_ids)
+                        .await?;
+                }
+
+                return Ok(outcome);
             }
         }
         Err("no SeaORM mutation executor supports this operation".to_owned())

@@ -179,6 +179,22 @@ both prior FK values intact. The handler does not persist member ordering;
 join tables, non-nullable direct FKs, and other association shapes remain
 available to explicitly dispatched custom executors.
 
+### M5 resource updates with to-many relationships
+
+When no custom executor handles an `UpdateResource` directly,
+`SeaOrmAtomicOperationDispatcher` now separates to-many linkage from the
+resource changeset, executes scalar and to-one changes with the typed resource
+handler, and dispatches each to-many replacement through its registered typed
+relationship handler in the same transaction. The shared
+`execute_to_many_relationship_replacement_case` verifies this with a join-table
+relationship, while `execute_to_many_foreign_key_relationship_case` verifies
+the nullable direct-FK path; both run against PostgreSQL and SQLite. The
+join-table case also forces a later relationship failure after a scalar update
+and asserts that the Atomic operation rolls both changes back. Custom
+executors retain first-match precedence. Resource adds containing to-many
+linkage, ordered associations, non-nullable direct FKs, and other unconfigured
+association shapes remain outside this built-in composition.
+
 ### M7 multi-field nullable sort parity evidence
 
 The shared `multi_field_sorted_ports` database case runs on PostgreSQL and

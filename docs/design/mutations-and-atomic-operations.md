@@ -4,6 +4,7 @@
 changesets, a standalone Axum route, extension negotiation, typed SeaORM
 resource CRUD, to-one foreign-key writes, nullable direct-FK to-many
 add/remove/replacement, explicitly configured two-column join-table membership writes,
+resource-level to-many updates composed through typed relationship handlers,
 and transaction orchestration are implemented. Other to-many association
 shapes and full normative conformance remain application-specific or
 incomplete.
@@ -52,9 +53,14 @@ updates. Applications supply explicit value and identifier codecs. A
 executors. The typed handler supports route-resolved resource `href` updates
 and deletes and collection `href` adds after the planner normalizes or
 validates them. Relationship `href` targets are normalized to
-registry-checked references. To-many resource changesets and unsupported
-relationship association shapes remain available for custom handlers or the
-dedicated typed relationship executors.
+registry-checked references. When no custom executor handles a resource
+`update` containing to-many relationship data, the dispatcher executes the
+resource's attributes and to-one changes with its typed resource handler, then
+dispatches each to-many replacement to its matching typed relationship
+executor in the same transaction. A failure in either part rolls back the
+whole operation batch. To-many resource adds and unsupported association
+shapes remain available to custom handlers or the dedicated typed
+relationship executors.
 
 `SeaOrmJoinTableMutationHandler<E, C>` handles to-many add/remove operations
 and full membership replacement through Atomic `update` for a configured
