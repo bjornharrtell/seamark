@@ -1,6 +1,14 @@
 # JSON:API conformance
 
-**Status: proposal for review.** No implementation or conformance suite exists yet.
+**Status: proposal for review; implementation is partial.** The initial Rust
+crate provides JSON:API document types and structural checks, but no complete
+conformance suite exists yet.
+
+The initial validator distinguishes request-style local IDs from response
+resource IDs and rejects duplicate resource object identities scoped by type
+across primary and included data. Full compound-document linkage, including
+linkage reachability and local-ID consistency across relationship identifiers,
+is not implemented yet.
 
 The initial complete-release objective is full normative compliance with the JSON:API 1.1 base specification and complete support for its Atomic Operations extension. Other third-party extensions and profiles are deferred.
 
