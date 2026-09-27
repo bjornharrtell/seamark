@@ -1050,12 +1050,9 @@ fn rejects_invalid_at_member_names_while_ignoring_valid_members() {
         );
     }
 
-    let invalid_link_relation: JsonApiDocument =
-        serde_json::from_value(json!({"links": {"@bad/": false}})).unwrap();
-    assert_eq!(
-        invalid_link_relation.validate(),
-        Err(DocumentValidationError::InvalidMemberName)
-    );
+    let invalid_link_relation: Result<JsonApiDocument, _> =
+        serde_json::from_value(json!({"links": {"@bad/": false}}));
+    assert!(invalid_link_relation.is_err());
 
     let valid: JsonApiDocument = serde_json::from_value(json!({
         "data": {
@@ -1071,7 +1068,7 @@ fn rejects_invalid_at_member_names_while_ignoring_valid_members() {
 }
 
 #[test]
-fn ignores_valid_at_members_and_rejects_invalid_names_in_metadata_maps() {
+fn ignores_valid_at_members_and_rejects_invalid_names_in_object_maps() {
     let document: JsonApiDocument = serde_json::from_value(json!({
         "data": {
             "type": "ports",
@@ -1079,11 +1076,14 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_metadata_maps() {
             "relationships": {
                 "owner": {
                     "data": null,
+                    "links": {"@annotation": false, "related": "/ports/1/owner"},
                     "meta": {"@annotation": false, "source": "fixture"}
                 }
             },
+            "links": {"@annotation": false, "self": "/ports/1"},
             "meta": {"@annotation": false, "visible": true}
         },
+        "links": {"@annotation": false, "self": "/ports"},
         "meta": {"@annotation": false, "revision": "one"},
         "jsonapi": {"version": "1.1", "meta": {"@annotation": false, "vendor": "fixture"}}
     }))
@@ -1094,9 +1094,15 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_metadata_maps() {
         document.meta.as_ref().unwrap().get("revision"),
         Some(&json!("one"))
     );
+    assert_eq!(document.links.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        document.links.as_ref().unwrap().get("self"),
+        Some(&json!("/ports"))
+    );
     let Some(PrimaryData::One(resource)) = document.data.as_ref() else {
         panic!("expected one primary resource");
     };
+    assert_eq!(resource.links.as_ref().unwrap().len(), 1);
     assert_eq!(resource.meta.as_ref().unwrap().len(), 1);
     assert_eq!(
         resource.meta.as_ref().unwrap().get("visible"),
@@ -1108,6 +1114,7 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_metadata_maps() {
         .unwrap()
         .get("owner")
         .unwrap();
+    assert_eq!(relationship.links.as_ref().unwrap().len(), 1);
     assert_eq!(relationship.meta.as_ref().unwrap().len(), 1);
     assert_eq!(
         relationship.meta.as_ref().unwrap().get("source"),
@@ -1132,7 +1139,9 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_metadata_maps() {
 
     for value in [
         json!({"meta": {"@bad/": false}}),
+        json!({"links": {"@bad/": false}}),
         json!({"data": {"type": "ports", "id": "1", "meta": {"@bad/": false}}}),
+        json!({"data": {"type": "ports", "id": "1", "links": {"@bad/": false}}}),
         json!({"data": {"type": "ports", "id": "1", "relationships": {"owner": {
             "data": null, "meta": {"@bad/": false}
         }}}}),

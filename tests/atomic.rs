@@ -726,19 +726,22 @@ fn rejects_invalid_at_member_names_in_atomic_protocol_objects() {
 }
 
 #[test]
-fn ignores_valid_at_members_and_rejects_invalid_names_in_atomic_metadata() {
+fn ignores_valid_at_members_and_rejects_invalid_names_in_atomic_object_maps() {
     let document: AtomicOperationsDocument = serde_json::from_value(json!({
+        "links": {"@annotation": false, "self": "/operations"},
         "meta": {"@annotation": false, "request": "kept"},
         "atomic:operations": [{
             "op": "add",
             "meta": {"@annotation": false, "operation": "kept"},
             "data": {
                 "type": "authors",
+                "links": {"@annotation": false, "self": "/authors/1"},
                 "meta": {"@annotation": false, "resource": "kept"}
             }
         }]
     }))
     .unwrap();
+    assert_eq!(document.links.as_ref().unwrap().len(), 1);
     assert_eq!(document.meta.as_ref().unwrap().len(), 1);
     assert_eq!(
         document.meta.as_ref().unwrap().get("request"),
@@ -760,12 +763,14 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_atomic_metadata() {
             .clone(),
     )
     .unwrap();
+    assert_eq!(resource_data.links.as_ref().unwrap().len(), 1);
     assert_eq!(
         resource_data.meta.as_ref().unwrap().get("resource"),
         Some(&json!("kept"))
     );
 
     for value in [
+        json!({"links": {"@bad/": false}, "atomic:operations": []}),
         json!({"meta": {"@bad/": false}, "atomic:operations": []}),
         json!({"atomic:operations": [{
             "op": "remove",
@@ -785,6 +790,11 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_atomic_metadata() {
         "meta": {"@bad/": false}
     });
     assert!(serde_json::from_value::<AtomicResourceData>(invalid_resource_metadata).is_err());
+    let invalid_resource_links = json!({
+        "type": "authors",
+        "links": {"@bad/": false}
+    });
+    assert!(serde_json::from_value::<AtomicResourceData>(invalid_resource_links).is_err());
     let invalid_operation_data = json!({"atomic:operations": [{
         "op": "add",
         "data": {"type": "authors", "meta": {"@bad/": false}}
