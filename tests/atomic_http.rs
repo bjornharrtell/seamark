@@ -1388,14 +1388,21 @@ async fn atomic_http_rejects_resource_update_data_mismatching_ref_before_authori
         handler.clone(),
     );
 
-    for (body, detail) in [
+    for (body, index, detail) in [
         (
             r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"},"data":{"type":"authors","id":"2","attributes":{"name":"Ada"}}}]}"#,
+            0,
             "the operation target identity must match the resource data",
         ),
         (
             r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"},"data":{"type":"articles","id":"1","attributes":{"title":"Ada"}}}]}"#,
+            0,
             "the operation target type must match the resource data type",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","lid":"first"}},{"op":"add","data":{"type":"authors","lid":"second"}},{"op":"update","ref":{"type":"authors","lid":"first"},"data":{"type":"authors","lid":"second","attributes":{"name":"Ada"}}}]}"#,
+            2,
+            "the operation target identity must match the resource data",
         ),
     ] {
         let response = app
@@ -1416,11 +1423,11 @@ async fn atomic_http_rejects_resource_update_data_mismatching_ref_before_authori
         assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
         assert_eq!(
             error["errors"][0]["detail"],
-            format!("invalid operation 0 at `/atomic:operations/0`: {detail}")
+            format!("invalid operation {index} at `/atomic:operations/{index}`: {detail}")
         );
         assert_eq!(
             error["errors"][0]["source"]["pointer"],
-            "/atomic:operations/0"
+            format!("/atomic:operations/{index}")
         );
         assert!(error.get("atomic:results").is_none());
     }
