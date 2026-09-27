@@ -1071,6 +1071,82 @@ fn rejects_invalid_at_member_names_while_ignoring_valid_members() {
 }
 
 #[test]
+fn ignores_valid_at_members_and_rejects_invalid_names_in_metadata_maps() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {
+                    "data": null,
+                    "meta": {"@annotation": false, "source": "fixture"}
+                }
+            },
+            "meta": {"@annotation": false, "visible": true}
+        },
+        "meta": {"@annotation": false, "revision": "one"},
+        "jsonapi": {"version": "1.1", "meta": {"@annotation": false, "vendor": "fixture"}}
+    }))
+    .unwrap();
+    document.validate().unwrap();
+    assert_eq!(document.meta.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        document.meta.as_ref().unwrap().get("revision"),
+        Some(&json!("one"))
+    );
+    let Some(PrimaryData::One(resource)) = document.data.as_ref() else {
+        panic!("expected one primary resource");
+    };
+    assert_eq!(resource.meta.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        resource.meta.as_ref().unwrap().get("visible"),
+        Some(&json!(true))
+    );
+    let relationship = resource
+        .relationships
+        .as_ref()
+        .unwrap()
+        .get("owner")
+        .unwrap();
+    assert_eq!(relationship.meta.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        relationship.meta.as_ref().unwrap().get("source"),
+        Some(&json!("fixture"))
+    );
+    assert_eq!(
+        document
+            .jsonapi
+            .as_ref()
+            .unwrap()
+            .meta
+            .as_ref()
+            .unwrap()
+            .len(),
+        1
+    );
+    let annotation_only: JsonApiDocument =
+        serde_json::from_value(json!({"meta": {"@annotation": false}})).unwrap();
+    assert!(annotation_only.meta.is_none());
+    let empty_meta: JsonApiDocument = serde_json::from_value(json!({"meta": {}})).unwrap();
+    assert_eq!(empty_meta.meta, Some(Default::default()));
+
+    for value in [
+        json!({"meta": {"@bad/": false}}),
+        json!({"data": {"type": "ports", "id": "1", "meta": {"@bad/": false}}}),
+        json!({"data": {"type": "ports", "id": "1", "relationships": {"owner": {
+            "data": null, "meta": {"@bad/": false}
+        }}}}),
+        json!({"errors": [{"detail": "missing", "meta": {"@bad/": false}}]}),
+        json!({"jsonapi": {"meta": {"@bad/": false}}}),
+    ] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(value).is_err(),
+            "invalid @-member names must be rejected in metadata maps"
+        );
+    }
+}
+
+#[test]
 fn relationship_objects_require_linkage_links_or_metadata() {
     for relationship in [
         json!({}),
