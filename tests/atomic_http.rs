@@ -13,6 +13,7 @@ use seamark::atomic::{
     AtomicResourceReference, AtomicResult, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
 };
 use seamark::atomic_http;
+use seamark::document::ResourceIdentifier;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -68,6 +69,14 @@ struct FailSecondHandler {
     calls: AtomicUsize,
 }
 
+struct CountingHandler {
+    calls: AtomicUsize,
+}
+
+struct LocalIdHandler {
+    calls: AtomicUsize,
+}
+
 #[async_trait]
 impl AtomicOperationHandler for AtMemberHandler {
     async fn execute_operation(
@@ -111,6 +120,62 @@ impl AtomicOperationHandler for FailSecondHandler {
             return Err("injected second-operation failure".to_owned());
         }
         Ok(AtomicOperationOutcome::default())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for CountingHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        _operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(AtomicOperationOutcome::default())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for LocalIdHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match operation {
+            PlannedOperation::AddResource { data, .. } => Ok(AtomicOperationOutcome {
+                result: AtomicResult {
+                    data: Some(json!({"type": data.type_name, "id": "created"})),
+                    meta: None,
+                },
+                created_resource: Some(ResourceIdentifier {
+                    type_name: data.type_name.clone(),
+                    id: Some("created".to_owned()),
+                    ..ResourceIdentifier::default()
+                }),
+            }),
+            PlannedOperation::RemoveResource {
+                target: seamark::atomic::AtomicTarget::Reference(reference),
+            } => {
+                let identity = local_ids.resolve(&ResourceIdentifier {
+                    type_name: reference.type_name.clone(),
+                    id: reference.id.clone(),
+                    lid: reference.lid.clone(),
+                    ..ResourceIdentifier::default()
+                })?;
+                if identity.type_name != "authors"
+                    || identity.id.as_deref() != Some("created")
+                    || identity.lid.is_some()
+                {
+                    return Err("unexpected operation or unresolved local ID".to_owned());
+                }
+                Ok(AtomicOperationOutcome::default())
+            }
+            _ => Err("unexpected operation or unresolved local ID".to_owned()),
+        }
     }
 }
 
@@ -541,6 +606,76 @@ async fn atomic_http_rejects_invalid_reference_identity_combinations() {
             error["errors"][0]["source"]["pointer"], "/atomic:operations/0",
             "error for malformed reference `{body}`: {error}"
         );
+    }
+
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_rejects_unresolved_local_ids_before_execution() {
+    let database = database().await;
+    let local_id_handler = Arc::new(LocalIdHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let local_id_app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        local_id_handler.clone(),
+    );
+    let valid_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","lid":"author-local","attributes":{"name":"Ada"}}},{"op":"remove","ref":{"type":"authors","lid":"author-local"}}]}"#;
+    let valid_response = local_id_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            valid_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(valid_response.status(), StatusCode::OK);
+    assert_eq!(
+        document(valid_response).await,
+        json!({"atomic:results": [
+            {"data": {"type": "authors", "id": "created"}},
+            {}
+        ]})
+    );
+    assert_eq!(local_id_handler.calls.load(Ordering::SeqCst), 2);
+
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        handler.clone(),
+    );
+
+    for body in [
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","lid":"future"}},{"op":"add","data":{"type":"authors","lid":"future"}}]}"#,
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","lid":"unknown"}}]}"#,
+        r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"},"data":{"type":"authors","lid":"from-update","attributes":{"name":"Updated"}}},{"op":"remove","ref":{"type":"authors","lid":"from-update"}}]}"#,
+        r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1","relationship":"author"},"data":{"type":"authors","lid":"future"}},{"op":"add","data":{"type":"authors","lid":"future"}}]}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = error_document(response, body).await;
+        assert_eq!(
+            error["errors"][0]["source"]["pointer"],
+            "/atomic:operations/0"
+        );
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     }
 
     database.close().await.unwrap();

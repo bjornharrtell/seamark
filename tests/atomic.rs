@@ -750,6 +750,50 @@ fn rejects_forward_duplicate_and_mismatched_local_id_references() {
 }
 
 #[test]
+fn local_ids_must_come_from_a_preceding_resource_add() {
+    let forward_reference = plan(json!({
+        "atomic:operations": [
+            {"op": "remove", "ref": {"type": "authors", "lid": "future"}},
+            {"op": "add", "data": {"type": "authors", "lid": "future"}}
+        ]
+    }));
+    assert!(matches!(
+        forward_reference,
+        Err(AtomicOperationsError::InvalidOperation { index: 0, .. })
+    ));
+
+    let unknown_reference = plan(json!({
+        "atomic:operations": [{
+            "op": "remove",
+            "ref": {"type": "authors", "lid": "unknown"}
+        }]
+    }));
+    assert!(matches!(
+        unknown_reference,
+        Err(AtomicOperationsError::InvalidOperation { index: 0, .. })
+    ));
+
+    let update_cannot_declare_a_local_id = plan(json!({
+        "atomic:operations": [
+            {
+                "op": "update",
+                "ref": {"type": "authors", "id": "author-1"},
+                "data": {
+                    "type": "authors",
+                    "lid": "from-update",
+                    "attributes": {"name": "Updated"}
+                }
+            },
+            {"op": "remove", "ref": {"type": "authors", "lid": "from-update"}}
+        ]
+    }));
+    assert!(matches!(
+        update_cannot_declare_a_local_id,
+        Err(AtomicOperationsError::InvalidOperation { index: 0, .. })
+    ));
+}
+
+#[test]
 fn rejects_local_ids_referenced_by_their_own_add_operation() {
     let categories = ResourceDefinition::new("categories", "category_id").relationship(
         "parent",
