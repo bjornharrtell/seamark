@@ -37,7 +37,10 @@ use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
     QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
-use seamark::query::{IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadQuery, plan_read};
+use seamark::query::{
+    IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadQuery, SortDirection, SortField,
+    plan_read,
+};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     IncludedResource, SeaOrmFilterValueCodec, SeaOrmIncludeLoader, SeaOrmMutationValueCodec,
@@ -190,6 +193,19 @@ struct AllowGuard;
 impl SeaOrmReadGuard for AllowGuard {
     async fn authorize(&self, _plan: &ReadPlan) -> bool {
         true
+    }
+
+    fn validate_limits(&self, _plan: &ReadPlan) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct DenyGuard;
+
+#[async_trait]
+impl SeaOrmReadGuard for DenyGuard {
+    async fn authorize(&self, _plan: &ReadPlan) -> bool {
+        false
     }
 
     fn validate_limits(&self, _plan: &ReadPlan) -> Result<(), String> {
@@ -571,6 +587,34 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     assert_eq!(
         error.to_string(),
         "field `owner` is not a valid registered field on resource `ports`"
+    );
+    let mut unknown_public_sort = plan(&ReadQuery::default());
+    unknown_public_sort.sort = vec![SortField {
+        public_name: "secret".to_owned(),
+        model_field: "depth_m".to_owned(),
+        direction: SortDirection::Ascending,
+    }];
+    let error = executor
+        .collection(&database, &unknown_public_sort, &DenyGuard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "sort field `secret` is not enabled for resource `ports`"
+    );
+    let mut mismapped_sort = plan(&ReadQuery::default());
+    mismapped_sort.sort = vec![SortField {
+        public_name: "depth".to_owned(),
+        model_field: "owner_id".to_owned(),
+        direction: SortDirection::Ascending,
+    }];
+    let error = executor
+        .collection(&database, &mismapped_sort, &DenyGuard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "sort field `depth` is not enabled for resource `ports`"
     );
 
     let query = query_cases::first_page_with_owner();

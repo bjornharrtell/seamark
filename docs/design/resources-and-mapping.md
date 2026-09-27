@@ -26,11 +26,12 @@ bound SeaORM entity at construction. Non-queryable attributes may remain
 computed mapper outputs. Relationship mapping/loading remains explicit and
 application-defined.
 
-At execution, sparse fieldset entries are revalidated against the exact
-registered public name, model field, and relationship target. The executor
-also intersects mapper output with registered attributes and relationships
-before applying a fieldset, so a manually constructed read plan cannot expose
-an unregistered mapper value through `SeaOrmReadResult`.
+At execution, fieldset entries are revalidated against the exact registered
+public name, model field, and relationship target. Sort terms are revalidated
+against the exact public/internal attribute mapping and its explicit sortable
+opt-in. The executor also intersects mapper output with registered attributes
+and relationships before applying a fieldset, so a manually constructed read
+plan cannot bypass the registry through direct `SeaOrmReadResult` use.
 
 ## Relationships and application integration
 

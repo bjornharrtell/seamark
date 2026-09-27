@@ -142,6 +142,13 @@ pub enum SeaOrmExecutionError {
         /// The public field name supplied by the plan.
         public_name: String,
     },
+    /// A sort term does not match a registered, explicitly sortable attribute.
+    InvalidSortField {
+        /// The public resource type being queried.
+        resource_type: String,
+        /// The public field name supplied by the plan.
+        public_name: String,
+    },
     /// An internal field name could not be resolved to an entity column.
     UnknownModelField(String),
     /// An include plan requires an application-specific loader.
@@ -184,6 +191,13 @@ impl fmt::Display for SeaOrmExecutionError {
             } => write!(
                 formatter,
                 "field `{public_name}` is not a valid registered field on resource `{resource_type}`"
+            ),
+            Self::InvalidSortField {
+                resource_type,
+                public_name,
+            } => write!(
+                formatter,
+                "sort field `{public_name}` is not enabled for resource `{resource_type}`"
             ),
             Self::UnknownModelField(field) => {
                 write!(formatter, "model field `{field}` is not a SeaORM column")
@@ -317,6 +331,7 @@ where
             });
         }
         validate_fieldset_mappings(&self.registry, plan)?;
+        validate_sort_mappings(definition, plan)?;
         if !guard.authorize(plan).await {
             return Err(SeaOrmExecutionError::NotAuthorized);
         }
@@ -396,6 +411,27 @@ where
 {
     E::Column::from_str(model_field)
         .map_err(|_| SeaOrmExecutionError::UnknownModelField(model_field.to_owned()))
+}
+
+fn validate_sort_mappings(
+    definition: &ResourceDefinition,
+    plan: &ReadPlan,
+) -> Result<(), SeaOrmExecutionError> {
+    for sort in &plan.sort {
+        let is_registered_sort =
+            definition
+                .attribute_by_name(&sort.public_name)
+                .is_some_and(|attribute| {
+                    attribute.model_field() == sort.model_field && attribute.is_sortable()
+                });
+        if !is_registered_sort {
+            return Err(SeaOrmExecutionError::InvalidSortField {
+                resource_type: plan.resource_type.clone(),
+                public_name: sort.public_name.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_fieldset_mappings(
