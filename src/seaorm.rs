@@ -318,6 +318,7 @@ where
         }
         for sort in &plan.sort {
             let column = column::<E>(&sort.model_field)?;
+            select = select.order_by(column.is_null(), Order::Asc);
             select = select.order_by(
                 column,
                 match sort.direction {
