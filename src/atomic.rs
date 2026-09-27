@@ -845,8 +845,10 @@ fn plan_atomic_operations_inner(
                     .filter(|reference| reference.relationship.is_some())
                     .or(href_relationship.as_ref());
                 if operation.reference.is_some() && relationship_reference.is_none() {
-                    return Err(fail(
-                        "an add operation with `ref` must target a relationship".to_owned(),
+                    return Err(invalid_operation(
+                        index,
+                        &format!("{path}/ref"),
+                        "an add operation with `ref` must target a relationship",
                     ));
                 }
                 if let Some(reference) = relationship_reference {
