@@ -219,6 +219,64 @@ fn resource_object_ids_must_be_strings() {
 }
 
 #[test]
+fn resource_and_linkage_identity_members_must_be_strings() {
+    for value in [
+        json!({"data": {"type": "ports", "id": "1"}}),
+        json!({"data": {"type": "ports", "lid": "local-port"}}),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": {"data": {"type": "people", "id": "2"}}}
+            }
+        }),
+        json!({
+            "data": {
+                "type": "ports",
+                "lid": "local-port",
+                "relationships": {"owner": {"data": {"type": "people", "lid": "local-owner"}}}
+            },
+            "included": [{"type": "people", "lid": "local-owner"}]
+        }),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(value).unwrap();
+        document.validate().unwrap();
+    }
+
+    for value in [
+        json!({"data": {"type": 1, "id": "1"}}),
+        json!({"data": {"type": "ports", "id": 1}}),
+        json!({"data": {"type": "ports", "lid": 1}}),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": {"data": {"type": 1, "id": "2"}}}
+            }
+        }),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": {"data": {"type": "people", "id": 2}}}
+            }
+        }),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": {"data": {"type": "people", "lid": 2}}}
+            }
+        }),
+    ] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(value).is_err(),
+            "identity members must be JSON strings"
+        );
+    }
+}
+
+#[test]
 fn response_relationship_identifiers_require_persistent_ids() {
     let document: JsonApiDocument = serde_json::from_value(json!({
         "data": {
