@@ -203,4 +203,9 @@ absolute profile URI lists, rejects malformed or duplicate profile
 parameters, ignores Accept extensions after `q`, rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not
 alter the base response.
+The Atomic POST route now has an end-to-end Content-Type regression: it accepts
+the required Atomic extension with an unknown valid profile, and returns 415
+with a JSON:API error document for an unsupported `charset` parameter or an
+unsupported extension URI. The broader media-negotiation matrix remains
+partial.
 The conformance matrix cites these cases but remains partial.

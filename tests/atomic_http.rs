@@ -621,3 +621,53 @@ async fn atomic_http_ignores_at_members_and_rejects_unknown_attributes() {
     assert_eq!(error["errors"].as_array().unwrap().len(), 1);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn atomic_http_enforces_content_type_parameter_rules() {
+    let database = database().await;
+    let app = atomic_http::router(
+        registry(),
+        database,
+        Arc::new(TestGuard { allowed: true }),
+        Arc::new(TestHandler {
+            fail: false,
+            require_resolved_targets: false,
+        }),
+    );
+    let body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada"}}}]}"#;
+    let content_type = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\"";
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/operations",
+            content_type,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    document(response).await;
+
+    for content_type in [
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\";charset=utf-8",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic https://example.test/unsupported\"",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                content_type,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(response.headers()[CONTENT_TYPE], "application/vnd.api+json");
+        assert_eq!(response.headers()[VARY], "Accept");
+        error_document(response, body).await;
+    }
+}
