@@ -339,6 +339,32 @@ fn resource_fields_must_not_conflict_with_type_id_or_each_other() {
 }
 
 #[test]
+fn validates_jsonapi_member_name_rules_for_types_and_fields() {
+    for data in [
+        json!({"type": "bad.type", "id": "1"}),
+        json!({"type": "ports", "id": "1", "attributes": {"bad/name": "value"}}),
+        json!({"type": "ports", "id": "1", "relationships": {"trailing-": {"data": null}}}),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({"data": data})).unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidMemberName)
+        );
+    }
+
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "shore craft",
+            "id": "1",
+            "attributes": {"well-known": "value", "naïve": true},
+            "relationships": {"@related": {"data": null}}
+        }
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+}
+
+#[test]
 fn relationship_objects_require_linkage_links_or_metadata() {
     let empty: JsonApiDocument = serde_json::from_value(json!({
         "data": {

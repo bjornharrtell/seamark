@@ -76,7 +76,7 @@ decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
 fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
-fieldsets. The full suite now has 84 passing integration tests and 2 unit
+fieldsets. The full suite now has 85 passing integration tests and 2 unit
 tests with PostgreSQL 17; formatting, warning-free Clippy, rustdoc, and
 whitespace checks pass. M4 remains in progress pending reusable production
 mapping APIs, broader database type/relation cases, and expanded

@@ -212,6 +212,7 @@ impl ResourceObject {
         }
         if let Some(attributes) = &self.attributes {
             for name in attributes.keys() {
+                validate_member_name(name)?;
                 if name == "type"
                     || name == "id"
                     || self
@@ -224,11 +225,11 @@ impl ResourceObject {
             }
         }
         if let Some(relationships) = &self.relationships {
-            if relationships
-                .keys()
-                .any(|name| name == "type" || name == "id")
-            {
-                return Err(DocumentValidationError::ConflictingFieldName);
+            for name in relationships.keys() {
+                validate_member_name(name)?;
+                if name == "type" || name == "id" {
+                    return Err(DocumentValidationError::ConflictingFieldName);
+                }
             }
             for relationship in relationships.values() {
                 relationship.validate()?;
@@ -474,6 +475,8 @@ pub enum DocumentValidationError {
     MissingIdentifier,
     /// A resource object or identifier has both an `id` and a `lid`.
     BothIdentifiers,
+    /// A resource type or field name violates JSON:API member-name rules.
+    InvalidMemberName,
     /// A resource has fields that conflict with its `type` or `id`, or each other.
     ConflictingFieldName,
     /// A relationship object has no linkage, links, or metadata.
@@ -500,6 +503,7 @@ impl fmt::Display for DocumentValidationError {
             Self::BothIdentifiers => {
                 "a resource object or identifier must not contain both id and lid"
             }
+            Self::InvalidMemberName => "a resource type or field name is not a valid member name",
             Self::ConflictingFieldName => {
                 "resource field names must not conflict with type, id, or each other"
             }
@@ -614,7 +618,32 @@ fn validate_type(type_name: &str) -> Result<(), DocumentValidationError> {
     if type_name.is_empty() {
         return Err(DocumentValidationError::EmptyType);
     }
+    validate_member_name(type_name)?;
     Ok(())
+}
+
+fn validate_member_name(name: &str) -> Result<(), DocumentValidationError> {
+    let name = name.strip_prefix('@').unwrap_or(name);
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return Err(DocumentValidationError::InvalidMemberName);
+    };
+    let mut last = first;
+    for character in characters {
+        if !is_globally_allowed_member_character(character) && !matches!(character, '-' | '_' | ' ')
+        {
+            return Err(DocumentValidationError::InvalidMemberName);
+        }
+        last = character;
+    }
+    if !is_globally_allowed_member_character(first) || !is_globally_allowed_member_character(last) {
+        return Err(DocumentValidationError::InvalidMemberName);
+    }
+    Ok(())
+}
+
+fn is_globally_allowed_member_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character >= '\u{0080}'
 }
 
 fn deserialize_primary_data<'de, D>(deserializer: D) -> Result<Option<PrimaryData>, D::Error>
