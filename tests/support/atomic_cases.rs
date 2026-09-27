@@ -775,6 +775,119 @@ pub async fn execute_to_many_foreign_key_relationship_case(database: &DatabaseCo
         vec![(1, None), (2, Some(1))]
     );
 
+    let results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {
+                    "type": "people",
+                    "id": "1",
+                    "relationship": "ports"
+                },
+                "data": [{"type": "ports", "id": "1"}]
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(results).unwrap(), json!([{}]));
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, Some(1)), (2, None)]
+    );
+
+    let results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {
+                    "type": "people",
+                    "id": "1",
+                    "relationship": "ports"
+                },
+                "data": []
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(results).unwrap(), json!([{}]));
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, None), (2, None)]
+    );
+
+    execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "ref": {
+                    "type": "people",
+                    "id": "1",
+                    "relationship": "ports"
+                },
+                "data": [{"type": "ports", "id": "2"}]
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+
+    let replacement_error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {
+                    "type": "people",
+                    "id": "2",
+                    "relationship": "ports"
+                },
+                "data": [
+                    {"type": "ports", "id": "1"},
+                    {"type": "ports", "id": "2"}
+                ]
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        replacement_error,
+        AtomicExecutionError::Operation { index: 0, .. }
+    ));
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, None), (2, Some(1))]
+    );
+
     let error = execute_request(
         database,
         json!({

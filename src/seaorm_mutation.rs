@@ -304,15 +304,16 @@ where
     }
 }
 
-/// Executes to-many relationship add/remove operations through a nullable
+/// Executes to-many relationship add/remove/replacement through a nullable
 /// foreign-key column on the related resource entity.
 ///
 /// The relationship and both resource identifier mappings are explicit.
-/// Adding a member assigns an unowned member to the source; it does not
-/// reassign a member owned by a different source. Removing a member clears the
-/// foreign key only when it currently points to the requested source. The
-/// foreign-key column must be nullable to support removal. Association shapes
-/// that do not fit this mapping remain available to custom executors.
+/// Adding or replacing members assigns unowned members to the source; it does
+/// not reassign members owned by a different source. Removing members clears
+/// the foreign key only when it currently points to the requested source.
+/// Replacement clears the source's current members before assigning the new
+/// set. The foreign-key column must be nullable. Association shapes that do
+/// not fit this mapping remain available to custom executors.
 pub struct SeaOrmToManyForeignKeyMutationHandler<E, C>
 where
     E: EntityTrait,
@@ -334,6 +335,7 @@ where
 enum ForeignKeyOperation {
     Add,
     Remove,
+    Replace,
 }
 
 impl<E, C> SeaOrmToManyForeignKeyMutationHandler<E, C>
@@ -411,6 +413,13 @@ where
                 model_field,
                 ..
             } if reference.type_name == self.source_type && model_field == &self.model_field
+        ) || matches!(
+            operation,
+            PlannedOperation::UpdateRelationship {
+                reference,
+                model_field,
+                data: RelationshipData::Many(_),
+            } if reference.type_name == self.source_type && model_field == &self.model_field
         )
     }
 
@@ -445,6 +454,15 @@ where
             PlannedOperation::RemoveRelationshipMembers {
                 reference, data, ..
             } => (reference, data.as_slice(), ForeignKeyOperation::Remove),
+            PlannedOperation::UpdateRelationship {
+                reference,
+                data: RelationshipData::Many(identifiers),
+                ..
+            } => (
+                reference,
+                identifiers.as_slice(),
+                ForeignKeyOperation::Replace,
+            ),
             _ => return Err("unsupported to-many foreign-key operation".to_owned()),
         };
         if !self.supports_relationship_operation(operation) {
@@ -490,16 +508,34 @@ where
         })?;
         let null_value = match action {
             ForeignKeyOperation::Add => None,
-            ForeignKeyOperation::Remove => {
+            ForeignKeyOperation::Remove | ForeignKeyOperation::Replace => {
                 Some(self.encode(&self.foreign_key_field, &JsonValue::Null)?)
             }
         };
+
+        if matches!(action, ForeignKeyOperation::Replace) {
+            E::update_many()
+                .filter(foreign_key_column.eq(source_value.clone()))
+                .col_expr(
+                    foreign_key_column,
+                    Expr::value(
+                        null_value.clone().ok_or_else(|| {
+                            "missing encoded nullable foreign-key value".to_owned()
+                        })?,
+                    ),
+                )
+                .exec(transaction)
+                .await
+                .map_err(|error| {
+                    format!("to-many foreign-key replacement clear failed: {error}")
+                })?;
+        }
 
         for target_value in target_values {
             let query = E::update_many()
                 .filter(target_identifier_column.eq(target_value))
                 .filter(match action {
-                    ForeignKeyOperation::Add => Condition::any()
+                    ForeignKeyOperation::Add | ForeignKeyOperation::Replace => Condition::any()
                         .add(foreign_key_column.is_null())
                         .add(foreign_key_column.eq(source_value.clone())),
                     ForeignKeyOperation::Remove => {
@@ -507,7 +543,7 @@ where
                     }
                 });
             let assigned_value = match action {
-                ForeignKeyOperation::Add => source_value.clone(),
+                ForeignKeyOperation::Add | ForeignKeyOperation::Replace => source_value.clone(),
                 ForeignKeyOperation::Remove => null_value
                     .clone()
                     .ok_or_else(|| "missing encoded nullable foreign-key value".to_owned())?,
@@ -517,7 +553,11 @@ where
                 .exec(transaction)
                 .await
                 .map_err(|error| format!("to-many foreign-key update failed: {error}"))?;
-            if matches!(action, ForeignKeyOperation::Add) && result.rows_affected == 0 {
+            if matches!(
+                action,
+                ForeignKeyOperation::Add | ForeignKeyOperation::Replace
+            ) && result.rows_affected == 0
+            {
                 return Err(
                     "relationship member was not found or already belongs to another owner"
                         .to_owned(),
