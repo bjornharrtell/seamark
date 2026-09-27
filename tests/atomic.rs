@@ -704,6 +704,53 @@ fn unknown_resource_attributes_point_to_the_nested_data_member() {
 }
 
 #[test]
+fn unknown_resource_relationships_point_to_escaped_nested_members() {
+    let valid = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {
+                "type": "articles",
+                "relationships": {
+                    "author": {"data": {"type": "authors", "id": "author-1"}}
+                }
+            }
+        }]
+    }))
+    .unwrap();
+    let PlannedOperation::AddResource { changeset, .. } = &valid[0].operation else {
+        panic!("expected an add-resource operation");
+    };
+    assert!(
+        changeset
+            .relationships
+            .as_ref()
+            .unwrap()
+            .contains_key("author_id")
+    );
+
+    let error = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {
+                "type": "articles",
+                "relationships": {
+                    "secret/owner~": {"data": {"type": "authors", "id": "author-1"}}
+                }
+            }
+        }]
+    }))
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicOperationsError::InvalidOperation {
+            index: 0,
+            pointer,
+            ..
+        } if pointer == "/atomic:operations/0/data/relationships/secret~1owner~0"
+    ));
+}
+
+#[test]
 fn atomic_references_require_type_and_exactly_one_identity() {
     let resource_id_reference = plan(json!({
         "atomic:operations": [{
