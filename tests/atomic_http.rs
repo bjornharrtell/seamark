@@ -612,6 +612,68 @@ async fn atomic_http_rejects_invalid_reference_identity_combinations() {
 }
 
 #[tokio::test]
+async fn atomic_http_points_unknown_resource_attribute_to_nested_data_member() {
+    let database = database().await;
+    let valid_handler = Arc::new(AtMemberHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let valid_app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        valid_handler.clone(),
+    );
+    let valid_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada"}}}]}"#;
+    let response = valid_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            valid_body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(valid_handler.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        document(response).await,
+        json!({"atomic:results": [{"data": {"type": "authors", "id": "created"}}]})
+    );
+
+    let invalid_handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let invalid_app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        invalid_handler.clone(),
+    );
+    let invalid_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"secret":"not registered"}}}]}"#;
+    let response = invalid_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            invalid_body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, invalid_body).await;
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0/data/attributes/secret"
+    );
+    assert_eq!(invalid_handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_rejects_unresolved_local_ids_before_execution() {
     let database = database().await;
     let local_id_handler = Arc::new(LocalIdHandler {
