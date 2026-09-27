@@ -79,6 +79,16 @@ headers. The adapter is invoked, but its configured SeaORM guard rejects the
 plan before SQL or another include-loader call; the absent table ensures an
 accidental query would fail rather than produce a success-shaped response.
 
+M5 Atomic authorization ordering is covered by
+`tests/atomic_http.rs::atomic_http_denial_precedes_transaction_and_operation_handler`.
+The denied request returns JSON:API 403 `forbidden` with the exact error title
+and detail; its guard records one authorization call, zero limit checks, and
+the mutation handler records zero calls. It uses a disconnected database
+connection, so a premature transaction begin would return a database error
+instead of the expected 403. The authorized control records one authorization,
+one limit check, and one handler call, and returns HTTP 200 with the expected
+Atomic result document.
+
 The shared M7 null-filter parity case is already included in
 `tests/support/query_cases.rs`: `equals(capacity,null)` expects only port ID
 `3`, while the non-null `equals(capacity,'8')` control expects only ID `2`.

@@ -77,6 +77,17 @@ returns HTTP 200 with one empty result. Existing
 `accepts_uri_reference_targets_for_resource_mutations` coverage continues to
 reject the malformed `not a URI reference` value.
 
+### M5 Atomic authorization transaction-order evidence
+
+`atomic_http_denial_precedes_transaction_and_operation_handler` verifies the
+guard contract at the HTTP boundary. A denied request returns JSON:API 403
+`forbidden`, calls authorization once, skips limit validation, and never calls
+the mutation handler. Because the denied case uses a disconnected database
+connection, an attempted transaction begin would produce a database error
+instead of the expected 403. The authorized PostgreSQL control calls
+authorization, limit validation, and the handler once each, then returns HTTP
+200 with the expected result document.
+
 ### M5 to-many relationship replacement evidence
 
 The [Atomic to-many relationship rules](https://jsonapi.org/ext/atomic/#updating-to-many-relationships)
