@@ -1065,6 +1065,7 @@ async fn atomic_http_rejects_missing_operation_data_before_authorization_or_hand
         assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
         assert_eq!(response.headers()[VARY], "Accept");
         let error = error_document(response, body).await;
+        assert!(error.get("atomic:results").is_none());
         assert_eq!(
             error,
             json!({
@@ -1107,7 +1108,10 @@ async fn atomic_http_rejects_resource_remove_with_data_before_authorization_or_h
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
     let error = error_document(response, body).await;
+    assert!(error.get("atomic:results").is_none());
     assert_eq!(
         error["errors"][0]["detail"],
         "invalid operation 0 at `/atomic:operations/0`: removing a resource must not include `data`"
@@ -1291,7 +1295,10 @@ async fn atomic_http_rejects_non_array_relationship_add_and_remove_data_before_a
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
         let error = error_document(response, body).await;
+        assert!(error.get("atomic:results").is_none());
         assert_eq!(
             error["errors"][0]["detail"],
             format!("invalid operation 0 at `/atomic:operations/0`: {message}")
@@ -1332,6 +1339,7 @@ async fn atomic_http_rejects_operations_with_both_ref_and_href_before_execution(
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     let error = error_document(response, body).await;
+    assert!(error.get("atomic:results").is_none());
     assert_eq!(
         error["errors"][0]["source"]["pointer"],
         "/atomic:operations/0"
