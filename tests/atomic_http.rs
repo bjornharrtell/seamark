@@ -1347,27 +1347,42 @@ async fn atomic_http_rejects_operations_with_both_ref_and_href_before_execution(
         calls: AtomicUsize::new(0),
     });
     let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
-    let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"},"href":"/author-resource/1"}]}"#;
+    for (body, detail) in [
+        (
+            r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"},"href":"/author-resource/1"}]}"#,
+            "an operation must not contain both `ref` and `href`",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"remove","href":"not a URI reference"}]}"#,
+            "`href` must be a valid URI-reference",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
 
-    let response = app
-        .oneshot(request(
-            "/operations",
-            ATOMIC_MEDIA_TYPE,
-            ATOMIC_MEDIA_TYPE,
-            body,
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
-    assert_eq!(response.headers()[VARY], "Accept");
-    let error = error_document(response, body).await;
-    assert!(error.get("atomic:results").is_none());
-    assert_eq!(
-        error["errors"][0]["source"]["pointer"],
-        "/atomic:operations/0"
-    );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        let error = error_document(response, body).await;
+        assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+        assert!(error.get("atomic:results").is_none());
+        assert_eq!(
+            error["errors"][0]["detail"],
+            format!("invalid operation 0 at `/atomic:operations/0`: {detail}")
+        );
+        assert_eq!(
+            error["errors"][0]["source"]["pointer"],
+            "/atomic:operations/0"
+        );
+    }
     assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     database.close().await.unwrap();
