@@ -888,6 +888,39 @@ async fn atomic_http_accepts_empty_operations_as_a_successful_no_op() {
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_errors_member_in_operations_request() {
+    let database = database().await;
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+    let body = r#"{"atomic:operations":[],"errors":[{"title":"bad"}]}"#;
+
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_passes_relative_href_unchanged_to_application_resolver() {
     let database = database().await;
     let resolver_calls = Arc::new(Mutex::new(Vec::new()));
