@@ -160,6 +160,9 @@ control on both backends.
 Both database-backed include cases now compare unfielded owner resources
 against the same fixture-derived exact attribute map, including both declared
 values and excluding adapter-only fields.
+The document layer now directly verifies that a resource object's `id` is a
+string: `resource_object_ids_must_be_strings` accepts a string ID and rejects
+a numeric ID during document decoding.
 Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
 two pages (`2,3` then `1`), projected root attributes, and matching owner
 includes against both database engines.

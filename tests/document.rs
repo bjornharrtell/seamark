@@ -202,6 +202,22 @@ fn accepts_empty_resource_and_local_identifier_strings() {
 }
 
 #[test]
+fn resource_object_ids_must_be_strings() {
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": {"type": "ports", "id": "1"}
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+
+    assert!(
+        serde_json::from_value::<JsonApiDocument>(json!({
+            "data": {"type": "ports", "id": 1}
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn response_relationship_identifiers_require_persistent_ids() {
     let document: JsonApiDocument = serde_json::from_value(json!({
         "data": {

@@ -68,3 +68,8 @@ The matrix must eventually cite concrete test names or conformance cases for
 every applicable normative requirement. Uncovered rows stay partial or
 unimplemented; implementation milestones and passing project tests alone do
 not establish full conformance.
+
+The resource-object identity audit now directly checks the JSON:API string
+shape of `id`: `resource_object_ids_must_be_strings` accepts a string ID and
+rejects a numeric ID while decoding the document. Resource identity coverage
+remains partial for other type/ID/lid edge cases.
