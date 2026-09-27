@@ -17,7 +17,6 @@ pub const ATOMIC_OPERATIONS_EXTENSION: &str = "https://jsonapi.org/ext/atomic";
 
 /// A JSON:API document carrying Atomic Operations members.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AtomicOperationsDocument {
     /// Operations in the order the server must execute them.
     #[serde(
@@ -63,6 +62,20 @@ pub struct AtomicOperationsDocument {
         skip_serializing_if = "Option::is_none"
     )]
     pub jsonapi: Option<JsonApiObject>,
+    /// Forbidden primary data from the base JSON:API document structure.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub data: Option<Value>,
+    /// Forbidden included resources from the base JSON:API document structure.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub included: Option<Value>,
 }
 
 impl AtomicOperationsDocument {
@@ -72,6 +85,7 @@ impl AtomicOperationsDocument {
     ///
     /// Returns an error if the document has the wrong top-level members.
     pub fn validate_request(&self) -> Result<&[AtomicOperation], AtomicOperationsError> {
+        self.validate_base_members()?;
         if self.results.is_some() {
             return Err(AtomicOperationsError::InvalidDocument(
                 "an operations request must not contain `atomic:results`",
@@ -97,6 +111,7 @@ impl AtomicOperationsDocument {
         &self,
         expected_results: usize,
     ) -> Result<&[AtomicResult], AtomicOperationsError> {
+        self.validate_base_members()?;
         if self.operations.is_some() {
             return Err(AtomicOperationsError::InvalidDocument(
                 "an operations response must not contain `atomic:operations`",
@@ -119,11 +134,19 @@ impl AtomicOperationsDocument {
         }
         Ok(results)
     }
+
+    fn validate_base_members(&self) -> Result<(), AtomicOperationsError> {
+        if self.data.is_some() || self.included.is_some() {
+            return Err(AtomicOperationsError::InvalidDocument(
+                "an Atomic Operations document must not contain `data` or `included`",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// One raw Atomic Operations operation object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AtomicOperation {
     /// The operation code: `add`, `update`, or `remove`.
     pub op: String,
@@ -160,7 +183,6 @@ pub struct AtomicOperation {
 
 /// A resource or relationship reference in an operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AtomicResourceReference {
     /// The public resource type of the target resource.
     #[serde(rename = "type")]
@@ -193,7 +215,6 @@ pub struct AtomicResourceReference {
 /// Unlike a response resource object, an add request may omit both `id` and
 /// `lid` when the server assigns its identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AtomicResourceData {
     /// The public resource type.
     #[serde(rename = "type")]
@@ -244,7 +265,6 @@ pub struct AtomicResourceData {
 
 /// One result object in a successful Atomic Operations response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AtomicResult {
     /// Primary data produced by the operation, when required or returned.
     #[serde(

@@ -27,9 +27,11 @@ target types, `ref`/`href` exclusivity, and local-ID ordering. Add/update
 operations carry mapped changesets: attributes and relationships are keyed by
 their configured internal model fields, and omitted properties remain
 distinct from explicit `null` values. Relationship operations also carry the
-mapped relationship field. A local ID is available only after its add
-operation; relationship linkages can resolve it through the request-scoped
-`LocalIdMap`.
+mapped relationship field. Unrecognized members are ignored as required by
+JSON:API processing rules, while the extension-forbidden top-level `data` and
+`included` members are explicitly rejected. A local ID is available only after
+its add operation; relationship linkages can resolve it through the
+request-scoped `LocalIdMap`.
 
 `atomic_http::router` provides a mergeable `POST /operations` Axum router;
 `router_with_href_resolver` additionally accepts an application route resolver

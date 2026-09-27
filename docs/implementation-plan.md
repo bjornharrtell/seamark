@@ -76,7 +76,7 @@ decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
 fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
-fieldsets. The full suite now has 88 passing integration tests and 2 unit
+fieldsets. The full suite now has 89 passing integration tests and 2 unit
 tests with PostgreSQL 17; formatting, warning-free Clippy, rustdoc, and
 whitespace checks pass. M4 remains in progress pending reusable production
 mapping APIs, broader database type/relation cases, and expanded
@@ -92,7 +92,7 @@ foreign-key updates using application-supplied value/identifier codecs; a
 dispatcher composes these with custom executors. Applications can resolve
 relationship `href` routes before planning. The transaction runner invokes
 handlers in order, checks result identities, and rolls back on failure.
-**Current focused evidence:** 11 Atomic Operations tests, 1 PostgreSQL-backed
+**Current focused evidence:** 12 Atomic Operations tests, 1 PostgreSQL-backed
 HTTP test, 2 PostgreSQL mutation tests, and 2 negotiation unit tests. A custom
 to-many join-table handler is verified through the dispatcher, shared
 transaction, local-ID resolution, and rollback; each application's relation
@@ -114,3 +114,6 @@ relationship, and error contexts. The matrix remains partial: URI-reference
 and link-relation semantics, complete error behavior, normative Atomic
 Operations edge cases, and context-sensitive request/response rules still
 require coverage before M6 can be complete.
+Atomic Operations documents now ignore unrecognized members per JSON:API
+processing rules while explicitly rejecting the forbidden base `data` and
+`included` members.

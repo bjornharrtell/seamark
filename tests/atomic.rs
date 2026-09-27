@@ -295,6 +295,17 @@ fn validates_request_response_shapes_and_result_cardinality() {
             "an operations request must not contain `errors`"
         ))
     );
+    for value in [
+        json!({"data": null, "atomic:operations": []}),
+        json!({"included": [], "atomic:operations": []}),
+    ] {
+        assert_eq!(
+            document(value).validate_request(),
+            Err(AtomicOperationsError::InvalidDocument(
+                "an Atomic Operations document must not contain `data` or `included`"
+            ))
+        );
+    }
     assert_eq!(
         document(json!({"atomic:results": [{"data": null}, {}]})).validate_response(1),
         Err(AtomicOperationsError::ResultCountMismatch {
@@ -314,8 +325,41 @@ fn validates_request_response_shapes_and_result_cardinality() {
             "data": null,
             "atomic:operations": []
         }))
+        .unwrap()
+        .validate_request()
         .is_err()
     );
+}
+
+#[test]
+fn ignores_unrecognized_members_in_atomic_documents_and_operation_objects() {
+    let operations = plan(json!({
+        "future:document": {"ignored": true},
+        "atomic:operations": [{
+            "op": "add",
+            "future:operation": "ignored",
+            "data": {
+                "type": "authors",
+                "attributes": {"name": "Ada"},
+                "future:resource": "ignored"
+            }
+        }, {
+            "op": "remove",
+            "ref": {
+                "type": "articles",
+                "id": "1",
+                "future:reference": "ignored"
+            }
+        }]
+    }))
+    .unwrap();
+    assert_eq!(operations.len(), 2);
+
+    let response = document(json!({
+        "atomic:results": [{"future:result": true}],
+        "future:document": true
+    }));
+    assert_eq!(response.validate_response(1).unwrap().len(), 1);
 }
 
 #[test]
