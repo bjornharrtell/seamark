@@ -90,6 +90,20 @@ configured codec; an invalid `berth_count` literal returns
 additional numeric, boolean, string, and null controls, with comparisons still
 executed by SeaORM.
 
+### M4 SeaORM include-plan mapping enforcement
+
+PostgreSQL's `authorization_limits_and_validation_failures_precede_queries`
+and SQLite's `sqlite_query_executor_validates_include_trees_before_authorization_or_loading`
+submit manually constructed include trees with an unregistered root
+relationship, mismatched internal field, mismatched target type, and a bad
+nested node beneath a valid parent. Each returns the exact
+`InvalidIncludeRelationship` resource/name pair while authorization/limit and
+loader counters remain zero; SQLite's empty database also ensures an
+accidental root query fails the case. Existing two-level `neighbors` controls
+still pass through the application loader on both backends and assert exact
+included identities and linkage. Include traversal remains application
+provided and database-backed.
+
 ### M5 empty-operations request evidence
 
 The [Atomic Operations extension](https://jsonapi.org/ext/atomic/#document-structure)

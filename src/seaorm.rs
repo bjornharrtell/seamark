@@ -156,6 +156,13 @@ pub enum SeaOrmExecutionError {
         /// The public field name supplied by the plan.
         public_name: String,
     },
+    /// An include node does not match a registered relationship mapping.
+    InvalidIncludeRelationship {
+        /// The public resource type owning the relationship.
+        resource_type: String,
+        /// The public relationship name supplied by the plan.
+        public_name: String,
+    },
     /// An internal field name could not be resolved to an entity column.
     UnknownModelField(String),
     /// An include plan requires an application-specific loader.
@@ -212,6 +219,13 @@ impl fmt::Display for SeaOrmExecutionError {
             } => write!(
                 formatter,
                 "sort field `{public_name}` is not enabled for resource `{resource_type}`"
+            ),
+            Self::InvalidIncludeRelationship {
+                resource_type,
+                public_name,
+            } => write!(
+                formatter,
+                "include relationship `{public_name}` is not registered on resource `{resource_type}`"
             ),
             Self::UnknownModelField(field) => {
                 write!(formatter, "model field `{field}` is not a SeaORM column")
@@ -345,6 +359,7 @@ where
             });
         }
         validate_fieldset_mappings(&self.registry, plan)?;
+        validate_include_mappings(&self.registry, &plan.resource_type, &plan.includes)?;
         validate_filter_mappings(definition, plan)?;
         validate_sort_mappings(definition, plan)?;
         if !guard.authorize(plan).await {
@@ -526,6 +541,33 @@ fn validate_fieldset_mappings(
                     public_name: public_name.clone(),
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_include_mappings(
+    registry: &ResourceRegistry,
+    resource_type: &str,
+    includes: &[IncludeNode],
+) -> Result<(), SeaOrmExecutionError> {
+    let mut pending = vec![(resource_type.to_owned(), includes)];
+    while let Some((current_type, nodes)) = pending.pop() {
+        let definition = registry
+            .resource(&current_type)
+            .map_err(|_| SeaOrmExecutionError::UnknownResourceType(current_type.clone()))?;
+        for include in nodes {
+            let relationship = definition.relationship_by_name(&include.public_name);
+            if !relationship.is_some_and(|mapping| {
+                mapping.model_field() == include.model_field
+                    && mapping.target_type() == include.target_type
+            }) {
+                return Err(SeaOrmExecutionError::InvalidIncludeRelationship {
+                    resource_type: current_type.clone(),
+                    public_name: include.public_name.clone(),
+                });
+            }
+            pending.push((include.target_type.clone(), &include.children));
         }
     }
     Ok(())
