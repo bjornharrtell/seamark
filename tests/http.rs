@@ -917,7 +917,7 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
     valid_profile.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_static(
-            "APPLICATION/VND.API+JSON;PROFILE=\"https://example.com/profile,variant;version=1\"",
+            "APPLICATION/VND.API+JSON ; PROFILE = \"https://example.com/profile,variant;version=1\"",
         ),
     );
     let response = app.clone().oneshot(valid_profile).await.unwrap();
@@ -1529,7 +1529,7 @@ async fn validates_profile_uri_lists_and_duplicate_accept_parameters() {
 
         for accept in [
             "application/vnd.api+json;profile=\"https://example.test/one https://example.test/two\"",
-            "application/vnd.api+json;profile=\"https://example.test/profiles/a,b\"",
+            "application/vnd.api+json ; profile = \"https://example.test/profiles/a,b\"",
         ] {
             let adapter = Arc::new(TestAdapter::default());
             *adapter.resource_result.lock().unwrap() = Some(port_record());

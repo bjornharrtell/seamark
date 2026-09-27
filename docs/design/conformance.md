@@ -386,7 +386,9 @@ three-digit qvalues, acceptance of a valueless token Accept extension after
 `q`, and a comma-containing quoted profile URI that must not split the media
 range; malformed qvalues, absent/duplicate extensions, unsupported extension
 lists, and duplicate profiles are rejected before the guard or operation
-handler. Its qvalue grammar follows
+handler. The base and Atomic Accept/Content-Type regressions also accept
+optional whitespace around parameter `=` and media-type `;` separators. Its
+qvalue grammar follows
 [RFC 9110 quality values](https://www.rfc-editor.org/rfc/rfc9110.html#name-quality-values).
 `atomic_http_enforces_content_type_parameter_rules` also verifies duplicate
 extension/profile parameters are rejected and valid unknown profile URIs are

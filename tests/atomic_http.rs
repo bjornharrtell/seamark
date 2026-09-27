@@ -1697,7 +1697,7 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
     });
     let app = atomic_http::router(registry(), database, guard.clone(), handler.clone());
     let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
-    let content_type = r#"APPLICATION/VND.API+JSON;EXT="https://jsonapi.org/ext/\atomic";PROFILE="https://example.test/\unknown;version=1 https://example.test/profiles/a,b https://example.test/also-unknown""#;
+    let content_type = r#"APPLICATION/VND.API+JSON ; EXT = "https://jsonapi.org/ext/\atomic" ; PROFILE = "https://example.test/\unknown;version=1 https://example.test/profiles/a,b https://example.test/also-unknown""#;
     let response = app
         .clone()
         .oneshot(request(
@@ -1781,7 +1781,7 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
         "application/*;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
         "*/*;ext=\"https://jsonapi.org/ext/atomic\"",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/one https://example.test/two\";q=1",
-        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/profiles/a,b\";q=1",
+        "application/vnd.api+json ; ext = \"https://jsonapi.org/ext/atomic\" ; profile = \"https://example.test/profiles/a,b\" ; q = 1",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0,application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
     ];
     let rejected = [
