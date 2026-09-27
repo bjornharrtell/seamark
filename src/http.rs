@@ -1081,11 +1081,17 @@ fn validate_mutation_request(
 
 #[allow(clippy::result_large_err)]
 fn validate_jsonapi_content_type(headers: &HeaderMap) -> Result<(), Response> {
-    let Some(value) = headers.get(CONTENT_TYPE) else {
+    let mut values = headers.get_all(CONTENT_TYPE).iter();
+    let Some(value) = values.next() else {
         return Err(unsupported_media_type(
             "a JSON:API Content-Type header is required",
         ));
     };
+    if values.next().is_some() {
+        return Err(unsupported_media_type(
+            "multiple Content-Type header values are not supported",
+        ));
+    }
     let Ok(value) = value.to_str() else {
         return Err(unsupported_media_type("the Content-Type header is invalid"));
     };
