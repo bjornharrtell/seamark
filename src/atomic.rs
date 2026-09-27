@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::document::{
     ErrorObject, JsonApiDocument, JsonApiObject, PrimaryData, RelationshipData, ResourceIdentifier,
-    ResourceObject,
+    ResourceObject, validate_links,
 };
 use crate::registry::ResourceRegistry;
 
@@ -225,6 +225,19 @@ impl AtomicOperationsDocument {
                 "an Atomic Operations document must not contain `data` or `included`",
             ));
         }
+        JsonApiDocument {
+            data: Some(PrimaryData::Null),
+            links: self.links.clone(),
+            meta: self.meta.clone(),
+            jsonapi: self.jsonapi.clone(),
+            ..JsonApiDocument::default()
+        }
+        .validate()
+        .map_err(|_| {
+            AtomicOperationsError::InvalidDocument(
+                "an Atomic Operations document contains invalid JSON:API top-level members",
+            )
+        })?;
         Ok(())
     }
 }
@@ -992,6 +1005,8 @@ fn validate_resource_data(
     is_add: bool,
 ) -> Result<AtomicResourceChangeset, AtomicOperationsError> {
     let fail = |message: String| invalid_operation(index, path, &message);
+    validate_links(data.links.as_ref())
+        .map_err(|error| fail(format!("resource links are invalid: {error}")))?;
     if data.type_name.is_empty() {
         return Err(fail("resource `type` must not be empty".to_owned()));
     }
@@ -1039,6 +1054,9 @@ fn validate_resource_data(
     if let Some(relationships) = &data.relationships {
         let mut mapped = BTreeMap::new();
         for (name, relationship) in relationships {
+            relationship
+                .validate()
+                .map_err(|error| fail(format!("relationship `{name}` is invalid: {error}")))?;
             let mapping = definition.relationship_by_name(name).ok_or_else(|| {
                 fail(format!(
                     "relationship `{name}` is not registered on `{}`",

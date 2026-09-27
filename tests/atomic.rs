@@ -190,7 +190,7 @@ fn maps_resource_and_relationship_changesets_to_internal_fields() {
                     "attributes": {"title": null},
                     "relationships": {
                         "author": {"data": {"type": "authors", "lid": "author-local"}},
-                        "tags": {}
+                        "tags": {"meta": {}}
                     }
                 }
             },
@@ -329,6 +329,50 @@ fn validates_request_response_shapes_and_result_cardinality() {
         .validate_request()
         .is_err()
     );
+}
+
+#[test]
+fn validates_base_jsonapi_members_in_atomic_documents_and_resource_data() {
+    for value in [
+        json!({"atomic:operations": [], "links": {"self": {}}}),
+        json!({"atomic:operations": [], "jsonapi": {"profile": ["relative/profile"]}}),
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {"type": "authors", "links": {"self": {}}}
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {"type": "articles", "relationships": {"author": {}}}
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {
+                    "type": "articles",
+                    "relationships": {"author": {"links": {"related": {}}}}
+                }
+            }]
+        }),
+    ] {
+        assert!(plan(value).is_err());
+    }
+
+    plan(json!({
+        "jsonapi": {"version": "1.1"},
+        "links": {"self": "/operations"},
+        "atomic:operations": [{
+            "op": "add",
+            "data": {
+                "type": "articles",
+                "relationships": {"author": {"meta": {}}}
+            }
+        }]
+    }))
+    .unwrap();
 }
 
 #[test]

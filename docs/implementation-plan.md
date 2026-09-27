@@ -97,15 +97,17 @@ foreign-key updates using application-supplied value/identifier codecs; a
 dispatcher composes these with custom executors. Applications can resolve
 relationship `href` routes before planning. The transaction runner invokes
 handlers in order, checks result identities, and rolls back on failure.
-**Current focused evidence:** 13 Atomic Operations tests, 1 PostgreSQL-backed
+**Current focused evidence:** 14 Atomic Operations tests, 1 PostgreSQL-backed
 HTTP test, 2 PostgreSQL mutation tests, and 3 negotiation unit tests. Atomic
 result validation now requires resource add/update `data` to be a valid
 response resource with an ID and matching operation type/known ID, and
 forbids result `data` for relationship and remove operations. A custom
 to-many join-table handler is verified through the dispatcher, shared
 transaction, local-ID resolution, and rollback; each application's relation
-mapping/persistence handler remains explicit. Additional normative
-request/result/error/media-type cases remain incomplete.
+mapping/persistence handler remains explicit. Atomic documents and embedded
+resource data now reuse base JSON:API validation for top-level links and
+`jsonapi` members, resource links, and relationship object structure/links.
+Additional normative request/result/error/media-type cases remain incomplete.
 Resource, collection, and relationship href resolution now has planner, HTTP,
 and PostgreSQL mutation coverage. Full
 normative conformance remains the M6 objective; SQLite support is a separate

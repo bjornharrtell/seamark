@@ -289,7 +289,7 @@ pub struct Relationship {
 }
 
 impl Relationship {
-    fn validate(&self) -> Result<(), DocumentValidationError> {
+    pub(crate) fn validate(&self) -> Result<(), DocumentValidationError> {
         if self.data.is_none() && self.links.is_none() && self.meta.is_none() {
             return Err(DocumentValidationError::EmptyRelationship);
         }
@@ -802,7 +802,9 @@ pub(crate) fn is_valid_member_name(name: &str) -> bool {
     true
 }
 
-fn validate_links(links: Option<&Map<String, Value>>) -> Result<(), DocumentValidationError> {
+pub(crate) fn validate_links(
+    links: Option<&Map<String, Value>>,
+) -> Result<(), DocumentValidationError> {
     let Some(links) = links else {
         return Ok(());
     };
