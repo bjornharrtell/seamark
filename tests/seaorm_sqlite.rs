@@ -493,6 +493,21 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     create_tables(&database).await;
     insert_fixtures(&database).await;
 
+    let foreign_keys = database
+        .query_one(sea_orm::Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA foreign_keys",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "foreign_keys")
+        .unwrap();
+    assert_eq!(
+        foreign_keys, 1,
+        "SQLite connection must enable foreign-key enforcement"
+    );
+
     let invalid_port = port::ActiveModel {
         port_id: Set(99),
         title: Set("Invalid".to_owned()),
@@ -503,9 +518,13 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     }
     .insert(&database)
     .await;
+    let error = invalid_port.expect_err("SQLite must enforce the owner foreign key");
     assert!(
-        invalid_port.is_err(),
-        "SQLite must enforce the owner foreign key"
+        error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("foreign key"),
+        "expected an owner foreign-key violation, got {error}"
     );
 
     let executor = SeaOrmQueryExecutor::<port::Entity, _, _>::new(
@@ -960,6 +979,7 @@ async fn rolls_back_sqlite_typed_mutations_after_a_later_operation_fails() {
 async fn sqlite_atomic_result_document_matches_shared_backend_case() {
     let database = database().await;
     atomic_cases::create_tables(&database).await;
+    atomic_cases::assert_orphan_owner_foreign_key_is_rejected(&database).await;
 
     let result_document = atomic_cases::execute_case(&database).await;
     assert_eq!(result_document, atomic_cases::expected_result_document());
