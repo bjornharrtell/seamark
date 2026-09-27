@@ -275,6 +275,35 @@ fn validates_error_status_codes_as_http_status_strings() {
 }
 
 #[test]
+fn validates_jsonapi_extension_and_profile_uris() {
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "jsonapi": {
+            "version": "1.1",
+            "ext": ["https://jsonapi.org/ext/atomic"],
+            "profile": ["urn:example:profile"]
+        }
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+
+    for jsonapi in [
+        json!({"ext": ["relative/path"]}),
+        json!({"profile": ["https://example.test/bad%2"]}),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "data": null,
+            "jsonapi": jsonapi
+        }))
+        .unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidJsonApiUri)
+        );
+    }
+}
+
+#[test]
 fn accepts_metadata_only_documents() {
     let mut meta = serde_json::Map::new();
     meta.insert("total".to_owned(), json!(0));

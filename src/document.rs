@@ -63,18 +63,22 @@ impl JsonApiDocument {
     /// Validates the document's top-level structure and resource identifiers.
     ///
     /// This is a structural check, not a complete conformance validator.
-    /// Included-resource reachability is checked, but link semantics and
-    /// several context-dependent protocol rules are not.
+    /// Included-resource reachability and selected link and JSON:API object
+    /// semantics are checked, but several context-dependent protocol rules
+    /// are not.
     ///
     /// # Errors
     ///
     /// Returns an error when required top-level content is absent, `data` and
     /// `errors` coexist, the errors array is empty, included resources have no
     /// primary data, included resources are unreachable from primary data, a
-    /// resource identity is duplicated, or a resource/identifier has an invalid
-    /// type or identity.
+    /// resource identity is duplicated, or a resource/identifier, link, or
+    /// JSON:API capability URI is invalid.
     pub fn validate(&self) -> Result<(), DocumentValidationError> {
         validate_links(self.links.as_ref())?;
+        if let Some(jsonapi) = &self.jsonapi {
+            jsonapi.validate()?;
+        }
         if self.data.is_some() && self.errors.is_some() {
             return Err(DocumentValidationError::DataAndErrors);
         }
@@ -504,6 +508,17 @@ pub struct JsonApiObject {
     pub meta: Option<Map<String, Value>>,
 }
 
+impl JsonApiObject {
+    fn validate(&self) -> Result<(), DocumentValidationError> {
+        for uri in self.ext.iter().chain(self.profile.iter()).flatten() {
+            if !is_valid_absolute_uri(uri) {
+                return Err(DocumentValidationError::InvalidJsonApiUri);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A structural JSON:API document validation failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DocumentValidationError {
@@ -517,6 +532,8 @@ pub enum DocumentValidationError {
     EmptyErrorObject,
     /// A links object contains an invalid link, URI-reference, or relation type.
     InvalidLinkObject,
+    /// The JSON:API object contains a relative or malformed capability URI.
+    InvalidJsonApiUri,
     /// An error object contains an invalid HTTP status code.
     InvalidErrorStatus,
     /// An error source contains an invalid JSON Pointer.
@@ -554,6 +571,9 @@ impl fmt::Display for DocumentValidationError {
             Self::EmptyErrorObject => "a JSON:API error object must contain at least one member",
             Self::InvalidLinkObject => {
                 "each links member must use a valid relation type and a valid URI-reference href"
+            }
+            Self::InvalidJsonApiUri => {
+                "JSON:API extension and profile members must contain absolute URIs"
             }
             Self::InvalidErrorStatus => {
                 "an error status must be an HTTP status code from 100 through 599"
@@ -782,6 +802,12 @@ fn is_valid_uri_reference(value: &str) -> bool {
     URIReference::try_from(value).is_ok()
 }
 
+fn is_valid_absolute_uri(value: &str) -> bool {
+    URIReference::try_from(value)
+        .ok()
+        .is_some_and(|reference| reference.scheme().is_some())
+}
+
 fn is_valid_language_tag(value: &str) -> bool {
     LanguageTag::parse(value).is_ok()
 }
@@ -814,9 +840,7 @@ fn is_valid_link_relation_type(value: &str) -> bool {
     if is_registered_link_relation_type(value) {
         return true;
     }
-    URIReference::try_from(value)
-        .ok()
-        .is_some_and(|reference| reference.scheme().is_some())
+    is_valid_absolute_uri(value)
 }
 
 fn is_registered_link_relation_type(value: &str) -> bool {
