@@ -179,21 +179,22 @@ both prior FK values intact. The handler does not persist member ordering;
 join tables, non-nullable direct FKs, and other association shapes remain
 available to explicitly dispatched custom executors.
 
-### M5 resource updates with to-many relationships
+### M5 resource adds and updates with to-many relationships
 
-When no custom executor handles an `UpdateResource` directly,
-`SeaOrmAtomicOperationDispatcher` now separates to-many linkage from the
-resource changeset, executes scalar and to-one changes with the typed resource
-handler, and dispatches each to-many replacement through its registered typed
+When no custom executor handles an `AddResource` or `UpdateResource` directly,
+`SeaOrmAtomicOperationDispatcher` separates to-many linkage from the resource
+changeset, executes scalar and to-one changes with the typed resource handler,
+and dispatches each to-many replacement through its registered typed
 relationship handler in the same transaction. The shared
-`execute_to_many_relationship_replacement_case` verifies this with a join-table
-relationship, while `execute_to_many_foreign_key_relationship_case` verifies
-the nullable direct-FK path; both run against PostgreSQL and SQLite. The
-join-table case also forces a later relationship failure after a scalar update
-and asserts that the Atomic operation rolls both changes back. Custom
-executors retain first-match precedence. Resource adds containing to-many
-linkage, ordered associations, non-nullable direct FKs, and other unconfigured
-association shapes remain outside this built-in composition.
+`execute_to_many_relationship_replacement_case` verifies join-table adds and
+updates, including local-ID linkage; `execute_to_many_foreign_key_relationship_case`
+verifies nullable direct-FK adds and updates. Both cases run against PostgreSQL
+and SQLite. Failure controls assert that invalid relationship targets roll
+back a newly added resource and that relationship failures roll back preceding
+scalar updates. Server-assigned resource identity is obtained from the typed
+add result when no `lid` is supplied. Custom executors retain first-match
+precedence. Ordered associations, non-nullable direct FKs, and other
+unconfigured association shapes remain outside this built-in composition.
 
 ### M7 multi-field nullable sort parity evidence
 

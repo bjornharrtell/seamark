@@ -13,7 +13,7 @@ use sea_orm::{
 use serde_json::{Value as JsonValue, json};
 
 use crate::atomic::{
-    AtomicOperationHandler, AtomicOperationOutcome, AtomicResourceChangeset,
+    AtomicOperationHandler, AtomicOperationOutcome, AtomicResourceChangeset, AtomicResourceData,
     AtomicResourceReference, AtomicResult, AtomicTarget, LocalIdMap, PlannedOperation,
 };
 use crate::document::{RelationshipData, ResourceIdentifier};
@@ -41,9 +41,9 @@ pub trait SeaOrmAtomicOperationExecutor: Send + Sync {
 
 /// Dispatches planned operations to typed executors.
 ///
-/// If no executor handles an `UpdateResource` operation directly, a resource
-/// update containing to-many linkage is composed from its typed resource
-/// executor and matching relationship executors within the same transaction.
+/// If no executor handles a resource add or update directly, resource changes
+/// containing to-many linkage are composed from the typed resource executor
+/// and matching relationship executors within the same transaction.
 pub struct SeaOrmAtomicOperationDispatcher {
     executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>>,
 }
@@ -53,6 +53,85 @@ impl SeaOrmAtomicOperationDispatcher {
     #[must_use]
     pub fn new(executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>>) -> Self {
         Self { executors }
+    }
+
+    async fn execute_to_many_replacements(
+        &self,
+        transaction: &DatabaseTransaction,
+        reference: &AtomicResourceReference,
+        changeset: &AtomicResourceChangeset,
+        local_ids: &LocalIdMap,
+    ) -> Result<(), String> {
+        for (model_field, relationship) in changeset.relationships.as_ref().into_iter().flatten() {
+            let Some(RelationshipData::Many(identifiers)) = &relationship.data else {
+                continue;
+            };
+            let operation = PlannedOperation::UpdateRelationship {
+                reference: reference.clone(),
+                model_field: model_field.clone(),
+                data: RelationshipData::Many(identifiers.clone()),
+            };
+            let executor = self
+                .executors
+                .iter()
+                .find(|executor| executor.supports(&operation))
+                .ok_or_else(|| {
+                    format!("no SeaORM relationship executor supports field `{model_field}`")
+                })?;
+            executor.execute(transaction, &operation, local_ids).await?;
+        }
+        Ok(())
+    }
+
+    async fn execute_composed_resource_add(
+        &self,
+        transaction: &DatabaseTransaction,
+        href: &Option<String>,
+        data: &AtomicResourceData,
+        changeset: &AtomicResourceChangeset,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        let (resource_data, resource_changeset) = without_to_many_relationships(data, changeset);
+        let operation = PlannedOperation::AddResource {
+            href: href.clone(),
+            data: resource_data,
+            changeset: resource_changeset,
+        };
+        let executor = self
+            .executors
+            .iter()
+            .find(|executor| executor.supports(&operation))
+            .ok_or_else(|| "no SeaORM mutation executor supports the resource add".to_owned())?;
+        let outcome = executor.execute(transaction, &operation, local_ids).await?;
+        let reference = resource_add_reference(changeset, &outcome)?;
+        self.execute_to_many_replacements(transaction, &reference, changeset, local_ids)
+            .await?;
+        Ok(outcome)
+    }
+
+    async fn execute_composed_resource_update(
+        &self,
+        transaction: &DatabaseTransaction,
+        reference: &AtomicResourceReference,
+        data: &AtomicResourceData,
+        changeset: &AtomicResourceChangeset,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        let (resource_data, resource_changeset) = without_to_many_relationships(data, changeset);
+        let operation = PlannedOperation::UpdateResource {
+            target: AtomicTarget::Reference(reference.clone()),
+            data: resource_data,
+            changeset: resource_changeset,
+        };
+        let executor = self
+            .executors
+            .iter()
+            .find(|executor| executor.supports(&operation))
+            .ok_or_else(|| "no SeaORM mutation executor supports the resource update".to_owned())?;
+        let outcome = executor.execute(transaction, &operation, local_ids).await?;
+        self.execute_to_many_replacements(transaction, reference, changeset, local_ids)
+            .await?;
+        Ok(outcome)
     }
 }
 
@@ -69,73 +148,110 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
                 return executor.execute(transaction, operation, local_ids).await;
             }
         }
+        if let PlannedOperation::AddResource {
+            href,
+            data,
+            changeset,
+        } = operation
+        {
+            if has_to_many_relationships(changeset) {
+                return self
+                    .execute_composed_resource_add(transaction, href, data, changeset, local_ids)
+                    .await;
+            }
+        }
         if let PlannedOperation::UpdateResource {
             target: AtomicTarget::Reference(reference),
             data,
             changeset,
         } = operation
         {
-            let has_to_many = changeset
-                .relationships
-                .as_ref()
-                .is_some_and(|relationships| {
-                    relationships.values().any(|relationship| {
-                        matches!(&relationship.data, Some(RelationshipData::Many(_)))
-                    })
-                });
-            if has_to_many {
-                let mut resource_changeset = changeset.clone();
-                if let Some(relationships) = resource_changeset.relationships.as_mut() {
-                    relationships.retain(|_, relationship| {
-                        !matches!(&relationship.data, Some(RelationshipData::Many(_)))
-                    });
-                }
-                let resource_operation = PlannedOperation::UpdateResource {
-                    target: AtomicTarget::Reference(reference.clone()),
-                    data: data.clone(),
-                    changeset: resource_changeset,
-                };
-                let resource_executor = self
-                    .executors
-                    .iter()
-                    .find(|executor| executor.supports(&resource_operation))
-                    .ok_or_else(|| {
-                        "no SeaORM mutation executor supports the resource update".to_owned()
-                    })?;
-                let outcome = resource_executor
-                    .execute(transaction, &resource_operation, local_ids)
-                    .await?;
-
-                for (model_field, relationship) in
-                    changeset.relationships.as_ref().into_iter().flatten()
-                {
-                    let Some(RelationshipData::Many(identifiers)) = &relationship.data else {
-                        continue;
-                    };
-                    let relationship_operation = PlannedOperation::UpdateRelationship {
-                        reference: reference.clone(),
-                        model_field: model_field.clone(),
-                        data: RelationshipData::Many(identifiers.clone()),
-                    };
-                    let relationship_executor = self
-                        .executors
-                        .iter()
-                        .find(|executor| executor.supports(&relationship_operation))
-                        .ok_or_else(|| {
-                            format!(
-                                "no SeaORM relationship executor supports field `{model_field}`"
-                            )
-                        })?;
-                    relationship_executor
-                        .execute(transaction, &relationship_operation, local_ids)
-                        .await?;
-                }
-
-                return Ok(outcome);
+            if has_to_many_relationships(changeset) {
+                return self
+                    .execute_composed_resource_update(
+                        transaction,
+                        reference,
+                        data,
+                        changeset,
+                        local_ids,
+                    )
+                    .await;
             }
         }
         Err("no SeaORM mutation executor supports this operation".to_owned())
     }
+}
+
+fn has_to_many_relationships(changeset: &AtomicResourceChangeset) -> bool {
+    changeset
+        .relationships
+        .as_ref()
+        .is_some_and(|relationships| {
+            relationships
+                .values()
+                .any(|relationship| matches!(&relationship.data, Some(RelationshipData::Many(_))))
+        })
+}
+
+fn without_to_many_relationships(
+    data: &AtomicResourceData,
+    changeset: &AtomicResourceChangeset,
+) -> (AtomicResourceData, AtomicResourceChangeset) {
+    let mut data = data.clone();
+    if let Some(relationships) = data.relationships.as_mut() {
+        relationships.retain(|_, relationship| {
+            !matches!(&relationship.data, Some(RelationshipData::Many(_)))
+        });
+    }
+
+    let mut changeset = changeset.clone();
+    if let Some(relationships) = changeset.relationships.as_mut() {
+        relationships.retain(|_, relationship| {
+            !matches!(&relationship.data, Some(RelationshipData::Many(_)))
+        });
+    }
+    (data, changeset)
+}
+
+fn resource_add_reference(
+    changeset: &AtomicResourceChangeset,
+    outcome: &AtomicOperationOutcome,
+) -> Result<AtomicResourceReference, String> {
+    let identity = outcome
+        .created_resource
+        .clone()
+        .or_else(|| {
+            changeset.id.as_ref().map(|id| ResourceIdentifier {
+                type_name: changeset.type_name.clone(),
+                id: Some(id.clone()),
+                ..ResourceIdentifier::default()
+            })
+        })
+        .or_else(|| {
+            let data = outcome.result.data.as_ref()?;
+            let type_name = data.get("type")?.as_str()?;
+            let id = data.get("id")?.as_str()?;
+            Some(ResourceIdentifier {
+                type_name: type_name.to_owned(),
+                id: Some(id.to_owned()),
+                ..ResourceIdentifier::default()
+            })
+        })
+        .ok_or_else(|| {
+            "resource add did not return an identity for its relationships".to_owned()
+        })?;
+    if identity.type_name != changeset.type_name {
+        return Err("resource add identity type does not match its changeset".to_owned());
+    }
+    let id = identity
+        .id
+        .ok_or_else(|| "resource add identity has no persistent `id`".to_owned())?;
+    Ok(AtomicResourceReference {
+        type_name: changeset.type_name.clone(),
+        id: Some(id),
+        lid: None,
+        relationship: None,
+    })
 }
 
 /// Executes to-many relationship add, remove, and replacement operations

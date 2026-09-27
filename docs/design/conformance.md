@@ -241,16 +241,17 @@ Those same database-backed routes pair the successful persisted ID with
 data. The HTTP-level `missing_single_resource_returns_a_structured_not_found_error`
 also pairs a 200 existing-resource response with the exact 404 error shape.
 
-### M5 Atomic resource updates with to-many linkage
+### M5 Atomic resource adds and updates with to-many linkage
 
 The shared `execute_to_many_relationship_replacement_case` and
-`execute_to_many_foreign_key_relationship_case` now submit resource-level
-`UpdateResource` operations containing both mapped attributes and to-many
-linkage. `SeaOrmAtomicOperationDispatcher` composes the typed resource
+`execute_to_many_foreign_key_relationship_case` cover resource-level
+`AddResource` and `UpdateResource` operations containing mapped attributes and
+to-many linkage. `SeaOrmAtomicOperationDispatcher` composes the typed resource
 executor with the matching join-table or nullable direct-FK relationship
 executor in the same transaction. The shared PostgreSQL/SQLite cases assert
-the persisted attribute and relationship state; the join-table failure case
-confirms a relationship error rolls back the preceding scalar update. A
-custom executor that directly supports the whole operation retains
-first-match precedence. Resource-add to-many linkage and other association
-shapes remain incomplete.
+persisted linkage for both paths; join-table add uses local IDs, direct-FK add
+uses the identity returned for a server-assigned source, and failure controls
+confirm relationship errors roll back a newly created source or a preceding
+scalar update. A custom executor that directly supports the whole operation
+retains first-match precedence. Ordered associations, non-nullable direct FKs,
+and other unconfigured association shapes remain incomplete.
