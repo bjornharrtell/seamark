@@ -160,6 +160,11 @@ control on both backends.
 Both database-backed include cases now compare unfielded owner resources
 against the same fixture-derived exact attribute map, including both declared
 values and excluding adapter-only fields.
+The shared `two_level_neighbors` query exercises the loader contract's nested
+include tree through the application-provided self-referential mapping on both
+PostgreSQL and SQLite. Both database tests assert root `2` links to `1`, exact
+included identities `1` and `3`, and second-level linkage `1 -> [2,3]` and
+`3 -> [1]`, without repeating the primary resource in `included`.
 The document layer now directly verifies that a resource object's `id` is a
 string: `resource_object_ids_must_be_strings` accepts a string ID and rejects
 a numeric ID during document decoding.

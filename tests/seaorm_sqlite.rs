@@ -237,13 +237,18 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
                 },
             }));
         }
-        if includes
+        if let Some(neighbors_include) = includes
             .iter()
-            .any(|include| include.public_name == "neighbors")
+            .find(|include| include.public_name == "neighbors")
         {
+            let root_ids = roots
+                .iter()
+                .map(|root| root.port_id)
+                .collect::<BTreeSet<_>>();
             let ids = roots
                 .iter()
                 .flat_map(|root| query_cases::neighbor_ids(root.port_id).iter().copied())
+                .filter(|id| !root_ids.contains(id))
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -252,10 +257,34 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
                 .all(database)
                 .await
                 .map_err(|error| error.to_string())?;
-            included.extend(neighbors.into_iter().map(|model| IncludedResource {
+            let mut included_ids = root_ids;
+            included_ids.extend(neighbors.iter().map(|model| model.port_id));
+            included.extend(neighbors.iter().map(|model| IncludedResource {
                 resource_type: "ports".to_owned(),
-                resource: port_resource(&model),
+                resource: port_resource(model),
             }));
+            if neighbors_include
+                .children
+                .iter()
+                .any(|child| child.public_name == "neighbors")
+            {
+                let nested_ids = neighbors
+                    .iter()
+                    .flat_map(|root| query_cases::neighbor_ids(root.port_id).iter().copied())
+                    .filter(|id| !included_ids.contains(id))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let nested_neighbors = port::Entity::find()
+                    .filter(port::Column::PortId.is_in(nested_ids))
+                    .all(database)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                included.extend(nested_neighbors.iter().map(|model| IncludedResource {
+                    resource_type: "ports".to_owned(),
+                    resource: port_resource(model),
+                }));
+            }
         }
         Ok(included)
     }
@@ -548,6 +577,17 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
             .unwrap();
         query_cases::assert_sorted_ports_page(&result, page_number.parse().unwrap());
     }
+
+    let nested_neighbors = executor
+        .collection(
+            &database,
+            &plan(&query_cases::two_level_neighbors()),
+            &AllowGuard,
+            Some(&PortOwnerLoader),
+        )
+        .await
+        .unwrap();
+    query_cases::assert_two_level_neighbors(&nested_neighbors);
 
     let unfielded_include_query = ReadQuery {
         includes: vec!["owner".to_owned()],

@@ -94,3 +94,9 @@ resource-level `ref` omits `relationship`, pointing to the existing `ref`
 object. `atomic_http_requires_a_relationship_ref_for_relationship_adds` pairs
 the successful relationship-add control with that 400 response and verifies
 the invalid operation reaches neither authorization nor the handler.
+M7 nested include parity uses the shared `two_level_neighbors` query with
+`neighbors.neighbors` in both `executes_database_filters_sort_pagination_and_includes_with_fieldsets`
+and `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`. The
+application-provided loader returns root `2` linked to `1`, then included
+resources `1` and `3` with exact next-level linkage `1 -> [2,3]` and `3 -> [1]`;
+the primary root is not duplicated in `included`.
