@@ -27,11 +27,14 @@ computed mapper outputs. Relationship mapping/loading remains explicit and
 application-defined.
 
 At execution, fieldset entries are revalidated against the exact registered
-public name, model field, and relationship target. Sort terms are revalidated
-against the exact public/internal attribute mapping and its explicit sortable
-opt-in. The executor also intersects mapper output with registered attributes
-and relationships before applying a fieldset, so a manually constructed read
-plan cannot bypass the registry through direct `SeaOrmReadResult` use.
+public name, model field, and relationship target. Filter AST fields must map
+to registered filterable attributes, and sort terms must match the exact
+public/internal attribute mapping and its explicit sortable opt-in. Every
+string filter literal still passes through the configured typed codec before
+SeaORM builds a bound column comparison. The executor also intersects mapper
+output with registered attributes and relationships before applying a
+fieldset, so a manually constructed read plan cannot bypass the registry
+through direct `SeaOrmReadResult` use.
 
 ## Relationships and application integration
 

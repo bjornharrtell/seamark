@@ -142,6 +142,13 @@ pub enum SeaOrmExecutionError {
         /// The public field name supplied by the plan.
         public_name: String,
     },
+    /// A filter expression uses a field not explicitly enabled for filtering.
+    InvalidFilterField {
+        /// The public resource type being queried.
+        resource_type: String,
+        /// The internal field supplied by the plan.
+        model_field: String,
+    },
     /// A sort term does not match a registered, explicitly sortable attribute.
     InvalidSortField {
         /// The public resource type being queried.
@@ -191,6 +198,13 @@ impl fmt::Display for SeaOrmExecutionError {
             } => write!(
                 formatter,
                 "field `{public_name}` is not a valid registered field on resource `{resource_type}`"
+            ),
+            Self::InvalidFilterField {
+                resource_type,
+                model_field,
+            } => write!(
+                formatter,
+                "filter field `{model_field}` is not enabled for resource `{resource_type}`"
             ),
             Self::InvalidSortField {
                 resource_type,
@@ -331,6 +345,7 @@ where
             });
         }
         validate_fieldset_mappings(&self.registry, plan)?;
+        validate_filter_mappings(definition, plan)?;
         validate_sort_mappings(definition, plan)?;
         if !guard.authorize(plan).await {
             return Err(SeaOrmExecutionError::NotAuthorized);
@@ -411,6 +426,44 @@ where
 {
     E::Column::from_str(model_field)
         .map_err(|_| SeaOrmExecutionError::UnknownModelField(model_field.to_owned()))
+}
+
+fn validate_filter_mappings(
+    definition: &ResourceDefinition,
+    plan: &ReadPlan,
+) -> Result<(), SeaOrmExecutionError> {
+    fn validate_expression(
+        definition: &ResourceDefinition,
+        resource_type: &str,
+        expression: &FilterExpression,
+    ) -> Result<(), SeaOrmExecutionError> {
+        match expression {
+            FilterExpression::Equals { model_field, .. } => {
+                if !definition.attributes().iter().any(|attribute| {
+                    attribute.model_field() == model_field && attribute.is_filterable()
+                }) {
+                    return Err(SeaOrmExecutionError::InvalidFilterField {
+                        resource_type: resource_type.to_owned(),
+                        model_field: model_field.clone(),
+                    });
+                }
+            }
+            FilterExpression::And(children) | FilterExpression::Or(children) => {
+                for child in children {
+                    validate_expression(definition, resource_type, child)?;
+                }
+            }
+            FilterExpression::Not(child) => {
+                validate_expression(definition, resource_type, child)?;
+            }
+        }
+        Ok(())
+    }
+
+    if let Some(filter) = &plan.filter {
+        validate_expression(definition, &plan.resource_type, filter)?;
+    }
+    Ok(())
 }
 
 fn validate_sort_mappings(

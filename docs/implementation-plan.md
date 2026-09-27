@@ -78,6 +78,18 @@ exact `InvalidSortField` error even with a denying guard, proving the sort
 allowlist runs before authorization. The existing `first_page_with_owner`
 query remains the valid `-depth` database-side sort control.
 
+### M4 SeaORM filter-plan mapping enforcement
+
+The same PostgreSQL and SQLite executor tests submit filter ASTs (including a
+nested `and`/`not`) for relationship field `owner_id` and mapper-only field
+`private`; both return the exact `InvalidFilterField` error with a denying
+guard, proving field validation precedes authorization. A manually built typed
+`depth_m = "2"` filter returns only port `1` on both backends through the
+configured codec; an invalid `berth_count` literal returns
+`InvalidFilterValue` before SQL. Existing shared typed filter cases retain
+additional numeric, boolean, string, and null controls, with comparisons still
+executed by SeaORM.
+
 ### M5 empty-operations request evidence
 
 The [Atomic Operations extension](https://jsonapi.org/ext/atomic/#document-structure)
