@@ -526,7 +526,10 @@ the required Atomic extension with an unknown valid profile, and returns 415
 with a JSON:API error document for unpermitted `charset` and `version`
 parameters or an unsupported extension URI. The regression also verifies
 rejected parameters do not invoke authorization or the operation handler. The
-broader media-negotiation matrix remains partial.
+base mutation route also accepts a quoted space-separated list of absolute
+profile URIs, while malformed/unsupported Content-Type parameters are rejected
+before authorization or adapter execution. The broader media-negotiation
+matrix remains partial.
 The conformance matrix cites these cases but remains partial.
 `validates_included_resources_reachable_from_any_collection_member` adds
 collection-root coverage: an included resource linked only from the second
