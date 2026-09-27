@@ -799,6 +799,34 @@ async fn query_router_rejects_invalid_queries_before_authorization_or_execution(
 }
 
 #[tokio::test]
+async fn query_router_rejects_pagination_offset_overflow_before_authorization_or_execution() {
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request(
+            "/ports?page%5Bnumber%5D=18446744073709551615&page%5Bsize%5D=2",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["status"], "400");
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["detail"], "page offset overflows");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "page[number]");
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn query_router_rejects_unsupported_filter_operator_before_execution() {
     let plans = Arc::new(Mutex::new(Vec::new()));
     let query_adapter = Arc::new(TestQueryAdapter {

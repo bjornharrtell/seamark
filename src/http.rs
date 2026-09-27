@@ -493,10 +493,10 @@ fn read_plan_error(error: ReadPlanError) -> Response {
         }
         ReadPlanError::InvalidPageParameter { parameter, .. } => Some((*parameter).to_owned()),
         ReadPlanError::PageSizeExceedsMaximum { .. } => Some("page[size]".to_owned()),
+        ReadPlanError::PageOffsetOverflow => Some("page[number]".to_owned()),
         ReadPlanError::UnknownResourceType(_)
         | ReadPlanError::InvalidPaginationConfig(_)
-        | ReadPlanError::PageOffsetExceedsMaximum { .. }
-        | ReadPlanError::PageOffsetOverflow => None,
+        | ReadPlanError::PageOffsetExceedsMaximum { .. } => None,
     };
     protocol_error(
         StatusCode::BAD_REQUEST,
