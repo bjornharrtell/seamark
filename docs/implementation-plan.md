@@ -217,6 +217,13 @@ a member owned by another source. The failed operation is rolled back, leaving
 both prior FK values intact. The handler does not persist member ordering;
 join tables, non-nullable direct FKs, and other association shapes remain
 available to explicitly dispatched custom executors.
+The shared `execute_http_to_many_relationship_dispatch_case` and
+`execute_http_to_many_foreign_key_idempotent_add_case` route cases also cover
+idempotency for both supported association mappings: after removing a present
+member, a later Atomic `remove` for that existing-but-unlinked resource
+succeeds, including duplicate identifiers in one operation. PostgreSQL and
+SQLite assert the empty result objects and unchanged persisted state; their
+subsequent failing-operation controls still verify rollback.
 
 ### M5 resource adds and updates with to-many relationships
 

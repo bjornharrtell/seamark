@@ -497,7 +497,7 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
         Arc::new(AllowGuard),
         Arc::new(dispatcher(&registry)),
     );
-    let request_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"1"},{"type":"tags","id":"2"}]},{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"2"}]},{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]}]}"#;
+    let request_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"1"},{"type":"tags","id":"2"}]},{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"2"}]},{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]},{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"1"}]}]}"#;
     let request = Request::builder()
         .method("POST")
         .uri("/operations")
@@ -511,7 +511,10 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
     assert_eq!(response.headers()[VARY], "Accept");
     let response_document: JsonValue =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}, {}, {}]}));
+    assert_eq!(
+        response_document,
+        json!({"atomic:results": [{}, {}, {}, {}]})
+    );
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
@@ -577,13 +580,16 @@ pub async fn execute_http_to_many_foreign_key_idempotent_add_case(database: &Dat
         Arc::new(dispatcher(&registry)),
     );
     let request = atomic_request(
-        r#"{"atomic:operations":[{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"1"},{"type":"ports","id":"2"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"2"}]}]}"#,
+        r#"{"atomic:operations":[{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"1"},{"type":"ports","id":"2"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"2"}]},{"op":"remove","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"}]},{"op":"remove","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"1"}]}]}"#,
     );
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let response_document: JsonValue =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}, {}]}));
+    assert_eq!(
+        response_document,
+        json!({"atomic:results": [{}, {}, {}, {}]})
+    );
 
     let ports = port::Entity::find()
         .order_by_asc(port::Column::PortId)
@@ -595,11 +601,11 @@ pub async fn execute_http_to_many_foreign_key_idempotent_add_case(database: &Dat
             .iter()
             .map(|port| (port.port_id, port.owner_id))
             .collect::<Vec<_>>(),
-        vec![(1, Some(1)), (2, Some(1))]
+        vec![(1, None), (2, Some(1))]
     );
 
     let failing_request = atomic_request(
-        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"999"}]}]}"#,
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"2"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"999"}]}]}"#,
     );
     let response = app.oneshot(failing_request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -624,7 +630,7 @@ pub async fn execute_http_to_many_foreign_key_idempotent_add_case(database: &Dat
             .iter()
             .map(|port| (port.port_id, port.owner_id))
             .collect::<Vec<_>>(),
-        vec![(1, Some(1)), (2, Some(1))]
+        vec![(1, None), (2, Some(1))]
     );
 }
 
