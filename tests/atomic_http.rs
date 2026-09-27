@@ -1448,6 +1448,49 @@ async fn atomic_http_rejects_resource_update_without_target_before_authorization
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_resource_data_with_both_id_and_lid_before_authorization() {
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        DatabaseConnection::default(),
+        guard.clone(),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","id":"1","lid":"local","attributes":{"name":"Ada"}}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+    assert_eq!(
+        error["errors"][0]["detail"],
+        "invalid operation 0 at `/atomic:operations/0`: resource data must not contain both `id` and `lid`"
+    );
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
+    assert!(error.get("atomic:results").is_none());
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn atomic_http_rejects_resource_remove_without_target_before_authorization_or_handler() {
     let database = database().await;
     let guard = Arc::new(CountingGuard {
