@@ -37,6 +37,23 @@ impl AtomicOperationsGuard for TestGuard {
     }
 }
 
+struct LimitedGuard;
+
+#[async_trait]
+impl AtomicOperationsGuard for LimitedGuard {
+    async fn authorize(
+        &self,
+        _headers: &axum::http::HeaderMap,
+        _operations: &[PlannedAtomicOperation],
+    ) -> bool {
+        true
+    }
+
+    fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
+        Err("operation limit exceeded".to_owned())
+    }
+}
+
 struct TestHandler {
     fail: bool,
     require_resolved_targets: bool,
@@ -306,6 +323,30 @@ async fn negotiates_and_executes_atomic_http_requests() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     error_document(response, valid_body).await;
 
+    let limited = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(LimitedGuard),
+        Arc::new(TestHandler {
+            fail: true,
+            require_resolved_targets: false,
+        }),
+    );
+    let response = limited
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            valid_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, valid_body).await;
+    assert_eq!(error["errors"][0]["status"], "413");
+
     let failing = atomic_http::router(
         registry(),
         database.clone(),
@@ -362,4 +403,34 @@ async fn negotiates_and_executes_atomic_http_requests() {
             {}
         ]})
     );
+}
+
+#[tokio::test]
+async fn database_failures_return_a_server_error_document() {
+    let database = database().await;
+    database.clone().close().await.unwrap();
+    let app = atomic_http::router(
+        registry(),
+        database,
+        Arc::new(TestGuard { allowed: true }),
+        Arc::new(TestHandler {
+            fail: false,
+            require_resolved_targets: false,
+        }),
+    );
+    let body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada"}}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    error_document(response, body).await;
 }
