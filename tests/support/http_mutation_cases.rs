@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
-use axum::http::header::{ACCEPT, CONTENT_TYPE};
+use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
@@ -595,6 +595,75 @@ pub async fn run_case(database: &DatabaseConnection) {
         .parse::<i32>()
         .unwrap();
     assert_eq!(created["data"]["attributes"]["name"], "Initial");
+
+    let response = router
+        .clone()
+        .oneshot(mutation_request(
+            "POST",
+            "/ports",
+            &json!({
+                "data": {
+                    "type": "ports",
+                    "attributes": {"name": "Missing Owner"},
+                    "relationships": {
+                        "owner": {"data": {"type": "people", "id": "99"}}
+                    }
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = response_json(response).await;
+    assert_eq!(error["errors"][0]["code"], "related_resource_not_found");
+    assert_eq!(error["errors"][0]["status"], "404");
+    assert_eq!(
+        port::Entity::find().all(database).await.unwrap().len(),
+        1,
+        "a failed create referencing a missing related resource must roll back"
+    );
+
+    let response = router
+        .clone()
+        .oneshot(mutation_request(
+            "PATCH",
+            "/ports/999",
+            &json!({
+                "data": {
+                    "type": "ports",
+                    "id": "999",
+                    "attributes": {"name": "Missing"}
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = response_json(response).await;
+    assert_eq!(error["errors"][0]["code"], "resource_not_found");
+    assert_eq!(error["errors"][0]["status"], "404");
+
+    let response = router
+        .clone()
+        .oneshot(mutation_request("DELETE", "/ports/999", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = response_json(response).await;
+    assert_eq!(error["errors"][0]["code"], "resource_not_found");
+    assert_eq!(error["errors"][0]["status"], "404");
+    let persisted = port::Entity::find_by_id(port_id)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.title, "Initial");
 
     let response = router
         .clone()
