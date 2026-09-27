@@ -120,7 +120,12 @@ update-result identities; client-assigned add-ID matches; the required
 server-assigned add representation; and operation-specific result data. A
 resource add/update `data` must be a valid response resource with a matching
 type and known ID, while relationship and remove operations forbid result
-`data`. A custom
+`data`. The Atomic extension permits a resource-update result without `data`
+when the server changes no fields beyond those requested, or a representation
+of the updated resource; `validates_atomic_resource_update_result_shapes`
+checks both accepted shapes and rejects a representation with a different or
+nonpersistent identity. The planner cannot infer whether a server changed
+additional fields, for which the extension requires a representation. A custom
 to-many join-table handler is verified through the dispatcher, shared
 transaction, local-ID resolution, and rollback; each application's relation
 mapping/persistence handler remains explicit. Atomic documents and embedded
