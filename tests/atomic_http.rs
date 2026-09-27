@@ -325,7 +325,13 @@ async fn negotiates_and_executes_atomic_http_requests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    error_document(response, valid_body).await;
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, valid_body).await;
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
 
     let href_router = atomic_http::router_with_href_resolver(
         registry(),
