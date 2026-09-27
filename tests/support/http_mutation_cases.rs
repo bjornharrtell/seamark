@@ -287,6 +287,46 @@ impl SeaOrmBaseMutationExecutor for PortMutationExecutor {
     }
 }
 
+struct EmptyIdPortMutationExecutor;
+
+#[async_trait]
+impl SeaOrmBaseMutationExecutor for EmptyIdPortMutationExecutor {
+    fn supports(&self, resource: &ResourceDefinition, command: &MutationCommand) -> bool {
+        resource.type_name() == "ports" && matches!(command, MutationCommand::Create { .. })
+    }
+
+    async fn execute(
+        &self,
+        transaction: &DatabaseTransaction,
+        _resource: &ResourceDefinition,
+        command: &MutationCommand,
+    ) -> Result<MutationOutcome, MutationAdapterError> {
+        let MutationCommand::Create { changeset } = command else {
+            return Err(MutationAdapterError::Unsupported);
+        };
+        let title = changeset
+            .attributes
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("unaddressable")
+            .to_owned();
+        port::ActiveModel {
+            title: Set(title.clone()),
+            description: Set(None),
+            owner_id: Set(None),
+            ..Default::default()
+        }
+        .insert(transaction)
+        .await
+        .map_err(|_| MutationAdapterError::Failed)?;
+        Ok(MutationOutcome::Resource(AdapterResource {
+            id: String::new(),
+            attributes: BTreeMap::from([("title".to_owned(), json!(title))]),
+            ..AdapterResource::default()
+        }))
+    }
+}
+
 async fn require_port(
     transaction: &DatabaseTransaction,
     port_id: i32,
@@ -569,8 +609,12 @@ pub async fn run_case(database: &DatabaseConnection) {
         database.clone(),
         vec![executor],
     ));
-    let router =
-        http::router_with_mutations(registry, Arc::new(NoReads), Arc::new(AllowAll), adapter);
+    let router = http::router_with_mutations(
+        registry.clone(),
+        Arc::new(NoReads),
+        Arc::new(AllowAll),
+        adapter,
+    );
 
     let response = router
         .clone()
@@ -595,6 +639,43 @@ pub async fn run_case(database: &DatabaseConnection) {
         .parse::<i32>()
         .unwrap();
     assert_eq!(created["data"]["attributes"]["name"], "Initial");
+
+    let invalid_executor: Arc<dyn SeaOrmBaseMutationExecutor> =
+        Arc::new(EmptyIdPortMutationExecutor);
+    let invalid_adapter = Arc::new(SeaOrmBaseMutationAdapter::new(
+        database.clone(),
+        vec![invalid_executor],
+    ));
+    let invalid_router = http::router_with_mutations(
+        registry,
+        Arc::new(NoReads),
+        Arc::new(AllowAll),
+        invalid_adapter,
+    );
+    let response = invalid_router
+        .oneshot(mutation_request(
+            "POST",
+            "/ports",
+            &json!({
+                "data": {
+                    "type": "ports",
+                    "attributes": {"name": "Unaddressable"}
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = response_json(response).await;
+    assert_eq!(error["errors"][0]["code"], "mutation_failed");
+    assert_eq!(error["errors"][0]["status"], "500");
+    assert_eq!(
+        port::Entity::find().all(database).await.unwrap().len(),
+        1,
+        "an unaddressable empty-ID create result must roll back its inserted row"
+    );
 
     let response = router
         .clone()

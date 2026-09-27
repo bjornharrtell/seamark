@@ -103,6 +103,13 @@ impl MutationResourceAdapter for SeaOrmBaseMutationAdapter {
             .await
             .map_err(|_| MutationAdapterError::Failed)?;
         match executor.execute(&transaction, resource, &command).await {
+            Ok(MutationOutcome::Resource(record)) if record.id.is_empty() => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| MutationAdapterError::Failed)?;
+                Err(MutationAdapterError::Failed)
+            }
             Ok(outcome) => {
                 transaction
                     .commit()
