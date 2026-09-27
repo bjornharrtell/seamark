@@ -1163,7 +1163,7 @@ where
         transaction: &DatabaseTransaction,
         target: &AtomicTarget,
         local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let target = self.target_identity(target, local_ids)?;
         let id = target
             .id
@@ -1173,9 +1173,13 @@ where
             .filter(id_column.eq(self.identifier_value(&id)?))
             .exec(transaction)
             .await
-            .map_err(|error| format!("resource delete failed: {error}"))?;
+            .map_err(|error| {
+                AtomicOperationFailure::Operation(format!("resource delete failed: {error}"))
+            })?;
         if result.rows_affected == 0 {
-            return Err("resource to remove was not found".to_owned());
+            return Err(AtomicOperationFailure::NotFound(
+                "resource to remove was not found".to_owned(),
+            ));
         }
         Ok(AtomicOperationOutcome::default())
     }
@@ -1277,9 +1281,10 @@ where
                 .update(transaction, target, changeset, local_ids)
                 .await
                 .map_err(|failure| failure.to_string()),
-            PlannedOperation::RemoveResource { target } => {
-                self.remove(transaction, target, local_ids).await
-            }
+            PlannedOperation::RemoveResource { target } => self
+                .remove(transaction, target, local_ids)
+                .await
+                .map_err(|failure| failure.to_string()),
             PlannedOperation::UpdateRelationship {
                 reference,
                 model_field,
@@ -1308,6 +1313,9 @@ where
             PlannedOperation::UpdateResource {
                 target, changeset, ..
             } => self.update(transaction, target, changeset, local_ids).await,
+            PlannedOperation::RemoveResource { target } => {
+                self.remove(transaction, target, local_ids).await
+            }
             _ => self
                 .execute(transaction, operation, local_ids)
                 .await
