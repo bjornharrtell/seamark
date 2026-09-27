@@ -530,6 +530,19 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         vec![query_cases::SECOND_PAGE_PORT_ID]
     );
 
+    for page_number in ["1", "2"] {
+        let result = executor
+            .collection(
+                &database,
+                &plan(&query_cases::sorted_ports_page(page_number)),
+                &AllowGuard,
+                Some(&PortOwnerLoader),
+            )
+            .await
+            .unwrap();
+        query_cases::assert_sorted_ports_page(&result, page_number.parse().unwrap());
+    }
+
     let unfielded_include_query = ReadQuery {
         includes: vec!["owner".to_owned()],
         page_size: Some("10".to_owned()),

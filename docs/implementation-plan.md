@@ -147,6 +147,9 @@ has been replaced by these paired shared-fixture checks.
 Both database-backed include cases now compare unfielded owner resources
 against the same fixture-derived exact attribute map, including both declared
 values and excluding adapter-only fields.
+Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
+two pages (`2,3` then `1`), projected root attributes, and matching owner
+includes against both database engines.
 The shared Atomic backend case also runs
 `execute_local_id_to_one_relationship_case`: it creates an owner and port in
 order, links the port to the owner's local ID, compares the exact result
