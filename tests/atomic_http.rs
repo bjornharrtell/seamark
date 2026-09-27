@@ -1235,23 +1235,47 @@ async fn atomic_http_rejects_relationship_cardinality_mismatch_before_authorizat
         guard.clone(),
         handler.clone(),
     );
-    let body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1","relationship":"author"},"data":[{"type":"authors","id":"2"}]}]}"#;
-    let response = app
-        .oneshot(request(
-            "/operations",
-            ATOMIC_MEDIA_TYPE,
-            ATOMIC_MEDIA_TYPE,
-            body,
-        ))
-        .await
-        .unwrap();
+    for (body, expected_pointer) in [
+        (
+            r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1","relationship":"author"},"data":[{"type":"authors","id":"2"}]}]}"#,
+            "/atomic:operations/0/data",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1","relationship":"author"},"data":[{"type":"authors","id":"2"}]}]}"#,
+            "/atomic:operations/0/data",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1","relationship":"tags"},"data":{"type":"tags","id":"2"}}]}"#,
+            "/atomic:operations/0/data",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1"},"data":{"type":"articles","id":"1","relationships":{"author":{"data":[{"type":"authors","id":"2"}]}}}}]}"#,
+            "/atomic:operations/0/data/relationships/author/data",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1"},"data":{"type":"articles","id":"1","relationships":{"tags":{"data":{"type":"tags","id":"2"}}}}}]}"#,
+            "/atomic:operations/0/data/relationships/tags/data",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
-    assert_eq!(
-        error_document(response, body).await["errors"][0]["source"]["pointer"],
-        "/atomic:operations/0/data"
-    );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        let error = error_document(response, body).await;
+        assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+        assert_eq!(error["errors"][0]["source"]["pointer"], expected_pointer);
+        assert!(error.get("atomic:results").is_none());
+    }
     assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     database.close().await.unwrap();
