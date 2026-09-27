@@ -1533,7 +1533,47 @@ pub trait AtomicOperationHandler: Send + Sync {
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String>;
+
+    /// Executes one operation while preserving an HTTP-relevant failure category.
+    ///
+    /// Existing handlers may implement [`Self::execute_operation`] only; their
+    /// failures are treated as unprocessable operations by default.
+    async fn execute_operation_with_failure(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
+        self.execute_operation(transaction, operation, local_ids)
+            .await
+            .map_err(AtomicOperationFailure::Operation)
+    }
 }
+
+/// An operation-handler failure with an HTTP-relevant category.
+#[derive(Debug)]
+pub enum AtomicOperationFailure {
+    /// The operation could not be completed with the supplied input or state.
+    Operation(String),
+    /// The operation conflicts with an existing resource or application state.
+    Conflict(String),
+}
+
+impl fmt::Display for AtomicOperationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Operation(message) | Self::Conflict(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<String> for AtomicOperationFailure {
+    fn from(message: String) -> Self {
+        Self::Operation(message)
+    }
+}
+
+impl std::error::Error for AtomicOperationFailure {}
 
 /// Authorizes and bounds a planned Atomic Operations request before transaction start.
 #[async_trait]
@@ -1563,6 +1603,13 @@ pub enum AtomicExecutionError {
         /// Zero-based index of the failed operation.
         index: usize,
         /// The application handler's error.
+        message: String,
+    },
+    /// An operation conflicted with an existing resource or application state.
+    Conflict {
+        /// Zero-based index of the failed operation.
+        index: usize,
+        /// The conflict description.
         message: String,
     },
     /// Rolling back after an operation error also failed.
@@ -1605,6 +1652,9 @@ impl fmt::Display for AtomicExecutionError {
             Self::Database(error) => write!(formatter, "atomic transaction failed: {error}"),
             Self::Operation { index, message } => {
                 write!(formatter, "operation {index} failed: {message}")
+            }
+            Self::Conflict { index, message } => {
+                write!(formatter, "operation {index} conflicted: {message}")
             }
             Self::Rollback {
                 index,
@@ -1667,13 +1717,21 @@ where
 
     for (index, operation) in operations.iter().enumerate() {
         let outcome = match handler
-            .execute_operation(&transaction, &operation.operation, &local_ids)
+            .execute_operation_with_failure(&transaction, &operation.operation, &local_ids)
             .await
         {
             Ok(outcome) => outcome,
-            Err(message) => {
+            Err(failure) => {
+                let message = failure.to_string();
                 return match transaction.rollback().await {
-                    Ok(()) => Err(AtomicExecutionError::Operation { index, message }),
+                    Ok(()) => Err(match failure {
+                        AtomicOperationFailure::Operation(message) => {
+                            AtomicExecutionError::Operation { index, message }
+                        }
+                        AtomicOperationFailure::Conflict(message) => {
+                            AtomicExecutionError::Conflict { index, message }
+                        }
+                    }),
                     Err(rollback) => Err(AtomicExecutionError::Rollback {
                         index,
                         operation: message,

@@ -914,6 +914,50 @@ pub async fn execute_client_assigned_add_result_http_case(database: &DatabaseCon
     assert_eq!(person.display_name, "Client ID");
 }
 
+pub async fn execute_duplicate_client_assigned_add_conflict_http_case(
+    database: &DatabaseConnection,
+) {
+    create_tables(database).await;
+    person::ActiveModel {
+        person_id: Set(41),
+        display_name: Set("Existing".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"people","id":"42","attributes":{"name":"Rolled back"}}},{"op":"add","data":{"type":"people","id":"41","attributes":{"name":"Replacement"}}}]}"#;
+    let response = app.oneshot(atomic_request(request_body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document["errors"][0]["code"], "conflict");
+    assert_eq!(response_document["errors"][0]["status"], "409");
+    assert_eq!(
+        response_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(response_document.get("atomic:results").is_none());
+
+    let people = person::Entity::find()
+        .order_by_asc(person::Column::PersonId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].person_id, 41);
+    assert_eq!(people[0].display_name, "Existing");
+}
+
 pub async fn execute_client_assigned_add_missing_result_rollback_http_case(
     database: &DatabaseConnection,
 ) {

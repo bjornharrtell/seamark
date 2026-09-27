@@ -6,15 +6,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
-    IntoActiveModel, ModelTrait, QueryFilter, TransactionTrait, Value,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
+    IntoActiveModel, ModelTrait, QueryFilter, RuntimeErr, TransactionTrait, Value,
     sea_query::{Condition, Expr},
 };
 use serde_json::{Value as JsonValue, json};
 
 use crate::atomic::{
-    AtomicOperationHandler, AtomicOperationOutcome, AtomicResourceChangeset, AtomicResourceData,
-    AtomicResourceReference, AtomicResult, AtomicTarget, LocalIdMap, PlannedOperation,
+    AtomicOperationFailure, AtomicOperationHandler, AtomicOperationOutcome,
+    AtomicResourceChangeset, AtomicResourceData, AtomicResourceReference, AtomicResult,
+    AtomicTarget, LocalIdMap, PlannedOperation,
 };
 use crate::document::{RelationshipData, ResourceIdentifier};
 use crate::http::{
@@ -22,6 +23,17 @@ use crate::http::{
 };
 use crate::registry::{RegistryError, ResourceDefinition, ResourceRegistry};
 use crate::seaorm::SeaOrmMutationValueCodec;
+
+fn is_unique_constraint_violation(error: &DbErr) -> bool {
+    match error {
+        DbErr::Exec(RuntimeErr::SqlxError(error)) | DbErr::Query(RuntimeErr::SqlxError(error)) => {
+            error
+                .as_database_error()
+                .is_some_and(|database_error| database_error.is_unique_violation())
+        }
+        _ => false,
+    }
+}
 
 /// Executes one base HTTP mutation with an explicit typed SeaORM mapping.
 #[async_trait]
@@ -115,6 +127,18 @@ pub trait SeaOrmAtomicOperationExecutor: Send + Sync {
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String>;
+
+    /// Executes the operation while preserving conflict failures.
+    async fn execute_with_failure(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
+        self.execute(transaction, operation, local_ids)
+            .await
+            .map_err(AtomicOperationFailure::Operation)
+    }
 }
 
 /// Dispatches planned operations to typed executors.
@@ -168,7 +192,7 @@ impl SeaOrmAtomicOperationDispatcher {
         data: &AtomicResourceData,
         changeset: &AtomicResourceChangeset,
         local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let (resource_data, resource_changeset) = without_to_many_relationships(data, changeset);
         let operation = PlannedOperation::AddResource {
             href: href.clone(),
@@ -179,9 +203,16 @@ impl SeaOrmAtomicOperationDispatcher {
             .executors
             .iter()
             .find(|executor| executor.supports(&operation))
-            .ok_or_else(|| "no SeaORM mutation executor supports the resource add".to_owned())?;
-        let outcome = executor.execute(transaction, &operation, local_ids).await?;
-        let reference = resource_add_reference(changeset, &outcome)?;
+            .ok_or_else(|| {
+                AtomicOperationFailure::Operation(
+                    "no SeaORM mutation executor supports the resource add".to_owned(),
+                )
+            })?;
+        let outcome = executor
+            .execute_with_failure(transaction, &operation, local_ids)
+            .await?;
+        let reference = resource_add_reference(changeset, &outcome)
+            .map_err(AtomicOperationFailure::Operation)?;
         self.execute_to_many_replacements(transaction, &reference, changeset, local_ids)
             .await?;
         Ok(outcome)
@@ -221,9 +252,22 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
+        self.execute_operation_with_failure(transaction, operation, local_ids)
+            .await
+            .map_err(|failure| failure.to_string())
+    }
+
+    async fn execute_operation_with_failure(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         for executor in &self.executors {
             if executor.supports(operation) {
-                return executor.execute(transaction, operation, local_ids).await;
+                return executor
+                    .execute_with_failure(transaction, operation, local_ids)
+                    .await;
             }
         }
         if let PlannedOperation::AddResource {
@@ -253,10 +297,13 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
                         changeset,
                         local_ids,
                     )
-                    .await;
+                    .await
+                    .map_err(AtomicOperationFailure::Operation);
             }
         }
-        Err("no SeaORM mutation executor supports this operation".to_owned())
+        Err(AtomicOperationFailure::Operation(
+            "no SeaORM mutation executor supports this operation".to_owned(),
+        ))
     }
 }
 
@@ -1025,13 +1072,18 @@ where
         transaction: &DatabaseTransaction,
         changeset: &AtomicResourceChangeset,
         local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let mut active_model = <E::ActiveModel as std::default::Default>::default();
         self.apply_changeset(&mut active_model, changeset, local_ids, true)?;
-        let model = active_model
-            .insert(transaction)
-            .await
-            .map_err(|error| format!("resource create failed: {error}"))?;
+        let model = active_model.insert(transaction).await.map_err(|error| {
+            if is_unique_constraint_violation(&error) {
+                AtomicOperationFailure::Conflict(
+                    "the resource conflicts with existing data".to_owned(),
+                )
+            } else {
+                AtomicOperationFailure::Operation(format!("resource create failed: {error}"))
+            }
+        })?;
         let identifier = self.column(changeset.identifier_field.as_str())?;
         let id_value = model.get(identifier);
         let id = self.decode_identifier(&id_value)?;
@@ -1208,9 +1260,10 @@ where
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
         match operation {
-            PlannedOperation::AddResource { changeset, .. } => {
-                self.add(transaction, changeset, local_ids).await
-            }
+            PlannedOperation::AddResource { changeset, .. } => self
+                .add(transaction, changeset, local_ids)
+                .await
+                .map_err(|failure| failure.to_string()),
             PlannedOperation::UpdateResource {
                 target, changeset, ..
             } => self.update(transaction, target, changeset, local_ids).await,
@@ -1229,6 +1282,23 @@ where
             | PlannedOperation::RemoveRelationshipMembers { .. } => {
                 Err("to-many relationship operations require an application executor".to_owned())
             }
+        }
+    }
+
+    async fn execute_with_failure(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
+        match operation {
+            PlannedOperation::AddResource { changeset, .. } => {
+                self.add(transaction, changeset, local_ids).await
+            }
+            _ => self
+                .execute(transaction, operation, local_ids)
+                .await
+                .map_err(AtomicOperationFailure::Operation),
         }
     }
 }
