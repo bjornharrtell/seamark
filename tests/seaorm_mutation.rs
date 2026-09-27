@@ -1,5 +1,8 @@
 #![allow(missing_docs)]
 
+#[path = "support/atomic_cases.rs"]
+mod atomic_cases;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -687,4 +690,16 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
             }]
     ));
     assert!(!handler.supports(&operations[1].operation));
+}
+
+#[tokio::test]
+async fn postgres_atomic_result_document_matches_shared_backend_case() {
+    let database = database().await;
+    atomic_cases::create_tables(&database).await;
+
+    let result_document = atomic_cases::execute_case(&database).await;
+    assert_eq!(result_document, atomic_cases::expected_result_document());
+    atomic_cases::assert_final_state(&database).await;
+
+    database.close().await.unwrap();
 }

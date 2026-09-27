@@ -4,12 +4,16 @@
 #[path = "support/query_cases.rs"]
 mod query_cases;
 
+#[path = "support/atomic_cases.rs"]
+mod atomic_cases;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use axum::http::HeaderMap;
+use axum::body::{Body, to_bytes};
+use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, Database, DatabaseConnection,
@@ -20,7 +24,10 @@ use seamark::atomic::{
     AtomicOperationsGuard, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
     execute_atomic_operations, plan_atomic_operations,
 };
-use seamark::http::AdapterResource;
+use seamark::http::{
+    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryCollectionResult,
+    QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+};
 use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
@@ -31,6 +38,7 @@ use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
 };
 use serde_json::json;
+use tower::ServiceExt;
 
 mod port {
     use sea_orm::entity::prelude::*;
@@ -178,6 +186,7 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
         {
             return Ok(Vec::new());
         }
+
         let ids = roots
             .iter()
             .filter_map(|root| root.owner_id)
@@ -204,6 +213,75 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
                 },
             })
             .collect())
+    }
+}
+
+type PortQueryExecutor =
+    SeaOrmQueryExecutor<port::Entity, fn(&port::Model) -> AdapterResource, PortCodec>;
+
+struct PortHttpQueryAdapter {
+    database: DatabaseConnection,
+    executor: PortQueryExecutor,
+}
+
+#[async_trait]
+impl QueryResourceAdapter for PortHttpQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, AdapterError> {
+        let result = self
+            .executor
+            .collection(&self.database, plan, &AllowGuard, Some(&PortOwnerLoader))
+            .await
+            .map_err(|_| AdapterError)?;
+        Ok(QueryCollectionResult {
+            resources: result.resources,
+            included: result
+                .included
+                .into_iter()
+                .map(|included| AdapterIncludedResource {
+                    resource_type: included.resource_type,
+                    resource: included.resource,
+                })
+                .collect(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct EmptyAdapter;
+
+#[async_trait]
+impl ResourceAdapter for EmptyAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+    ) -> Result<Vec<AdapterResource>, AdapterError> {
+        Ok(Vec::new())
+    }
+
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+    ) -> Result<Option<AdapterResource>, AdapterError> {
+        Ok(None)
+    }
+}
+
+struct AllowHttpRequest;
+
+#[async_trait]
+impl RequestAuthorizer for AllowHttpRequest {
+    async fn authorize(
+        &self,
+        _resource_type: &str,
+        _resource_id: Option<&str>,
+        _headers: &HeaderMap,
+    ) -> bool {
+        true
     }
 }
 
@@ -425,6 +503,37 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         );
     }
 
+    let query_adapter = Arc::new(PortHttpQueryAdapter {
+        database: database.clone(),
+        executor: SeaOrmQueryExecutor::<port::Entity, _, _>::new(
+            registry(),
+            "ports",
+            port_resource as fn(&port::Model) -> AdapterResource,
+            PortCodec,
+        )
+        .unwrap(),
+    });
+    let app = http::router_with_query(
+        Arc::new(registry()),
+        Arc::new(EmptyAdapter),
+        Arc::new(AllowHttpRequest),
+        query_adapter,
+        pagination(),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?filter=equals%28name%2C%27Beta%27%29&sort=-depth&page%5Bsize%5D=1&fields%5Bports%5D=name,owner&fields%5Bpeople%5D=name&include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, query_cases::first_page_document());
+
     database.close().await.unwrap();
 }
 
@@ -612,6 +721,18 @@ async fn rolls_back_sqlite_typed_mutations_after_a_later_operation_fails() {
         .unwrap()
         .unwrap();
     assert_eq!(port.title, "Alpha");
+
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_atomic_result_document_matches_shared_backend_case() {
+    let database = database().await;
+    atomic_cases::create_tables(&database).await;
+
+    let result_document = atomic_cases::execute_case(&database).await;
+    assert_eq!(result_document, atomic_cases::expected_result_document());
+    atomic_cases::assert_final_state(&database).await;
 
     database.close().await.unwrap();
 }
