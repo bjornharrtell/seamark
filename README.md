@@ -1,6 +1,6 @@
 # Seamark
 
-Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides a JSON:API document model and a small set of structural checks; it does not yet provide HTTP routes, persistence, or full specification conformance.
+Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, and a read-only Axum collection/single-resource GET slice. Persistence and full specification conformance are not implemented.
 
 ## Initial target
 
@@ -12,7 +12,7 @@ Initial query support is deliberately focused: function-style filters, using Jso
 
 ## Implementation status
 
-The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The Rust crate now includes protocol document types and a provisional, adapter-independent public resource registry. HTTP routes, SeaORM persistence, and full JSON:API 1.1 base-specification and Atomic Operations support remain unimplemented; the current code must not be treated as a conformance claim.
+The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The current HTTP slice uses a narrow adapter boundary, authorizes before adapter calls, negotiates JSON:API responses, and projects only registered fields. It rejects every non-empty query string. SeaORM persistence, general query support, mutations, and full JSON:API 1.1 base-specification and Atomic Operations support remain unimplemented; the current code must not be treated as a conformance claim.
 
 ## Design documents
 

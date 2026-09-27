@@ -1,6 +1,9 @@
 # Architecture and request lifecycle
 
-**Status: proposal for review.** Seamark is not implemented; this page describes intended boundaries and flow.
+**Status: partial implementation.** The repository has a protocol model, an
+adapter-independent resource registry prototype, and an Axum read-only GET
+slice. SeaORM persistence and complete JSON:API conformance are not
+implemented.
 
 ## Boundaries
 
@@ -15,9 +18,9 @@ The design separates protocol handling, public API metadata, application policy,
 
 ## Routes and request flow
 
-Resource definitions are intended to register conventional CRUD and relationship routes by default. Applications can override individual routes.
+The current HTTP integration registers only collection and single-resource GET routes. Resource definitions are intended to grow into conventional CRUD and relationship routes, with per-route overrides, in later milestones.
 
-A request is matched to a route, negotiated against the endpoint's supported JSON:API capabilities, parsed and validated, and resolved using registered resource metadata. The framework then authorizes and plans the requested work, executes it through SeaORM where persistence is needed, and serializes a protocol response. Mutation requests use explicit changesets or operation plans.
+A current GET request is negotiated as JSON:API, rejected if it contains query parameters, resolved against the resource registry, and authorized before the read adapter is called. The adapter receives the public resource definition and returns normalized resource records; only explicitly declared fields are serialized. The adapter is persistence-independent. SeaORM planning/execution, query support, mutations, and their hooks remain future work.
 
 Capability negotiation must expose only supported behavior; unsupported behavior should fail explicitly rather than being silently approximated.
 
