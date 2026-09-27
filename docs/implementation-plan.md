@@ -691,3 +691,18 @@ identity, and persisted attributes. Its companion
 `execute_client_assigned_add_missing_result_rollback_http_case` writes the
 client-ID row before returning an empty result; both backends assert HTTP 500,
 an operation pointer, omission of `atomic:results`, and rollback of the write.
+
+### M5 application-resolved href HTTP-to-SeaORM evidence
+
+The shared PostgreSQL/SQLite `execute_http_href_typed_seaorm_case` drives
+`router_with_href_resolver` into typed SeaORM dispatch for collection add,
+resource update/remove, to-one relationship update, and to-many relationship
+add/replace/remove. It asserts the exact seven-result Atomic document and
+persisted state. Its failure control updates a resource and adds a valid
+relationship member before an invalid member fails at operation 2; both
+backends assert the error pointer, omitted `atomic:results`, and rollback of
+the earlier resource and relationship writes. The fixture resolver maps only
+its declared `/ports` routes. This is integration evidence for the application
+resolver boundary, not a protocol requirement for how arbitrary application
+routes must map to resources; the existing mock-handler HTTP href test and
+direct typed-SeaORM href cases remain separate evidence layers.

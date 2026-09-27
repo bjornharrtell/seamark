@@ -242,9 +242,14 @@ impl AtomicHrefResolver for ParityHrefResolver {
     }
 
     fn resolve_resource(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
-        Ok((href == "/ports/1").then(|| AtomicResourceReference {
+        let id = match href {
+            "/ports/1" => "1",
+            "/ports/2" => "2",
+            _ => return Ok(None),
+        };
+        Ok(Some(AtomicResourceReference {
             type_name: "ports".to_owned(),
-            id: Some("1".to_owned()),
+            id: Some(id.to_owned()),
             lid: None,
             relationship: None,
         }))
@@ -538,6 +543,188 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
+}
+
+pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    person::ActiveModel {
+        person_id: Set(1),
+        display_name: Set("Owner".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    for (tag_id, tag_name) in [(1, "First"), (2, "Second")] {
+        tag::ActiveModel {
+            tag_id: Set(tag_id),
+            tag_name: Set(tag_name.to_owned()),
+        }
+        .insert(database)
+        .await
+        .unwrap();
+    }
+    port::ActiveModel {
+        port_id: Set(1),
+        title: Set("Pier".to_owned()),
+        owner_id: Set(None),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router_with_href_resolver(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+        Arc::new(ParityHrefResolver),
+    );
+    let request_body = json!({
+        "atomic:operations": [
+            {
+                "op": "add",
+                "href": "/ports",
+                "data": {
+                    "type": "ports",
+                    "id": "2",
+                    "attributes": {"name": "Temporary Pier"}
+                }
+            },
+            {
+                "op": "update",
+                "href": "/ports/1",
+                "data": {
+                    "type": "ports",
+                    "attributes": {"name": "Updated Pier"}
+                }
+            },
+            {"op": "remove", "href": "/ports/2"},
+            {
+                "op": "update",
+                "href": "/ports/1/relationships/owner",
+                "data": {"type": "people", "id": "1"}
+            },
+            {
+                "op": "add",
+                "href": "/ports/1/relationships/tags",
+                "data": [{"type": "tags", "id": "1"}, {"type": "tags", "id": "2"}]
+            },
+            {
+                "op": "update",
+                "href": "/ports/1/relationships/tags",
+                "data": [{"type": "tags", "id": "2"}]
+            },
+            {
+                "op": "remove",
+                "href": "/ports/1/relationships/tags",
+                "data": [{"type": "tags", "id": "2"}]
+            }
+        ]
+    })
+    .to_string();
+    let response = app
+        .clone()
+        .oneshot(atomic_request(&request_body))
+        .await
+        .unwrap();
+    let status = response.status();
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(status, StatusCode::OK, "{response_document}");
+    assert_eq!(
+        response_document,
+        json!({"atomic:results": [
+            {"data": {"type": "ports", "id": "2"}},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {}
+        ]})
+    );
+
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.title, "Updated Pier");
+    assert_eq!(port.owner_id, Some(1));
+    assert!(
+        port::Entity::find_by_id(2)
+            .one(database)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        port_tag::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let failing_request_body = json!({
+        "atomic:operations": [
+            {
+                "op": "update",
+                "href": "/ports/1",
+                "data": {
+                    "type": "ports",
+                    "attributes": {"name": "Must Roll Back"}
+                }
+            },
+            {
+                "op": "add",
+                "href": "/ports/1/relationships/tags",
+                "data": [{"type": "tags", "id": "1"}]
+            },
+            {
+                "op": "add",
+                "href": "/ports/1/relationships/tags",
+                "data": [{"type": "tags", "id": "999"}]
+            }
+        ]
+    })
+    .to_string();
+    let response = app
+        .oneshot(atomic_request(&failing_request_body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error_document["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
+    assert_eq!(error_document["errors"][0]["status"], "422");
+    assert_eq!(
+        error_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/2"
+    );
+    assert!(error_document.get("atomic:results").is_none());
+
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.title, "Updated Pier");
+    assert_eq!(port.owner_id, Some(1));
+    assert!(
+        port_tag::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty(),
+        "href-targeted relationship changes preceding a failure must roll back"
+    );
 }
 
 pub async fn execute_invalid_result_rollback_case(database: &DatabaseConnection) {

@@ -41,13 +41,22 @@ resolved collection, resource, and relationship `href` targets. Planned
 resource mutations expose mapped changesets, and relationship operations
 expose mapped internal fields. The Axum route negotiates Atomic Operations and
 tests success, malformed requests, unsupported media types, authorization
-denial, operation failure, and all three `href` target classes. Typed SeaORM
-handlers exercise resource CRUD, to-one foreign-key persistence, nullable
-direct-FK to-many add/remove/replacement, and explicitly configured two-column
-join-table operations in a shared transaction with rollback coverage. Other
-association shapes remain available through application executors. The
-behaviors cited here have test evidence, but broader normative request,
-response, and error cases remain open; no complete conformance claim is made.
+denial, operation failure, and all three `href` target classes with a mock
+handler. The shared PostgreSQL/SQLite
+`execute_http_href_typed_seaorm_case` additionally drives collection add,
+resource update/remove, to-one relationship update, and to-many relationship
+add/replace/remove through `router_with_href_resolver` into typed SeaORM
+dispatch, asserting the exact result document and persisted state. Its
+multi-operation failure control verifies rollback of earlier resource and
+relationship writes. These checks establish the tested integration boundary;
+the mapping from an application route to a registered collection, resource,
+or relationship remains application-resolved and is not a protocol-level
+route rule. Typed SeaORM handlers also exercise resource CRUD, to-one
+foreign-key persistence, nullable direct-FK to-many add/remove/replacement,
+and explicitly configured two-column join-table operations in a shared
+transaction with rollback coverage. Other association shapes remain available
+through application executors. Broader normative request, response, and error
+cases remain open; no complete conformance claim is made.
 
 ## Initial requirement-to-test matrix
 
