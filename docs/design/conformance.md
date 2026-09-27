@@ -76,3 +76,8 @@ remains partial for other type/ID/lid edge cases.
 The document-level field-collision regression also pairs the existing rejection
 of `owner` appearing in both `attributes` and `relationships` with a valid
 `name` attribute plus distinct `owner` relationship control.
+The linkage identifier regression accepts a typed `id` control, rejects
+`id` plus `lid` and missing `id`/`lid` during document validation, and rejects
+an omitted linkage `type` while decoding the submitted document. The existing
+programmatic empty-type case separately verifies document validation rejects
+an empty `type`.

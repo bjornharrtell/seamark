@@ -166,6 +166,11 @@ a numeric ID during document decoding.
 `resource_fields_must_not_conflict_with_type_id_or_each_other` pairs the
 document-layer rejection of a same-name `owner` attribute/relationship with a
 valid distinct `name`/`owner` field control.
+`relationship_identifiers_require_type_and_exactly_one_identity` accepts a
+typed linkage `id`, rejects omitted `type` during document decoding, and
+asserts document validation rejects both missing identity members and
+simultaneous `id`/`lid`. The existing `rejects_identifiers_without_type_or_identity`
+also validates the empty-type case.
 Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
 two pages (`2,3` then `1`), projected root attributes, and matching owner
 includes against both database engines.
