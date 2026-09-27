@@ -565,7 +565,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
 }
 
 #[tokio::test]
-async fn authorization_limits_and_missing_include_loader_fail_before_querying() {
+async fn authorization_limits_and_validation_failures_precede_queries() {
     let database = database().await;
     let executor = SeaOrmQueryExecutor::<port::Entity, _, _>::new(
         registry(),
@@ -625,6 +625,18 @@ async fn authorization_limits_and_missing_include_loader_fail_before_querying() 
             .collection(&database, &include_plan, &include_guard, None)
             .await,
         Err(SeaOrmExecutionError::IncludeLoaderRequired)
+    ));
+
+    let invalid_filter_plan = plan(&ReadQuery {
+        filters: vec!["equals(capacity,'not-a-number')".to_owned()],
+        ..ReadQuery::default()
+    });
+    assert!(matches!(
+        executor
+            .collection(&database, &invalid_filter_plan, &include_guard, None)
+            .await,
+        Err(SeaOrmExecutionError::InvalidFilterValue { model_field, .. })
+            if model_field == "berth_count"
     ));
 
     let numeric_guard = AllowGuard {
