@@ -90,7 +90,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 117 integration
+implementations. The complete all-features suite passes with 118 integration
 tests and 5 unit tests, including 6 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -158,9 +158,11 @@ invalid operations and confirms that the single returned error points to the
 first operation. Base GET and Atomic HTTP tests also verify the
 permitted stop-at-first-problem strategy when a request has multiple faults,
 so multi-error HTTP status selection is not used by these routes. The matrix
-remains partial: a focused base-spec regression now rejects a relationship
-object whose only member is an empty `links` object, while retaining valid
-link-only, metadata-only, and linkage-bearing relationships. Remaining
+remains partial: focused base-spec regressions reject a relationship object
+whose only member is an empty `links` object while retaining valid link-only,
+metadata-only, and linkage-bearing relationships, and ignore `@`-members in
+resource relationship maps instead of interpreting their values as relationships.
+Other `@`-member contexts remain uncovered. Remaining
 top-level JSON:API rules, normative Atomic
 Operations edge cases, complete endpoint status mappings, and context-sensitive
 request/response rules still require coverage before M6 can be complete.
