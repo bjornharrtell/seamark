@@ -154,6 +154,10 @@ so multi-error HTTP status selection is not used by these routes. The matrix
 remains partial: remaining top-level JSON:API rules, normative Atomic
 Operations edge cases, complete endpoint status mappings, and context-sensitive
 request/response rules still require coverage before M6 can be complete.
+Atomic operation-execution failure coverage now explicitly verifies the
+permitted 422 status, JSON:API response headers, and a resolvable
+`/atomic:operations/0` source pointer for the failed operation. Other error
+categories remain partial.
 Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
 `included` members. Atomic HTTP body parsing now rejects duplicate JSON object
