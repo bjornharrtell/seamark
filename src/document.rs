@@ -426,6 +426,14 @@ impl ErrorObject {
             return Err(DocumentValidationError::EmptyErrorObject);
         }
         validate_links(self.links.as_ref())?;
+        if self
+            .source
+            .as_ref()
+            .and_then(|source| source.pointer.as_deref())
+            .is_some_and(|pointer| !is_valid_json_pointer(pointer))
+        {
+            return Err(DocumentValidationError::InvalidErrorSourcePointer);
+        }
         Ok(())
     }
 }
@@ -502,6 +510,8 @@ pub enum DocumentValidationError {
     EmptyErrorObject,
     /// A links object contains an invalid link, URI-reference, or relation type.
     InvalidLinkObject,
+    /// An error source contains an invalid JSON Pointer.
+    InvalidErrorSourcePointer,
     /// The document contains included resources without primary data.
     IncludedWithoutData,
     /// A resource or identifier has an empty type.
@@ -535,6 +545,9 @@ impl fmt::Display for DocumentValidationError {
             Self::EmptyErrorObject => "a JSON:API error object must contain at least one member",
             Self::InvalidLinkObject => {
                 "each links member must use a valid relation type and a valid URI-reference href"
+            }
+            Self::InvalidErrorSourcePointer => {
+                "an error source pointer must use valid JSON Pointer syntax"
             }
             Self::IncludedWithoutData => {
                 "a JSON:API document must not contain included resources without data"
@@ -759,6 +772,22 @@ fn is_valid_uri_reference(value: &str) -> bool {
 
 fn is_valid_language_tag(value: &str) -> bool {
     LanguageTag::parse(value).is_ok()
+}
+
+fn is_valid_json_pointer(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    let Some(tokens) = value.strip_prefix('/') else {
+        return false;
+    };
+    let mut bytes = tokens.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
+            return false;
+        }
+    }
+    true
 }
 
 fn is_valid_link_relation_type(value: &str) -> bool {

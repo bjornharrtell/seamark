@@ -231,6 +231,28 @@ fn serializes_error_sources_and_status_as_strings() {
 }
 
 #[test]
+fn validates_json_pointer_syntax_in_error_sources() {
+    for pointer in ["", "/", "/data/attributes/name", "/a~1b/c~0d", "/~01"] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "errors": [{"source": {"pointer": pointer}}]
+        }))
+        .unwrap();
+        document.validate().unwrap();
+    }
+
+    for pointer in ["data/attributes/name", "/a~", "/a~2b"] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "errors": [{"source": {"pointer": pointer}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidErrorSourcePointer)
+        );
+    }
+}
+
+#[test]
 fn accepts_metadata_only_documents() {
     let mut meta = serde_json::Map::new();
     meta.insert("total".to_owned(), json!(0));
