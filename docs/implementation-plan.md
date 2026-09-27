@@ -338,9 +338,19 @@ shared PostgreSQL/SQLite case verifies string primary-key query/filter
 behavior, included to-one linkage, Atomic
 create/update/delete, and string-key relationship reassignment. Atomic
 result validation checks missing, short, and long result arrays; positional
-update-result identities; client-assigned add-ID matches; the required
-server-assigned add representation; and operation-specific result data. A
-resource add/update `data` must be a valid response resource with a matching
+update-result identities; client-assigned add-ID matches; and operation-specific
+result data. Every resource add now requires a valid created-resource
+representation, including client-assigned IDs; this selects the extension's
+representation-returning option rather than conditionally omitting `data`.
+`validate_operation_result` enforces that contract inside the transaction
+before commit, and `AtomicOperationsDocument::validate_response_for` applies
+the same check to complete response documents. The shared
+`execute_client_assigned_add_result_http_case` and
+`execute_client_assigned_add_missing_result_rollback_http_case` are invoked by
+both PostgreSQL and SQLite route suites: they verify the returned and persisted
+client-ID representation, then assert a handler's missing representation
+produces HTTP 500, omits `atomic:results`, and rolls back the client-ID insert.
+Resource add/update `data` must be a valid response resource with a matching
 type and known ID, while relationship and remove operations forbid result
 `data`. The Atomic extension permits a resource-update result without `data`
 when the server changes no fields beyond those requested, or a representation
@@ -664,3 +674,20 @@ The Atomic parser now
 uses RFC 9110 qvalue syntax and most-specific media-range precedence rather
 than floating-point parsing and first-match acceptance. The request-shape
 planner matrix remains partial; no general conformance claim is made.
+
+### M5 client-assigned resource-add result evidence
+
+The Atomic extension permits omitting result `data` for a client-ID resource
+add only when the created representation is identical to the request. Seamark
+chooses the conservative always-return-representation behavior instead:
+`validate_operation_result` rejects a missing add representation before the
+transaction commits, and `AtomicOperationsDocument::validate_response_for`
+enforces the same contract for independently validated response documents.
+`validates_atomic_client_assigned_add_result_identity`
+accepts a representation with the requested identity and rejects a missing or
+mismatched one. The shared PostgreSQL/SQLite
+`execute_client_assigned_add_result_http_case` confirms HTTP success, result
+identity, and persisted attributes. Its companion
+`execute_client_assigned_add_missing_result_rollback_http_case` writes the
+client-ID row before returning an empty result; both backends assert HTTP 500,
+an operation pointer, omission of `atomic:results`, and rollback of the write.

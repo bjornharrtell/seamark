@@ -628,6 +628,12 @@ fn validates_atomic_client_assigned_add_result_identity() {
     .validate_response_for(&add)
     .unwrap();
 
+    let missing_representation = document(json!({"atomic:results": [{}]}));
+    assert!(matches!(
+        missing_representation.validate_response_for(&add),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
+
     let mismatched_id = document(json!({
         "atomic:results": [{"data": {"type": "authors", "id": "different"}}]
     }));
