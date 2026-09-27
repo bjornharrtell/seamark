@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
 use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
-use axum::http::{Method, Request, Response, StatusCode};
+use axum::http::{HeaderValue, Method, Request, Response, StatusCode};
 use sea_orm::{Database, DatabaseConnection, DatabaseTransaction};
 use seamark::atomic::{
     AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsGuard,
@@ -1405,6 +1405,21 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
         assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
         assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }
+
+    let mut duplicate_content_type = request("/operations", content_type, ATOMIC_MEDIA_TYPE, body);
+    duplicate_content_type
+        .headers_mut()
+        .append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let response = app.oneshot(duplicate_content_type).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(response.headers()[CONTENT_TYPE], "application/vnd.api+json");
+    assert_eq!(response.headers()[VARY], "Accept");
+    assert_eq!(
+        error_document(response, body).await["errors"][0]["code"],
+        "unsupported_media_type"
+    );
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
