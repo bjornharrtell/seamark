@@ -287,7 +287,7 @@ invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
 implementations. At this revision, the complete all-features suite passes with
-199 integration tests and 6 unit tests, including 11 isolated SQLite tests
+200 integration tests and 6 unit tests, including 11 isolated SQLite tests
 and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
@@ -538,6 +538,9 @@ and errors cases. Per the [JSON:API top-level rule](https://jsonapi.org/format/#
 `data: []` with `included: []`; a non-empty included array is rejected because
 no included resource can satisfy the [compound-document full-linkage rule](https://jsonapi.org/format/#document-compound-documents)
 from an empty primary collection.
+`null_primary_data_allows_only_empty_included_array` applies the same full-linkage
+rule to `data: null`, accepting an empty `included` array and rejecting a
+non-empty one.
 The [JSON:API compound documents rule](https://jsonapi.org/format/#document-compound-documents)
 prohibits more than one resource object for each `(type,id)` pair.
 `rejects_duplicate_resource_identifiers_in_a_collection` rejects the same

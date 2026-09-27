@@ -910,6 +910,23 @@ fn empty_primary_collection_allows_only_empty_included_array() {
 }
 
 #[test]
+fn null_primary_data_allows_only_empty_included_array() {
+    let empty_compound_document: JsonApiDocument =
+        serde_json::from_value(json!({"data": null, "included": []})).unwrap();
+    empty_compound_document.validate_response().unwrap();
+
+    let unreachable: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "included": [{"type": "ports", "id": "1"}]
+    }))
+    .unwrap();
+    assert_eq!(
+        unreachable.validate(),
+        Err(DocumentValidationError::UnreachableIncludedResource)
+    );
+}
+
+#[test]
 fn validates_included_resource_reachability_through_relationship_linkage() {
     let mut primary = resource("ports", "1");
     primary.relationships = Some(BTreeMap::from([(
