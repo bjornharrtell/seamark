@@ -515,7 +515,7 @@ Base GET media negotiation now validates quoted
 absolute profile URI lists, rejects malformed or duplicate profile
 parameters, accepts only HTTP qvalue syntax with at most three fractional
 digits (including the empty fractional form `q=1.`), and treats
-`profile=unquoted` after valid `q=0.5` as an Accept extension
+`profile=unquoted` after valid `q=0.5` and bare `;q=1;foo` as Accept extensions
 on both base GET routes; an unsupported media parameter before `q` remains
 unacceptable. It rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not

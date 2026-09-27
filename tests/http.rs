@@ -1466,6 +1466,7 @@ async fn accepts_only_spec_conformant_accept_quality_values_on_both_routes() {
         for accept in [
             "application/vnd.api+json;q=0.125",
             "application/vnd.api+json;q=1.",
+            "application/vnd.api+json;q=1;foo",
             r#"application/vnd.api+json;q=1;foo="x\"y""#,
         ] {
             let adapter = Arc::new(TestAdapter::default());
