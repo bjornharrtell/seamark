@@ -614,6 +614,19 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         vec![query_cases::SECOND_PAGE_PORT_ID]
     );
 
+    for page_number in ["1", "2"] {
+        let result = executor
+            .collection(
+                &database,
+                &plan(&query_cases::sorted_ports_page(page_number)),
+                &guard,
+                Some(&PortOwnerLoader),
+            )
+            .await
+            .unwrap();
+        query_cases::assert_sorted_ports_page(&result, page_number.parse().unwrap());
+    }
+
     let unfielded_include_query = ReadQuery {
         includes: vec!["owner".to_owned()],
         page_size: Some("10".to_owned()),
