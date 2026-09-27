@@ -1028,22 +1028,27 @@ async fn base_mutation_and_relationship_routes_reject_unacceptable_accept_before
         ("DELETE", "/ports/1/relationships/tags", r#"{"data":[]}"#),
     ];
 
-    for (method, uri, body) in requests {
-        let mut request = mutation_request(method, uri, body);
-        request
-            .headers_mut()
-            .insert(ACCEPT, HeaderValue::from_static("application/json"));
-        let response = app.clone().oneshot(request).await.unwrap();
+    for accept in [
+        "application/json",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\"",
+    ] {
+        for &(method, uri, body) in &requests {
+            let mut request = mutation_request(method, uri, body);
+            request
+                .headers_mut()
+                .insert(ACCEPT, HeaderValue::from_static(accept));
+            let response = app.clone().oneshot(request).await.unwrap();
 
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_ACCEPTABLE,
-            "{method} {uri}"
-        );
-        assert_jsonapi_headers(&response);
-        let errors = error_document(response).await.errors.unwrap();
-        assert_eq!(errors[0].code.as_deref(), Some("not_acceptable"));
-        assert_eq!(errors[0].status.as_deref(), Some("406"));
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_ACCEPTABLE,
+                "{method} {uri} with {accept}"
+            );
+            assert_jsonapi_headers(&response);
+            let errors = error_document(response).await.errors.unwrap();
+            assert_eq!(errors[0].code.as_deref(), Some("not_acceptable"));
+            assert_eq!(errors[0].status.as_deref(), Some("406"));
+        }
     }
 
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
