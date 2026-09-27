@@ -68,8 +68,8 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
     }
 }
 
-/// Executes to-many relationship membership operations against an explicit
-/// SeaORM join-table entity.
+/// Executes to-many relationship add, remove, and replacement operations
+/// against an explicit SeaORM join-table entity.
 ///
 /// The source resource, public relationship, and join-table columns are
 /// configured explicitly because registry relationship fields do not encode
@@ -90,6 +90,13 @@ where
     target_column: String,
     value_codec: C,
     entity: PhantomData<fn() -> E>,
+}
+
+#[derive(Clone, Copy)]
+enum JoinTableOperation {
+    Add,
+    Remove,
+    Replace,
 }
 
 impl<E, C> SeaOrmJoinTableMutationHandler<E, C>
@@ -150,7 +157,7 @@ where
         })
     }
 
-    fn supports_membership_operation(&self, operation: &PlannedOperation) -> bool {
+    fn supports_relationship_operation(&self, operation: &PlannedOperation) -> bool {
         matches!(
             operation,
             PlannedOperation::AddRelationshipMembers {
@@ -161,6 +168,13 @@ where
                 reference,
                 model_field,
                 ..
+            } if reference.type_name == self.source_type && model_field == &self.model_field
+        ) || matches!(
+            operation,
+            PlannedOperation::UpdateRelationship {
+                reference,
+                model_field,
+                data: RelationshipData::Many(_),
             } if reference.type_name == self.source_type && model_field == &self.model_field
         )
     }
@@ -181,7 +195,7 @@ where
     C: SeaOrmMutationValueCodec,
 {
     fn supports(&self, operation: &PlannedOperation) -> bool {
-        self.supports_membership_operation(operation)
+        self.supports_relationship_operation(operation)
     }
 
     async fn execute(
@@ -190,16 +204,25 @@ where
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
-        let (reference, identifiers, add) = match operation {
+        let (reference, identifiers, action) = match operation {
             PlannedOperation::AddRelationshipMembers {
                 reference, data, ..
-            } => (reference, data, true),
+            } => (reference, data.as_slice(), JoinTableOperation::Add),
             PlannedOperation::RemoveRelationshipMembers {
                 reference, data, ..
-            } => (reference, data, false),
+            } => (reference, data.as_slice(), JoinTableOperation::Remove),
+            PlannedOperation::UpdateRelationship {
+                reference,
+                data: RelationshipData::Many(identifiers),
+                ..
+            } => (
+                reference,
+                identifiers.as_slice(),
+                JoinTableOperation::Replace,
+            ),
             _ => return Err("unsupported join-table relationship operation".to_owned()),
         };
-        if !self.supports_membership_operation(operation) {
+        if !self.supports_relationship_operation(operation) {
             return Err("join-table relationship mapping does not match operation".to_owned());
         }
 
@@ -241,7 +264,25 @@ where
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        if add {
+        if matches!(action, JoinTableOperation::Replace) {
+            E::delete_many()
+                .filter(source_column.eq(source_value.clone()))
+                .exec(transaction)
+                .await
+                .map_err(|error| format!("join-table replacement delete failed: {error}"))?;
+        } else if matches!(action, JoinTableOperation::Remove) && !target_values.is_empty() {
+            E::delete_many()
+                .filter(source_column.eq(source_value.clone()))
+                .filter(target_column.is_in(target_values.clone()))
+                .exec(transaction)
+                .await
+                .map_err(|error| format!("join-table delete failed: {error}"))?;
+        }
+
+        if matches!(
+            action,
+            JoinTableOperation::Add | JoinTableOperation::Replace
+        ) {
             for target_value in target_values {
                 let mut active_model = <E::ActiveModel as Default>::default();
                 active_model
@@ -255,13 +296,6 @@ where
                     .await
                     .map_err(|error| format!("join-table insert failed: {error}"))?;
             }
-        } else if !target_values.is_empty() {
-            E::delete_many()
-                .filter(source_column.eq(source_value))
-                .filter(target_column.is_in(target_values))
-                .exec(transaction)
-                .await
-                .map_err(|error| format!("join-table delete failed: {error}"))?;
         }
 
         Ok(AtomicOperationOutcome::default())

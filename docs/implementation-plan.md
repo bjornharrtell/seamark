@@ -151,7 +151,7 @@ foreign-key updates using the application-supplied mutation codec; a
 dispatcher composes these with custom executors. Applications can resolve
 relationship `href` routes before planning. The transaction runner invokes
 handlers in order, checks result identities, and rolls back on failure.
-**Current focused evidence:** 25 Atomic Operations tests, 4 PostgreSQL-backed
+**Current focused evidence:** 26 Atomic Operations tests, 12 PostgreSQL-backed
 HTTP tests, 2 PostgreSQL mutation tests, and 5 unit tests covering negotiation
 and strict JSON request parsing. A shared PostgreSQL/SQLite case verifies
 string primary-key query/filter behavior, included to-one linkage, Atomic
@@ -166,13 +166,17 @@ when the server changes no fields beyond those requested, or a representation
 of the updated resource; `validates_atomic_resource_update_result_shapes`
 checks both accepted shapes and rejects a representation with a different or
 nonpersistent identity. The planner cannot infer whether a server changed
-additional fields, for which the extension requires a representation. A custom
-to-many join-table handler is verified through the dispatcher, shared
-transaction, local-ID resolution, and rollback; each application's relation
-mapping/persistence handler remains explicit. Atomic documents and embedded
+additional fields, for which the extension requires a representation. Atomic documents and embedded
 resource data now reuse base JSON:API validation for top-level links and
 `jsonapi` members, resource links, and relationship object structure/links.
-Additional normative request/result/error/media-type cases remain incomplete.
+The typed `SeaOrmJoinTableMutationHandler` handles configured two-column
+join-table add/remove and full membership replacement for Atomic `update`,
+using the existing mutation codec, local-ID map, and shared transaction.
+PostgreSQL/SQLite tests prove ordered membership changes, empty replacement,
+rollback after a failed replacement, and rollback after a later operation
+fails. The resource CRUD handler still declines to-many changesets, and
+unsupported association shapes retain custom dispatch. Additional normative
+request/result/error/media-type cases remain incomplete.
 Resource, collection, and relationship href resolution now has planner, HTTP,
 and PostgreSQL mutation coverage. Absolute URI-reference matching remains
 application-defined: `AtomicHrefResolver` receives the original value and
@@ -180,14 +184,16 @@ applies the application's own base-URL policy without framework normalization.
 The HTTP test resolver uses an exact configured base URL, accepts matching
 absolute collection/resource/relationship references, and proves a mismatched
 resource identity returns HTTP 400 at the operation pointer before execution.
-Full
-normative conformance remains the M6 objective. M7 adds a partial opt-in SQLite slice. PostgreSQL and SQLite now assert one
+Full normative conformance remains the M6 objective. M7 adds a partial opt-in
+SQLite slice. PostgreSQL and SQLite now assert one
 shared complete query response document and one shared eleven-operation
 Atomic result document with matching persisted state. The shared Atomic case
-covers collection, resource, and relationship `href` targets, custom
-to-many add/remove dispatch, proves removing one of two relationship members
-leaves the other persisted, and verifies rollback of a later relationship add
-when a subsequent operation fails. Its shared failure batch now creates a
+covers collection, resource, and relationship `href` targets, typed join-table
+to-many add/remove with explicit column mapping, proves removing one of two
+relationship members leaves the other persisted, and verifies rollback of a
+later relationship add when a subsequent operation fails. The additional
+shared relationship-replacement case asserts replacement, empty replacement,
+and failed-replacement rollback on both backends. Its shared failure batch now creates a
 typed tag through `lid`, attaches it to the relationship, then fails updating
 a missing resource at index 2; both backends assert that index and the exact
 pre-batch persisted state. Broader
