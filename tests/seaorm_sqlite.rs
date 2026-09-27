@@ -1902,6 +1902,7 @@ async fn sqlite_atomic_result_document_matches_shared_backend_case() {
     atomic_cases::execute_to_one_relationship_lifecycle_case(&database).await;
     atomic_cases::execute_to_many_relationship_replacement_case(&database).await;
     atomic_cases::execute_http_to_many_relationship_dispatch_case(&database).await;
+    atomic_cases::execute_http_to_many_foreign_key_idempotent_add_case(&database).await;
     atomic_cases::execute_http_href_typed_seaorm_case(&database).await;
     atomic_cases::execute_http_href_to_many_relationship_dispatch_case(&database).await;
     atomic_cases::execute_to_many_foreign_key_relationship_case(&database).await;
