@@ -482,8 +482,8 @@ async fn get_collection(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    if !accepts_jsonapi(&headers) {
-        return request_error_response(RequestValidationError::NotAcceptable);
+    if let Err(response) = validate_request(&headers, None) {
+        return response;
     }
     let has_query = query.as_deref().is_some_and(|query| !query.is_empty());
     if has_query && state.query_adapter.is_none() {
@@ -608,8 +608,8 @@ async fn get_resource(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = validate_request(&headers, None) {
-        return request_error_response(error);
+    if let Err(response) = validate_request(&headers, None) {
+        return response;
     }
     let has_query = query.as_deref().is_some_and(|query| !query.is_empty());
     if has_query && state.query_adapter.is_none() {
@@ -1124,7 +1124,7 @@ fn validate_mutation_request(
             detail: "query parameters are not supported on mutation routes".to_owned(),
         }));
     }
-    if requires_body {
+    if requires_body || headers.contains_key(CONTENT_TYPE) {
         validate_jsonapi_content_type(headers)?;
     }
     Ok(())
@@ -1813,16 +1813,21 @@ enum RequestValidationError {
     UnsupportedQuery(Option<String>),
 }
 
-fn validate_request(
-    headers: &HeaderMap,
-    query: Option<&str>,
-) -> Result<(), RequestValidationError> {
+#[allow(clippy::result_large_err)]
+fn validate_request(headers: &HeaderMap, query: Option<&str>) -> Result<(), Response> {
     if !accepts_jsonapi(headers) {
-        return Err(RequestValidationError::NotAcceptable);
+        return Err(request_error_response(
+            RequestValidationError::NotAcceptable,
+        ));
     }
     if let Some(query) = query.filter(|query| !query.is_empty()) {
         let parameter = first_query_parameter(query);
-        return Err(RequestValidationError::UnsupportedQuery(parameter));
+        return Err(request_error_response(
+            RequestValidationError::UnsupportedQuery(parameter),
+        ));
+    }
+    if headers.contains_key(CONTENT_TYPE) {
+        validate_jsonapi_content_type(headers)?;
     }
     Ok(())
 }

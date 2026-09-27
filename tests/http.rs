@@ -939,6 +939,59 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
 }
 
 #[tokio::test]
+async fn bodyless_routes_reject_unsupported_jsonapi_content_type_parameters_before_execution() {
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = test_app(adapter.clone(), true);
+
+    for uri in ["/ports", "/ports/1"] {
+        let mut request = read_request(uri);
+        request.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/vnd.api+json;charset=utf-8"),
+        );
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "{uri}"
+        );
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
+    }
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
+
+    let mut request = read_request("/ports");
+    request.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(
+            "application/vnd.api+json;profile=\"https://example.test/profile\"",
+        ),
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_jsonapi_headers(&response);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 1);
+
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    let mut request = read_request("/ports/42/relationships/owner");
+    request.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/vnd.api+json;charset=utf-8"),
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_jsonapi_headers(&response);
+    let errors = error_document(response).await.errors.unwrap();
+    assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn base_mutation_and_relationship_routes_reject_unacceptable_accept_before_execution() {
     let (app, adapter, authorizer) = mutation_test_app(true);
     let requests = [
