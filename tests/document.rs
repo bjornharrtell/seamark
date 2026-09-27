@@ -326,6 +326,7 @@ fn serializes_error_sources_and_status_as_strings() {
         ..JsonApiDocument::default()
     };
 
+    document.validate().unwrap();
     assert_eq!(
         serde_json::to_value(document).unwrap(),
         json!({
