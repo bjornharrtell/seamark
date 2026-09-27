@@ -226,9 +226,12 @@ JSON:API requires objects; the Atomic HTTP regression verifies malformed
 document, operation, reference, and resource-add shapes produce 400 errors.
 Base GET media negotiation now validates quoted
 absolute profile URI lists, rejects malformed or duplicate profile
-parameters, ignores Accept extensions after `q`, rejects unsupported media
+parameters, accepts only HTTP qvalue syntax with at most three fractional
+digits, ignores Accept extensions after `q`, rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not
-alter the base response.
+alter the base response. A route regression pairs valid `q=0.125` with
+out-of-grammar `q=0.1234` rejection on both GET routes and checks response
+status and JSON:API media type.
 The Atomic POST route now has an end-to-end Content-Type regression: it accepts
 the required Atomic extension with an unknown valid profile, and returns 415
 with a JSON:API error document for an unsupported `charset` parameter or an
