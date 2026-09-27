@@ -1216,12 +1216,19 @@ fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
         )
     })?;
     if document.errors.is_some() || document.included.is_some() || document.data.is_none() {
+        let pointer = if document.errors.is_some() {
+            "/errors"
+        } else if document.included.is_some() {
+            "/included"
+        } else {
+            ""
+        };
         return Err(mutation_error(
             StatusCode::BAD_REQUEST,
             "invalid_document",
             "Invalid mutation document",
             Some("A mutation request must contain one primary resource in `data`.".to_owned()),
-            Some("/data"),
+            Some(pointer),
         ));
     }
     match document.data {
@@ -1271,7 +1278,7 @@ fn map_resource_changeset(
                     "Relationship data is required",
                     Some("Mutated relationships must include a `data` member.".to_owned()),
                     Some(&format!(
-                        "/data/relationships/{}/data",
+                        "/data/relationships/{}",
                         escape_json_pointer(public_name)
                     )),
                 ));
@@ -1347,7 +1354,7 @@ fn parse_relationship_document(
             "invalid_document",
             "Invalid JSON:API document",
             Some("A JSON:API document must be an object.".to_owned()),
-            Some("/"),
+            Some(""),
         ));
     };
     let Some(raw_data) = object.get("data") else {
@@ -1356,7 +1363,7 @@ fn parse_relationship_document(
             "relationship_data_required",
             "Relationship data is required",
             Some("A relationship mutation document must contain `data`.".to_owned()),
-            Some("/data"),
+            Some(""),
         ));
     };
     if object.contains_key("errors") || object.contains_key("included") {
