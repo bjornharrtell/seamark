@@ -1,3 +1,7 @@
+use std::collections::BTreeMap;
+
+use seamark::query::ReadQuery;
+
 pub struct PersonFixture {
     pub id: i32,
     pub name: &'static str,
@@ -59,3 +63,36 @@ pub const FILTER_CASES: [(&str, &[&str]); 4] = [
     ("equals(capacity,null)", &["3"]),
     ("equals(name,'Alpha')", &["1"]),
 ];
+
+pub const FIRST_PAGE_PORT_ID: &str = "2";
+pub const FIRST_PAGE_PORT_NAME: &str = "Beta";
+pub const FIRST_PAGE_OWNER_ID: &str = "12";
+pub const FIRST_PAGE_OWNER_NAME: &str = "Niko";
+pub const SECOND_PAGE_PORT_ID: &str = "1";
+
+pub fn first_page_with_owner() -> ReadQuery {
+    ReadQuery {
+        filters: vec![
+            "equals(name,'Alpha')".to_owned(),
+            "equals(name,'Beta')".to_owned(),
+        ],
+        sort: Some("-depth".to_owned()),
+        page_number: Some("1".to_owned()),
+        page_size: Some("1".to_owned()),
+        fieldsets: BTreeMap::from([
+            ("ports".to_owned(), "name,owner".to_owned()),
+            ("people".to_owned(), "name".to_owned()),
+        ]),
+        includes: vec!["owner".to_owned()],
+        ..ReadQuery::default()
+    }
+}
+
+pub fn second_page_without_projection() -> ReadQuery {
+    ReadQuery {
+        page_number: Some("2".to_owned()),
+        fieldsets: BTreeMap::new(),
+        includes: Vec::new(),
+        ..first_page_with_owner()
+    }
+}
