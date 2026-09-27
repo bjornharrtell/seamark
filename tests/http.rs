@@ -127,6 +127,34 @@ impl QueryResourceAdapter for TestQueryAdapter {
     }
 }
 
+struct EmptyIncludeQueryAdapter;
+
+#[async_trait]
+impl QueryResourceAdapter for EmptyIncludeQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        _plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        Ok(QueryCollectionResult {
+            resources: vec![port_record_without_owner()],
+            included: Vec::new(),
+        })
+    }
+
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+        _plan: &ReadPlan,
+    ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
+        Ok(Some(QueryResourceResult {
+            resource: port_record_without_owner(),
+            included: Vec::new(),
+        }))
+    }
+}
+
 #[async_trait]
 impl QueryResourceAdapter for FailingQueryAdapter {
     async fn collection(
@@ -288,6 +316,12 @@ fn port_record() -> AdapterResource {
             ),
         ]),
     }
+}
+
+fn port_record_without_owner() -> AdapterResource {
+    let mut record = port_record();
+    record.relationships.get_mut("owner").unwrap().data = Some(RelationshipData::Null);
+    record
 }
 
 fn test_app(adapter: Arc<TestAdapter>, allowed: bool) -> (Router, Arc<TestAuthorizer>) {
@@ -1712,6 +1746,33 @@ async fn query_router_plans_single_resource_includes_and_fieldsets() {
             }]
         })
     );
+}
+
+#[tokio::test]
+async fn query_router_returns_empty_included_for_requested_includes_without_targets() {
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, _) = query_test_app(adapter, Arc::new(EmptyIncludeQueryAdapter), true);
+
+    for uri in [
+        "/ports?include=owner",
+        "/ports/1?include=owner",
+        "/ports?include=",
+        "/ports/1?include=",
+    ] {
+        let response = app.clone().oneshot(request(uri, None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        assert_jsonapi_headers(&response);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["included"], json!([]), "{uri}");
+        let root = if uri.starts_with("/ports/1") {
+            &body["data"]
+        } else {
+            &body["data"][0]
+        };
+        assert_eq!(root["relationships"]["owner"]["data"], Value::Null, "{uri}");
+    }
 }
 
 #[tokio::test]

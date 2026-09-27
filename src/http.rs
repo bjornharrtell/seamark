@@ -505,7 +505,7 @@ async fn get_collection(
             );
         }
     };
-    let plan = if has_query {
+    let (plan, include_requested) = if has_query {
         let Some(pagination) = state.pagination.as_ref() else {
             return request_error_response(RequestValidationError::UnsupportedQuery(
                 query.as_deref().and_then(first_query_parameter),
@@ -515,12 +515,13 @@ async fn get_collection(
             Ok(query) => query,
             Err(error) => return query_parse_error(error),
         };
+        let include_requested = !query.includes.is_empty();
         match plan_read(&state.registry, &resource_type, &query, pagination) {
-            Ok(plan) => Some(plan),
+            Ok(plan) => (Some(plan), include_requested),
             Err(error) => return read_plan_error(error),
         }
     } else {
-        None
+        (None, false)
     };
     if !state
         .authorizer
@@ -566,7 +567,7 @@ async fn get_collection(
     };
     let mut document = JsonApiDocument {
         data: Some(PrimaryData::Many(resources)),
-        included: (!included.is_empty()).then_some(included),
+        included: (include_requested || !included.is_empty()).then_some(included),
         ..JsonApiDocument::default()
     };
     if document.validate_response().is_err() {
@@ -630,7 +631,7 @@ async fn get_resource(
             );
         }
     };
-    let plan = if has_query {
+    let (plan, include_requested) = if has_query {
         let Some(pagination) = state.pagination.as_ref() else {
             return request_error_response(RequestValidationError::UnsupportedQuery(
                 query.as_deref().and_then(first_query_parameter),
@@ -640,12 +641,13 @@ async fn get_resource(
             Ok(query) => query,
             Err(error) => return query_parse_error(error),
         };
+        let include_requested = !query.includes.is_empty();
         match plan_resource_read(&state.registry, &resource_type, &query, pagination) {
-            Ok(plan) => Some(plan),
+            Ok(plan) => (Some(plan), include_requested),
             Err(error) => return read_plan_error(error),
         }
     } else {
-        None
+        (None, false)
     };
     if !state
         .authorizer
@@ -705,7 +707,7 @@ async fn get_resource(
     };
     let mut document = JsonApiDocument {
         data: Some(PrimaryData::One(resource)),
-        included: (!included.is_empty()).then_some(included),
+        included: (include_requested || !included.is_empty()).then_some(included),
         ..JsonApiDocument::default()
     };
     if document.validate_response().is_err() {

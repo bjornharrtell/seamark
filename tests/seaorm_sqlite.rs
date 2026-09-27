@@ -1335,6 +1335,61 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         query_cases::sparse_fieldset_owner_include_document()
     );
 
+    let empty_include_collection_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports?filter=equals%28name%2C%27Gamma%27%29&include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_include_collection_response.status(), StatusCode::OK);
+    let empty_include_collection_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(empty_include_collection_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        empty_include_collection_document["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(empty_include_collection_document["data"][0]["id"], "3");
+    assert_eq!(
+        empty_include_collection_document["data"][0]["relationships"]["owner"]["data"],
+        serde_json::Value::Null
+    );
+    assert_eq!(empty_include_collection_document["included"], json!([]));
+
+    let empty_include_resource_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports/3?include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_include_resource_response.status(), StatusCode::OK);
+    let empty_include_resource_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(empty_include_resource_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(empty_include_resource_document["data"]["id"], "3");
+    assert_eq!(
+        empty_include_resource_document["data"]["relationships"]["owner"]["data"],
+        serde_json::Value::Null
+    );
+    assert_eq!(empty_include_resource_document["included"], json!([]));
+
     let neighbors_response = app
         .clone()
         .oneshot(
@@ -1490,9 +1545,9 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         invalid_resource_document["errors"][0]["source"]["parameter"],
         "filter"
     );
-    assert_eq!(authorization_calls.load(Ordering::SeqCst), 6);
+    assert_eq!(authorization_calls.load(Ordering::SeqCst), 8);
     assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(query_calls.load(Ordering::SeqCst), 6);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 8);
     database.close().await.unwrap();
 }
 
