@@ -1533,6 +1533,7 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0,application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
     ];
     let rejected = [
+        "application/vnd.api+json",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.001",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.1234",
