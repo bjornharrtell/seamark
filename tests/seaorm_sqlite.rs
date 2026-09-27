@@ -10,6 +10,9 @@ mod atomic_cases;
 #[path = "support/string_identifier_cases.rs"]
 mod string_identifier_cases;
 
+#[path = "support/bigint_identifier_cases.rs"]
+mod bigint_identifier_cases;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -920,5 +923,12 @@ async fn sqlite_atomic_result_document_matches_shared_backend_case() {
 async fn sqlite_string_identifiers_and_relationship_mapping_work() {
     let database = database().await;
     string_identifier_cases::run(&database).await;
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_bigint_identifiers_map_to_jsonapi_strings_and_mutate() {
+    let database = database().await;
+    bigint_identifier_cases::run(&database).await;
     database.close().await.unwrap();
 }
