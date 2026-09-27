@@ -240,3 +240,17 @@ Those same database-backed routes pair the successful persisted ID with
 `single_resource_not_found_document`, rather than a 200 response with null
 data. The HTTP-level `missing_single_resource_returns_a_structured_not_found_error`
 also pairs a 200 existing-resource response with the exact 404 error shape.
+
+### M5 Atomic resource updates with to-many linkage
+
+The shared `execute_to_many_relationship_replacement_case` and
+`execute_to_many_foreign_key_relationship_case` now submit resource-level
+`UpdateResource` operations containing both mapped attributes and to-many
+linkage. `SeaOrmAtomicOperationDispatcher` composes the typed resource
+executor with the matching join-table or nullable direct-FK relationship
+executor in the same transaction. The shared PostgreSQL/SQLite cases assert
+the persisted attribute and relationship state; the join-table failure case
+confirms a relationship error rolls back the preceding scalar update. A
+custom executor that directly supports the whole operation retains
+first-match precedence. Resource-add to-many linkage and other association
+shapes remain incomplete.

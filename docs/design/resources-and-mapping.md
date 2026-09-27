@@ -59,7 +59,10 @@ join-table entity, using the mutation codec and shared transaction.
 `SeaOrmToManyForeignKeyMutationHandler` supports add/remove for a relationship
 stored as a nullable FK on the related entity; add does not implicitly
 reassign a member from a different source, and remove only clears a matching
-FK. Both mappings are explicit because the registry does not encode
+FK. For Atomic resource updates, the dispatcher composes mapped scalar and
+to-one changes with each to-many replacement through its configured
+relationship executor, all within the same transaction. Both mappings are
+explicit because the registry does not encode
 association cardinality, join-table structure, or target FK columns. Other
 association shapes still require an application executor. Derive and
 configuration syntax, generalized identifier conversion, relation metadata,

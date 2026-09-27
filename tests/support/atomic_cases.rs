@@ -612,6 +612,19 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
                     "op": "update",
                     "href": "/ports/1/relationships/tags",
                     "data": [{"type": "tags", "lid": "second-tag"}]
+                },
+                {
+                    "op": "update",
+                    "data": {
+                        "type": "ports",
+                        "id": "1",
+                        "attributes": {"name": "Updated with relationship"},
+                        "relationships": {
+                            "tags": {
+                                "data": [{"type": "tags", "lid": "first-tag"}]
+                            }
+                        }
+                    }
                 }
             ]
         }),
@@ -625,13 +638,55 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
             {"data": {"type": "tags", "id": "2"}},
             {"data": {"type": "ports", "id": "1"}},
             {},
+            {},
             {}
         ])
     );
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.title, "Updated with relationship");
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].port_id, 1);
-    assert_eq!(links[0].tag_id, 2);
+    assert_eq!(links[0].tag_id, 1);
+
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "data": {
+                    "type": "ports",
+                    "id": "1",
+                    "attributes": {"name": "Must Roll Back"},
+                    "relationships": {
+                        "tags": {
+                            "data": [{"type": "tags", "id": "999"}]
+                        }
+                    }
+                }
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::Operation { index: 0, .. }
+    ));
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.title, "Updated with relationship");
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].port_id, 1);
+    assert_eq!(links[0].tag_id, 1);
 
     let error = execute_request(
         database,
@@ -659,7 +714,7 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].port_id, 1);
-    assert_eq!(links[0].tag_id, 2);
+    assert_eq!(links[0].tag_id, 1);
 
     let results = execute_request(
         database,
@@ -780,18 +835,28 @@ pub async fn execute_to_many_foreign_key_relationship_case(database: &DatabaseCo
         json!({
             "atomic:operations": [{
                 "op": "update",
-                "ref": {
+                "data": {
                     "type": "people",
                     "id": "1",
-                    "relationship": "ports"
-                },
-                "data": [{"type": "ports", "id": "1"}]
+                    "attributes": {"name": "Owner One Updated"},
+                    "relationships": {
+                        "ports": {
+                            "data": [{"type": "ports", "id": "1"}]
+                        }
+                    }
+                }
             }]
         }),
     )
     .await
     .unwrap();
     assert_eq!(serde_json::to_value(results).unwrap(), json!([{}]));
+    let owner = person::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.display_name, "Owner One Updated");
     let ports = port::Entity::find()
         .order_by_asc(port::Column::PortId)
         .all(database)
