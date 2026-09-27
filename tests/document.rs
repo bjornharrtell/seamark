@@ -119,7 +119,8 @@ fn response_relationship_identifiers_require_persistent_ids() {
             "relationships": {
                 "owner": {"data": {"type": "people", "lid": "new-owner"}}
             }
-        }
+        },
+        "included": [{"type": "people", "lid": "new-owner"}]
     }))
     .unwrap();
     document.validate().unwrap();
@@ -651,10 +652,45 @@ fn validates_relationship_identifier_objects_and_local_ids() {
             relationships: Some(relationships),
             ..resource("ports", "1")
         })),
+        included: Some(vec![local_resource("people", "new-owner")]),
         ..JsonApiDocument::default()
     };
 
     document.validate().unwrap();
+}
+
+#[test]
+fn rejects_relationship_local_ids_without_matching_resource_objects() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "lid": "missing-owner"}}
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        document.validate(),
+        Err(DocumentValidationError::UnresolvedLocalIdentifier)
+    );
+
+    let mismatched_type: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "lid": "owner"}}
+            }
+        },
+        "included": [{"type": "authors", "lid": "owner"}]
+    }))
+    .unwrap();
+    assert_eq!(
+        mismatched_type.validate(),
+        Err(DocumentValidationError::UnresolvedLocalIdentifier)
+    );
 }
 
 #[test]

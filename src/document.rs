@@ -117,6 +117,13 @@ impl JsonApiDocument {
                 resource.validate()?;
                 track_resource_identity(resource, &mut identities)?;
             }
+        }
+        validate_relationship_local_ids(
+            self.data.as_ref(),
+            self.included.as_deref().unwrap_or_default(),
+            &identities,
+        )?;
+        if let Some(included) = &self.included {
             validate_included_reachability(self.data.as_ref(), included)?;
         }
 
@@ -554,6 +561,8 @@ pub enum DocumentValidationError {
     EmptyRelationship,
     /// An included resource cannot be reached through primary resource linkage.
     UnreachableIncludedResource,
+    /// A relationship refers to a local identifier absent from the document.
+    UnresolvedLocalIdentifier,
     /// A response resource object has no persistent `id`.
     MissingResourceId,
     /// A response relationship identifier has no persistent `id`.
@@ -596,6 +605,9 @@ impl fmt::Display for DocumentValidationError {
             Self::EmptyRelationship => "a relationship object must contain data, links, or meta",
             Self::UnreachableIncludedResource => {
                 "every included resource must be reachable from primary data through relationship linkage"
+            }
+            Self::UnresolvedLocalIdentifier => {
+                "a relationship local identifier must match a resource object in the document"
             }
             Self::MissingResourceId => "a response resource object must contain an id",
             Self::MissingResponseIdentifierId => {
@@ -717,6 +729,40 @@ fn validate_included_reachability(
 
     if reachable_included.len() != included.len() {
         return Err(DocumentValidationError::UnreachableIncludedResource);
+    }
+    Ok(())
+}
+
+fn validate_relationship_local_ids(
+    primary: Option<&PrimaryData>,
+    included: &[ResourceObject],
+    resource_identities: &HashSet<(String, String, String)>,
+) -> Result<(), DocumentValidationError> {
+    let mut resources = match primary {
+        Some(PrimaryData::One(resource)) => vec![resource],
+        Some(PrimaryData::Many(resources)) => resources.iter().collect(),
+        Some(PrimaryData::Null) | None => Vec::new(),
+    };
+    resources.extend(included);
+
+    for resource in resources {
+        let Some(relationships) = &resource.relationships else {
+            continue;
+        };
+        for relationship in relationships.values() {
+            let identifiers = match relationship.data.as_ref() {
+                Some(RelationshipData::One(identifier)) => std::slice::from_ref(identifier),
+                Some(RelationshipData::Many(identifiers)) => identifiers,
+                Some(RelationshipData::Null) | None => continue,
+            };
+            for identifier in identifiers {
+                if identifier.lid.is_some()
+                    && !resource_identities.contains(&identifier_identity(identifier)?)
+                {
+                    return Err(DocumentValidationError::UnresolvedLocalIdentifier);
+                }
+            }
+        }
     }
     Ok(())
 }
