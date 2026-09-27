@@ -1015,6 +1015,41 @@ async fn atomic_http_rejects_invalid_reference_identity_combinations() {
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_operations_with_both_ref_and_href_before_execution() {
+    let database = database().await;
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+    let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"},"href":"/author-resource/1"}]}"#;
+
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_requires_a_relationship_ref_for_relationship_adds() {
     let database = database().await;
     let valid_handler = Arc::new(CountingHandler {

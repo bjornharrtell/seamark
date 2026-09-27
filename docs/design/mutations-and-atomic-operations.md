@@ -102,7 +102,9 @@ mapped relationship field. Unrecognized members are ignored as required by
 JSON:API processing rules, while the extension-forbidden top-level `data` and
 `included` members are explicitly rejected. A local ID is available only after
 its add operation; relationship linkages can resolve it through the
-request-scoped `LocalIdMap`.
+request-scoped `LocalIdMap`. Planner and HTTP regressions confirm an operation
+cannot specify both `ref` and `href`; the HTTP route returns 400 with an
+operation pointer before invoking its guard or handler.
 
 `atomic_http::router` provides a mergeable `POST /operations` Axum router;
 `router_with_href_resolver` additionally accepts an application route resolver
