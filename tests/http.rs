@@ -394,7 +394,9 @@ async fn ignores_profile_parameters_and_rejects_unsupported_extensions() {
         let response = app
             .oneshot(request(
                 path,
-                Some("application/vnd.api+json;profile=\"https://example.test/unknown\""),
+                Some(
+                    "application/vnd.api+json;profile=\"https://example.test/unknown https://example.test/also-unknown\"",
+                ),
             ))
             .await
             .unwrap();
@@ -417,6 +419,64 @@ async fn ignores_profile_parameters_and_rejects_unsupported_extensions() {
         serde_json::to_value(document(response).await).unwrap()["errors"][0]["code"],
         "not_acceptable"
     );
+}
+
+#[tokio::test]
+async fn validates_profile_uri_lists_and_duplicate_accept_parameters() {
+    for path in ["/ports", "/ports/1"] {
+        for accept in [
+            "application/vnd.api+json;profile=unquoted",
+            "application/vnd.api+json;profile=\"relative/profile\"",
+            "application/vnd.api+json;profile=\"https://example.test/one  https://example.test/two\"",
+            "application/vnd.api+json;profile=\"https://example.test/one\";PROFILE=\"https://example.test/two\"",
+        ] {
+            let adapter = Arc::new(TestAdapter::default());
+            let (app, _) = test_app(adapter, true);
+            let response = app.oneshot(request(path, Some(accept))).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{accept}");
+            assert_jsonapi_headers(&response);
+        }
+
+        let adapter = Arc::new(TestAdapter::default());
+        *adapter.resource_result.lock().unwrap() = Some(port_record());
+        let (app, _) = test_app(adapter, true);
+        let response = app
+            .oneshot(request(
+                path,
+                Some(
+                    "application/vnd.api+json;profile=\"https://example.test/one https://example.test/two\"",
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_jsonapi_headers(&response);
+    }
+}
+
+#[tokio::test]
+async fn ignores_accept_extensions_after_quality_and_unknown_media_parameters_match_no_range() {
+    let adapter = Arc::new(TestAdapter::default());
+    *adapter.resource_result.lock().unwrap() = Some(port_record());
+    let (app, _) = test_app(adapter, true);
+    let response = app
+        .oneshot(request(
+            "/ports/1",
+            Some("application/vnd.api+json;q=1;foo=bar"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_jsonapi_headers(&response);
+
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, _) = test_app(adapter, true);
+    let response = app
+        .oneshot(request("/ports", Some("application/vnd.api+json;foo=bar")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_jsonapi_headers(&response);
 }
 
 #[tokio::test]

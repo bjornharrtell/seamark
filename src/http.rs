@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::document::{
     ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship, RelationshipData,
-    ResourceObject,
+    ResourceObject, is_valid_absolute_uri,
 };
 use crate::query::{PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read};
 use crate::registry::{ResourceDefinition, ResourceRegistry};
@@ -579,14 +579,17 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
 
     let mut quality = 1.0_f32;
     let mut has_quality = false;
+    let mut has_profile = false;
     for parameter in segments {
+        if has_quality {
+            // Parameters after q are Accept extensions, not media-type
+            // parameters, and do not affect this representation.
+            continue;
+        }
         let (name, value) = parameter.trim().split_once('=')?;
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("q") {
-            if has_quality {
-                return None;
-            }
             quality = value.parse().ok()?;
             if !(0.0..=1.0).contains(&quality) {
                 return None;
@@ -595,9 +598,11 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
         } else if name.eq_ignore_ascii_case("profile") {
             // Profiles are advisory; unrecognized profiles do not change this
             // endpoint's base JSON:API representation.
-            if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+            let profile_uris = value.strip_prefix('"')?.strip_suffix('"')?;
+            if has_profile || !has_valid_uri_list(profile_uris) {
                 return None;
             }
+            has_profile = true;
         } else {
             // Unsupported extensions and other parameters do not match this
             // endpoint's base-only JSON:API representation.
@@ -605,6 +610,13 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
         }
     }
     Some((specificity, quality))
+}
+
+fn has_valid_uri_list(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split(' ')
+            .all(|uri| !uri.is_empty() && is_valid_absolute_uri(uri))
 }
 
 fn split_quoted(value: &str, delimiter: char) -> Vec<&str> {
