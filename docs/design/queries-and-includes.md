@@ -67,3 +67,14 @@ prevents direct callers from using a mapped relationship column or an
 otherwise non-sortable entity column to bypass `plan_read`.
 
 The SeaORM executor maps internal field names to the entity's `Column` type and executes filter predicates, ordering, offset, and limit in the configured database backend; it has no in-memory fallback. Its fallible constructor validates the identifier and filterable/sortable attribute columns against the entity before serving requests. The `SeaOrmFilterValueCodec` converts string literals to entity value types and reports conversion failures before querying. A model mapper converts typed rows into internal-field-keyed adapter records, after which the executor enforces sparse-field projections. PostgreSQL integration coverage exercises string equality/OR, null predicates, typed numeric equality, sort, pagination, fieldsets, include loading, and pre-query authorization/limit rejection; the fixture also verifies application-encoded boolean equality alongside typed numeric filters. HTTP integration confirms planned parameters reach this executor and serialized fieldsets/included resources are returned. Relationship loaders and value codecs remain explicit application hooks; broader relation and authorization/resource-limit cases remain incomplete. The opt-in SQLite M7 fixture covers the same supported query categories, including typed numeric/boolean and null filters, ordering, pagination, fieldsets, and application-loaded includes. Both backends construct the same first/second-page queries from `tests/support/query_cases.rs` and assert the same resource/included identities and visible attributes. Full document serialization equivalence, Atomic result equivalence, and broader type coverage remain incomplete.
+
+Query planning and SeaORM execution currently apply to collection reads only;
+there is no SeaORM single-resource `ReadPlan` path. A router-level probe in the
+PostgreSQL integration target and a SQLite fixture both verify that
+`router_with_query` rejects a single-resource request such as
+`GET /ports/1?include=owner` with JSON:API 400 `unsupported_query`, sourced to
+`include`, before authorization, the resource adapter, or the collection
+query adapter. The PostgreSQL-targeted probe needs no database connection
+because any adapter call is itself a failure; the SQLite fixture uses the
+actual SeaORM query adapter and asserts it is not called. This route boundary
+is deliberate and does not imply that single-resource queries are implemented.

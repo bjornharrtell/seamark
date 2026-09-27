@@ -558,6 +558,65 @@ impl RequestAuthorizer for AllowHttpRequest {
     }
 }
 
+struct SingleResourceProbeAdapter {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ResourceAdapter for SingleResourceProbeAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+    ) -> Result<Vec<AdapterResource>, AdapterError> {
+        Ok(Vec::new())
+    }
+
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+    ) -> Result<Option<AdapterResource>, AdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
+struct SingleResourceProbeAuthorizer {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl RequestAuthorizer for SingleResourceProbeAuthorizer {
+    async fn authorize(
+        &self,
+        _resource_type: &str,
+        _resource_id: Option<&str>,
+        _headers: &axum::http::HeaderMap,
+    ) -> bool {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+}
+
+struct SingleResourceProbeQueryAdapter {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl QueryResourceAdapter for SingleResourceProbeQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        _plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(QueryCollectionResult {
+            resources: Vec::new(),
+            included: Vec::new(),
+        })
+    }
+}
+
 async fn database() -> DatabaseConnection {
     let url = std::env::var("SEAMARK_TEST_DATABASE_URL")
         .expect("set SEAMARK_TEST_DATABASE_URL to a dedicated PostgreSQL test database");
@@ -1138,6 +1197,46 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         .execute_unprepared("DROP TABLE seamark_m4_ports; DROP TABLE seamark_m4_people;")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn postgres_single_resource_queries_reject_before_authorization_or_adapters() {
+    let resource_calls = Arc::new(AtomicUsize::new(0));
+    let authorization_calls = Arc::new(AtomicUsize::new(0));
+    let query_calls = Arc::new(AtomicUsize::new(0));
+    let query_adapter = Arc::new(SingleResourceProbeQueryAdapter {
+        calls: query_calls.clone(),
+    });
+    let app = http::router_with_query(
+        Arc::new(registry()),
+        Arc::new(SingleResourceProbeAdapter {
+            calls: resource_calls.clone(),
+        }),
+        Arc::new(SingleResourceProbeAuthorizer {
+            calls: authorization_calls.clone(),
+        }),
+        query_adapter,
+        pagination(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1?include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_query_jsonapi_headers(&response);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["errors"][0]["code"], "unsupported_query");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "include");
+    assert_eq!(authorization_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

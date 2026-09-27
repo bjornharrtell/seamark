@@ -220,3 +220,16 @@ and `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`. The
 application-provided loader returns root `2` linked to `1`, then included
 resources `1` and `3` with exact next-level linkage `1 -> [2,3]` and `3 -> [1]`;
 the primary root is not duplicated in `included`.
+
+The current single-resource query boundary is checked separately from
+collection query support:
+`postgres_single_resource_queries_reject_before_authorization_or_adapters`
+is a router-level probe in the PostgreSQL integration target, while
+`sqlite_single_resource_queries_reject_before_authorization_or_adapters` uses
+the SQLite SeaORM query adapter. Both send `GET /ports/1?include=owner` through
+`router_with_query` and assert JSON:API 400 `unsupported_query`, source
+parameter `include`, and zero authorization, resource-adapter, or
+collection-query-adapter calls. The PostgreSQL-targeted probe does not open a
+database connection because adapter invocation is the failure being guarded.
+This documents the current capability boundary; it is not evidence of
+single-resource query execution.

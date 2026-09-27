@@ -507,3 +507,14 @@ a relationship add whose `ref` lacks `relationship`, with a pointer to the
 existing `ref` object; `atomic_http_requires_a_relationship_ref_for_relationship_adds`
 proves the valid control reaches the handler and the invalid request is rejected
 before authorization or handler invocation.
+
+M4 single-resource query-boundary evidence is provided by
+`postgres_single_resource_queries_reject_before_authorization_or_adapters`
+and `sqlite_single_resource_queries_reject_before_authorization_or_adapters`.
+Each sends `GET /ports/1?include=owner` through the collection-query-enabled
+router and verifies JSON:API 400 `unsupported_query` with source parameter
+`include`, before authorization or either query/resource adapter is invoked.
+The PostgreSQL-targeted router probe needs no database connection; the SQLite
+case uses the actual SeaORM query adapter and asserts it is not called. SeaORM
+query execution remains collection-only; no single-resource `ReadPlan`
+executor is provided.
