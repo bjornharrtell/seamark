@@ -111,6 +111,37 @@ fn accepts_local_id_resource_objects_but_requires_response_ids() {
 }
 
 #[test]
+fn response_relationship_identifiers_require_persistent_ids() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "lid": "new-owner"}}
+            }
+        }
+    }))
+    .unwrap();
+    document.validate().unwrap();
+    assert_eq!(
+        document.validate_response(),
+        Err(DocumentValidationError::MissingResponseIdentifierId)
+    );
+
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": "2"}}
+            }
+        }
+    }))
+    .unwrap();
+    valid.validate_response().unwrap();
+}
+
+#[test]
 fn distinguishes_explicit_null_from_omitted_document_and_relationship_data() {
     let explicit_null: JsonApiDocument = serde_json::from_value(json!({"data": null})).unwrap();
     assert_eq!(explicit_null.data, Some(PrimaryData::Null));

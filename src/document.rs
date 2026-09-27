@@ -131,15 +131,18 @@ impl JsonApiDocument {
         self.validate()?;
         if let Some(PrimaryData::One(resource)) = &self.data {
             validate_response_resource_id(resource)?;
+            validate_response_relationship_identifiers(resource)?;
         }
         if let Some(PrimaryData::Many(resources)) = &self.data {
             for resource in resources {
                 validate_response_resource_id(resource)?;
+                validate_response_relationship_identifiers(resource)?;
             }
         }
         if let Some(included) = &self.included {
             for resource in included {
                 validate_response_resource_id(resource)?;
+                validate_response_relationship_identifiers(resource)?;
             }
         }
         Ok(())
@@ -515,6 +518,8 @@ pub enum DocumentValidationError {
     UnreachableIncludedResource,
     /// A response resource object has no persistent `id`.
     MissingResourceId,
+    /// A response relationship identifier has no persistent `id`.
+    MissingResponseIdentifierId,
     /// A resource object is repeated in primary or included resource data.
     DuplicateResourceIdentifier,
 }
@@ -546,6 +551,9 @@ impl fmt::Display for DocumentValidationError {
                 "every included resource must be reachable from primary data through relationship linkage"
             }
             Self::MissingResourceId => "a response resource object must contain an id",
+            Self::MissingResponseIdentifierId => {
+                "a response relationship identifier must contain an id"
+            }
             Self::DuplicateResourceIdentifier => {
                 "a JSON:API document must not repeat a resource identifier"
             }
@@ -559,6 +567,24 @@ impl std::error::Error for DocumentValidationError {}
 fn validate_response_resource_id(resource: &ResourceObject) -> Result<(), DocumentValidationError> {
     if resource.id.is_none() {
         return Err(DocumentValidationError::MissingResourceId);
+    }
+    Ok(())
+}
+
+fn validate_response_relationship_identifiers(
+    resource: &ResourceObject,
+) -> Result<(), DocumentValidationError> {
+    if let Some(relationships) = &resource.relationships {
+        for relationship in relationships.values() {
+            let identifiers = match relationship.data.as_ref() {
+                Some(RelationshipData::One(identifier)) => std::slice::from_ref(identifier),
+                Some(RelationshipData::Many(identifiers)) => identifiers,
+                Some(RelationshipData::Null) | None => continue,
+            };
+            if identifiers.iter().any(|identifier| identifier.id.is_none()) {
+                return Err(DocumentValidationError::MissingResponseIdentifierId);
+            }
+        }
     }
     Ok(())
 }
