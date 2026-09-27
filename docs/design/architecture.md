@@ -36,6 +36,12 @@ read-only mapping. Applications that need different paths can compose
 application-owned Axum mutation routes with the read-only router. The helpers
 do not add a route-template language or silently remap paths.
 
+Registered-route method mismatches return JSON:API 405 errors. Applications
+that want JSON:API 404 documents for unmatched URLs can install
+`http::not_found_fallback` as the final fallback on their top-level router.
+This remains opt-in so the component router does not intercept paths belonging
+to unrelated application routes.
+
 Base requests are validated and mapped to `MutationCommand` values before
 authorization and adapter execution. `MutationResourceAdapter` is distinct
 from the Atomic planner, handlers, and result document. Its command changesets

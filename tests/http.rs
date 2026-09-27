@@ -602,6 +602,42 @@ async fn registered_base_routes_return_jsonapi_errors_for_unsupported_methods() 
 }
 
 #[tokio::test]
+async fn opt_in_jsonapi_not_found_fallback_composes_with_application_routes() {
+    let (api, adapter, authorizer) = mutation_test_app(true);
+    let app = Router::new()
+        .route(
+            "/health",
+            axum::routing::get(|| async { StatusCode::NO_CONTENT }),
+        )
+        .merge(api)
+        .fallback(http::not_found_fallback);
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::NO_CONTENT);
+
+    let response = app
+        .oneshot(read_request("/unregistered/path/extra"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_jsonapi_headers(&response);
+    let errors = error_document(response).await.errors.unwrap();
+    assert_eq!(errors[0].code.as_deref(), Some("route_not_found"));
+    assert_eq!(errors[0].status.as_deref(), Some("404"));
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn mutation_validation_and_authorization_precede_adapter_execution() {
     let (app, adapter, authorizer) = mutation_test_app(true);
     let response = app
