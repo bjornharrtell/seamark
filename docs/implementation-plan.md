@@ -77,7 +77,10 @@ decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
 fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
-fieldsets. A PostgreSQL route regression verifies invalid queries are rejected
+fieldsets. Shared PostgreSQL/SQLite query tests cover nullable to-one linkage
+and an application-defined self-referential to-many mapping, including two
+related resources loaded into `included` through the adapter contract. A
+PostgreSQL route regression verifies invalid queries are rejected
 before adapter execution, maps SeaORM authorization and resource-limit failures
 to HTTP 403 and 413, and proves both guarded outcomes occur before SQL against
 an intentionally absent table. The registry rejects resource type and public field names that do
