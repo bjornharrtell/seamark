@@ -508,6 +508,45 @@ async fn negotiates_and_executes_atomic_http_requests() {
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_invalid_reference_identity_combinations() {
+    let database = database().await;
+    let app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        Arc::new(TestHandler {
+            fail: false,
+            require_resolved_targets: false,
+        }),
+    );
+
+    for body in [
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors"}}]}"#,
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1","lid":"local"}}]}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = error_document(response, body).await;
+        assert_eq!(error["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            error["errors"][0]["source"]["pointer"], "/atomic:operations/0",
+            "error for malformed reference `{body}`: {error}"
+        );
+    }
+
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn database_failures_return_a_server_error_document() {
     let database = database().await;
     database.clone().close().await.unwrap();

@@ -670,6 +670,43 @@ fn rejects_malformed_operation_shapes_and_unknown_registry_fields() {
 }
 
 #[test]
+fn atomic_references_require_type_and_exactly_one_identity() {
+    let resource_id_reference = plan(json!({
+        "atomic:operations": [{
+            "op": "remove",
+            "ref": {"type": "authors", "id": "author-1"}
+        }]
+    }))
+    .unwrap();
+    assert_eq!(resource_id_reference.len(), 1);
+
+    let local_id_reference = plan(json!({
+        "atomic:operations": [
+            {"op": "add", "data": {"type": "authors", "lid": "author-local"}},
+            {"op": "remove", "ref": {"type": "authors", "lid": "author-local"}}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(local_id_reference.len(), 2);
+
+    for reference in [
+        json!({"type": "authors"}),
+        json!({"type": "authors", "id": "author-1", "lid": "author-local"}),
+    ] {
+        let request = json!({
+            "atomic:operations": [
+                {"op": "add", "data": {"type": "authors", "lid": "author-local"}},
+                {"op": "remove", "ref": reference}
+            ]
+        });
+        assert!(matches!(
+            plan(request),
+            Err(AtomicOperationsError::InvalidOperation { index: 1, .. })
+        ));
+    }
+}
+
+#[test]
 fn rejects_forward_duplicate_and_mismatched_local_id_references() {
     let forward = plan(json!({
         "atomic:operations": [
