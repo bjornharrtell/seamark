@@ -758,14 +758,35 @@ fn accepts_well_formed_bcp47_language_tags() {
 
 #[test]
 fn rejects_included_resources_without_primary_data() {
-    let document = JsonApiDocument {
-        included: Some(vec![resource("ports", "1")]),
-        ..JsonApiDocument::default()
-    };
+    for value in [
+        json!({"included": [{"type": "ports", "id": "1"}]}),
+        json!({
+            "errors": [{"title": "Request failed"}],
+            "included": [{"type": "ports", "id": "1"}]
+        }),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::IncludedWithoutData)
+        );
+    }
+}
 
+#[test]
+fn empty_primary_collection_allows_only_empty_included_array() {
+    let empty_compound_document: JsonApiDocument =
+        serde_json::from_value(json!({"data": [], "included": []})).unwrap();
+    empty_compound_document.validate_response().unwrap();
+
+    let unreachable: JsonApiDocument = serde_json::from_value(json!({
+        "data": [],
+        "included": [{"type": "ports", "id": "1"}]
+    }))
+    .unwrap();
     assert_eq!(
-        document.validate(),
-        Err(DocumentValidationError::IncludedWithoutData)
+        unreachable.validate(),
+        Err(DocumentValidationError::UnreachableIncludedResource)
     );
 }
 
