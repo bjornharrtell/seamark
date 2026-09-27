@@ -1411,20 +1411,27 @@ async fn accepts_only_spec_conformant_accept_quality_values_on_both_routes() {
     }
 
     for path in ["/ports", "/ports/1"] {
-        let adapter = Arc::new(TestAdapter::default());
-        let (app, _) = test_app(adapter.clone(), true);
-        let response = app
-            .oneshot(request(path, Some("application/vnd.api+json;q=0.1234")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
-        assert_jsonapi_headers(&response);
-        assert_eq!(
-            serde_json::to_value(error_document(response).await).unwrap()["errors"][0]["code"],
-            "not_acceptable"
-        );
-        assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
+        for accept in [
+            "application/vnd.api+json;q=0.1234",
+            r#"application/vnd.api+json;q=1;foo="x\""#,
+        ] {
+            let adapter = Arc::new(TestAdapter::default());
+            let (app, authorizer) = test_app(adapter.clone(), true);
+            let response = app.oneshot(request(path, Some(accept))).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_ACCEPTABLE,
+                "{path}: {accept}"
+            );
+            assert_jsonapi_headers(&response);
+            assert_eq!(
+                serde_json::to_value(error_document(response).await).unwrap()["errors"][0]["code"],
+                "not_acceptable"
+            );
+            assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
+        }
     }
 }
 

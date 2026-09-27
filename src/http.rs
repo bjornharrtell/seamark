@@ -1961,6 +1961,9 @@ fn split_quoted(value: &str, delimiter: char) -> Vec<&str> {
             segment_start = index + character.len_utf8();
         }
     }
+    if quoted || escaped {
+        return Vec::new();
+    }
     segments.push(&value[segment_start..]);
     segments
 }
