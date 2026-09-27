@@ -35,6 +35,17 @@ fn is_unique_constraint_violation(error: &DbErr) -> bool {
     }
 }
 
+fn is_foreign_key_violation(error: &DbErr) -> bool {
+    match error {
+        DbErr::Exec(RuntimeErr::SqlxError(error)) | DbErr::Query(RuntimeErr::SqlxError(error)) => {
+            error
+                .as_database_error()
+                .is_some_and(|database_error| database_error.is_foreign_key_violation())
+        }
+        _ => false,
+    }
+}
+
 /// Executes one base HTTP mutation with an explicit typed SeaORM mapping.
 #[async_trait]
 pub trait SeaOrmBaseMutationExecutor: Send + Sync {
@@ -128,7 +139,7 @@ pub trait SeaOrmAtomicOperationExecutor: Send + Sync {
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String>;
 
-    /// Executes the operation while preserving conflict failures.
+    /// Executes the operation while preserving typed failure categories.
     async fn execute_with_failure(
         &self,
         transaction: &DatabaseTransaction,
@@ -163,7 +174,7 @@ impl SeaOrmAtomicOperationDispatcher {
         reference: &AtomicResourceReference,
         changeset: &AtomicResourceChangeset,
         local_ids: &LocalIdMap,
-    ) -> Result<(), String> {
+    ) -> Result<(), AtomicOperationFailure> {
         for (model_field, relationship) in changeset.relationships.as_ref().into_iter().flatten() {
             let Some(RelationshipData::Many(identifiers)) = &relationship.data else {
                 continue;
@@ -178,9 +189,13 @@ impl SeaOrmAtomicOperationDispatcher {
                 .iter()
                 .find(|executor| executor.supports(&operation))
                 .ok_or_else(|| {
-                    format!("no SeaORM relationship executor supports field `{model_field}`")
+                    AtomicOperationFailure::Operation(format!(
+                        "no SeaORM relationship executor supports field `{model_field}`"
+                    ))
                 })?;
-            executor.execute(transaction, &operation, local_ids).await?;
+            executor
+                .execute_with_failure(transaction, &operation, local_ids)
+                .await?;
         }
         Ok(())
     }
@@ -225,7 +240,7 @@ impl SeaOrmAtomicOperationDispatcher {
         data: &AtomicResourceData,
         changeset: &AtomicResourceChangeset,
         local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let (resource_data, resource_changeset) = without_to_many_relationships(data, changeset);
         let operation = PlannedOperation::UpdateResource {
             target: AtomicTarget::Reference(reference.clone()),
@@ -236,8 +251,14 @@ impl SeaOrmAtomicOperationDispatcher {
             .executors
             .iter()
             .find(|executor| executor.supports(&operation))
-            .ok_or_else(|| "no SeaORM mutation executor supports the resource update".to_owned())?;
-        let outcome = executor.execute(transaction, &operation, local_ids).await?;
+            .ok_or_else(|| {
+                AtomicOperationFailure::Operation(
+                    "no SeaORM mutation executor supports the resource update".to_owned(),
+                )
+            })?;
+        let outcome = executor
+            .execute_with_failure(transaction, &operation, local_ids)
+            .await?;
         self.execute_to_many_replacements(transaction, reference, changeset, local_ids)
             .await?;
         Ok(outcome)
@@ -297,8 +318,7 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
                         changeset,
                         local_ids,
                     )
-                    .await
-                    .map_err(AtomicOperationFailure::Operation);
+                    .await;
             }
         }
         Err(AtomicOperationFailure::Operation(
@@ -516,6 +536,17 @@ where
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
+        self.execute_with_failure(transaction, operation, local_ids)
+            .await
+            .map_err(|failure| failure.to_string())
+    }
+
+    async fn execute_with_failure(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let (reference, identifiers, action) = match operation {
             PlannedOperation::AddRelationshipMembers {
                 reference, data, ..
@@ -532,15 +563,23 @@ where
                 identifiers.as_slice(),
                 JoinTableOperation::Replace,
             ),
-            _ => return Err("unsupported join-table relationship operation".to_owned()),
+            _ => {
+                return Err(AtomicOperationFailure::Operation(
+                    "unsupported join-table relationship operation".to_owned(),
+                ));
+            }
         };
         if !self.supports_relationship_operation(operation) {
-            return Err("join-table relationship mapping does not match operation".to_owned());
+            return Err(AtomicOperationFailure::Operation(
+                "join-table relationship mapping does not match operation".to_owned(),
+            ));
         }
 
         let source = local_ids.resolve_reference(reference)?;
         if source.type_name != self.source_type {
-            return Err("relationship owner type does not match join-table mapping".to_owned());
+            return Err(AtomicOperationFailure::Operation(
+                "relationship owner type does not match join-table mapping".to_owned(),
+            ));
         }
         let source_id = source
             .id
@@ -614,10 +653,17 @@ where
                 active_model
                     .try_set(target_column, target_value)
                     .map_err(|error| format!("could not map join-table target: {error}"))?;
-                active_model
-                    .insert(transaction)
-                    .await
-                    .map_err(|error| format!("join-table insert failed: {error}"))?;
+                active_model.insert(transaction).await.map_err(|error| {
+                    if is_foreign_key_violation(&error) {
+                        AtomicOperationFailure::NotFound(
+                            "a referenced relationship resource does not exist".to_owned(),
+                        )
+                    } else {
+                        AtomicOperationFailure::Operation(format!(
+                            "join-table insert failed: {error}"
+                        ))
+                    }
+                })?;
             }
         }
 
@@ -768,6 +814,17 @@ where
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
+        self.execute_with_failure(transaction, operation, local_ids)
+            .await
+            .map_err(|failure| failure.to_string())
+    }
+
+    async fn execute_with_failure(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let (reference, identifiers, action) = match operation {
             PlannedOperation::AddRelationshipMembers {
                 reference, data, ..
@@ -784,15 +841,23 @@ where
                 identifiers.as_slice(),
                 ForeignKeyOperation::Replace,
             ),
-            _ => return Err("unsupported to-many foreign-key operation".to_owned()),
+            _ => {
+                return Err(AtomicOperationFailure::Operation(
+                    "unsupported to-many foreign-key operation".to_owned(),
+                ));
+            }
         };
         if !self.supports_relationship_operation(operation) {
-            return Err("to-many foreign-key mapping does not match operation".to_owned());
+            return Err(AtomicOperationFailure::Operation(
+                "to-many foreign-key mapping does not match operation".to_owned(),
+            ));
         }
 
         let source = local_ids.resolve_reference(reference)?;
         if source.type_name != self.source_type {
-            return Err("relationship owner type does not match foreign-key mapping".to_owned());
+            return Err(AtomicOperationFailure::Operation(
+                "relationship owner type does not match foreign-key mapping".to_owned(),
+            ));
         }
         let source_id = source
             .id
@@ -867,7 +932,7 @@ where
                 continue;
             }
             let query = E::update_many()
-                .filter(target_identifier_column.eq(target_value))
+                .filter(target_identifier_column.eq(target_value.clone()))
                 .filter(match action {
                     ForeignKeyOperation::Add | ForeignKeyOperation::Replace => Condition::any()
                         .add(foreign_key_column.is_null())
@@ -892,10 +957,20 @@ where
                 ForeignKeyOperation::Add | ForeignKeyOperation::Replace
             ) && result.rows_affected == 0
             {
-                return Err(
-                    "relationship member was not found or already belongs to another owner"
-                        .to_owned(),
-                );
+                let target_exists = E::find()
+                    .filter(target_identifier_column.eq(target_value.clone()))
+                    .one(transaction)
+                    .await
+                    .map_err(|error| format!("to-many foreign-key target lookup failed: {error}"))?
+                    .is_some();
+                if !target_exists {
+                    return Err(AtomicOperationFailure::NotFound(
+                        "a referenced relationship resource does not exist".to_owned(),
+                    ));
+                }
+                return Err(AtomicOperationFailure::Operation(
+                    "relationship member already belongs to another owner".to_owned(),
+                ));
             }
         }
 

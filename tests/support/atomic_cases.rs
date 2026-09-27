@@ -525,18 +525,15 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
         .body(Body::from(failing_request_body))
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     let error_document: JsonValue =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(error_document["errors"].as_array().unwrap().len(), 1);
-    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
-    assert_eq!(error_document["errors"][0]["status"], "422");
-    assert_eq!(
-        error_document["errors"][0]["title"],
-        "Atomic operation failed"
-    );
+    assert_eq!(error_document["errors"][0]["code"], "resource_not_found");
+    assert_eq!(error_document["errors"][0]["status"], "404");
+    assert_eq!(error_document["errors"][0]["title"], "Resource not found");
     assert_eq!(
         error_document["errors"][0]["source"]["pointer"],
         "/atomic:operations/1"
@@ -550,6 +547,140 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
+}
+
+pub async fn execute_http_to_many_foreign_key_idempotent_add_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    person::ActiveModel {
+        person_id: Set(1),
+        display_name: Set("Owner".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    for (port_id, owner_id) in [(1, Some(1)), (2, None)] {
+        port::ActiveModel {
+            port_id: Set(port_id),
+            title: Set(format!("Port {port_id}")),
+            owner_id: Set(owner_id),
+        }
+        .insert(database)
+        .await
+        .unwrap();
+    }
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request = atomic_request(
+        r#"{"atomic:operations":[{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"1"},{"type":"ports","id":"2"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"2"}]}]}"#,
+    );
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}, {}]}));
+
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, Some(1)), (2, Some(1))]
+    );
+
+    let failing_request = atomic_request(
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"999"}]}]}"#,
+    );
+    let response = app.oneshot(failing_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error_document["errors"][0]["code"], "resource_not_found");
+    assert_eq!(error_document["errors"][0]["status"], "404");
+    assert_eq!(
+        error_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(error_document.get("atomic:results").is_none());
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, Some(1)), (2, Some(1))]
+    );
+}
+
+pub async fn execute_http_href_to_many_relationship_dispatch_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    tag::ActiveModel {
+        tag_id: Set(1),
+        tag_name: Set("First".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    port::ActiveModel {
+        port_id: Set(1),
+        title: Set("Pier".to_owned()),
+        owner_id: Set(None),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router_with_href_resolver(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+        Arc::new(ParityHrefResolver),
+    );
+    let add_request = atomic_request(
+        r#"{"atomic:operations":[{"op":"add","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
+    );
+    let response = app.clone().oneshot(add_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}]}));
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!((links[0].port_id, links[0].tag_id), (1, 1));
+
+    let remove_request = atomic_request(
+        r#"{"atomic:operations":[{"op":"remove","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
+    );
+    let response = app.oneshot(remove_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}]}));
+    assert!(
+        port_tag::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) {
@@ -703,14 +834,14 @@ pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) 
         .oneshot(atomic_request(&failing_request_body))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     let error_document: JsonValue =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(error_document["errors"].as_array().unwrap().len(), 1);
-    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
-    assert_eq!(error_document["errors"][0]["status"], "422");
+    assert_eq!(error_document["errors"][0]["code"], "resource_not_found");
+    assert_eq!(error_document["errors"][0]["status"], "404");
     assert_eq!(
         error_document["errors"][0]["source"]["pointer"],
         "/atomic:operations/2"
@@ -731,123 +862,6 @@ pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) 
             .unwrap()
             .is_empty(),
         "href-targeted relationship changes preceding a failure must roll back"
-    );
-}
-
-pub async fn execute_http_to_many_foreign_key_idempotent_add_case(database: &DatabaseConnection) {
-    create_tables(database).await;
-    person::ActiveModel {
-        person_id: Set(1),
-        display_name: Set("Owner".to_owned()),
-    }
-    .insert(database)
-    .await
-    .unwrap();
-    for (port_id, owner_id) in [(1, Some(1)), (2, None)] {
-        port::ActiveModel {
-            port_id: Set(port_id),
-            title: Set(format!("Port {port_id}")),
-            owner_id: Set(owner_id),
-        }
-        .insert(database)
-        .await
-        .unwrap();
-    }
-
-    let registry = Arc::new(registry());
-    let app = atomic_http::router(
-        Arc::clone(&registry),
-        database.clone(),
-        Arc::new(AllowGuard),
-        Arc::new(dispatcher(&registry)),
-    );
-    let request = atomic_request(
-        r#"{"atomic:operations":[{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"1"},{"type":"ports","id":"2"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"2"}]}]}"#,
-    );
-    let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let response_document: JsonValue =
-        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}, {}]}));
-
-    let ports = port::Entity::find()
-        .order_by_asc(port::Column::PortId)
-        .all(database)
-        .await
-        .unwrap();
-    assert_eq!(
-        ports
-            .iter()
-            .map(|port| (port.port_id, port.owner_id))
-            .collect::<Vec<_>>(),
-        vec![(1, Some(1)), (2, Some(1))]
-    );
-}
-
-pub async fn execute_http_href_to_many_relationship_dispatch_case(database: &DatabaseConnection) {
-    create_tables(database).await;
-    tag::ActiveModel {
-        tag_id: Set(1),
-        tag_name: Set("First".to_owned()),
-    }
-    .insert(database)
-    .await
-    .unwrap();
-    port::ActiveModel {
-        port_id: Set(1),
-        title: Set("Pier".to_owned()),
-        owner_id: Set(None),
-    }
-    .insert(database)
-    .await
-    .unwrap();
-
-    let registry = Arc::new(registry());
-    let app = atomic_http::router_with_href_resolver(
-        Arc::clone(&registry),
-        database.clone(),
-        Arc::new(AllowGuard),
-        Arc::new(dispatcher(&registry)),
-        Arc::new(ParityHrefResolver),
-    );
-    let add_request = Request::builder()
-        .method("POST")
-        .uri("/operations")
-        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
-        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
-        .body(Body::from(
-            r#"{"atomic:operations":[{"op":"add","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
-        ))
-        .unwrap();
-    let response = app.clone().oneshot(add_request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let response_document: JsonValue =
-        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}]}));
-    let links = port_tag::Entity::find().all(database).await.unwrap();
-    assert_eq!(links.len(), 1);
-    assert_eq!((links[0].port_id, links[0].tag_id), (1, 1));
-
-    let remove_request = Request::builder()
-        .method("POST")
-        .uri("/operations")
-        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
-        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
-        .body(Body::from(
-            r#"{"atomic:operations":[{"op":"remove","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
-        ))
-        .unwrap();
-    let response = app.oneshot(remove_request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let response_document: JsonValue =
-        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}]}));
-    assert!(
-        port_tag::Entity::find()
-            .all(database)
-            .await
-            .unwrap()
-            .is_empty()
     );
 }
 
@@ -1334,6 +1348,30 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
         database,
         json!({
             "atomic:operations": [{
+                "op": "update",
+                "data": {
+                    "type": "ports",
+                    "id": "999",
+                    "relationships": {
+                        "tags": {
+                            "data": [{"type": "tags", "id": "1"}]
+                        }
+                    }
+                }
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::NotFound { index: 0, .. }
+    ));
+
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
                 "op": "add",
                 "data": {
                     "type": "ports",
@@ -1352,7 +1390,7 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
     .unwrap_err();
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 0, .. }
+        AtomicExecutionError::NotFound { index: 0, .. }
     ));
     let ports = port::Entity::find().all(database).await.unwrap();
     assert_eq!(ports.len(), 1);
@@ -1383,7 +1421,7 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
     .unwrap_err();
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 0, .. }
+        AtomicExecutionError::NotFound { index: 0, .. }
     ));
     let port = port::Entity::find_by_id(1)
         .one(database)
@@ -1417,7 +1455,7 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
     .unwrap_err();
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 0, .. }
+        AtomicExecutionError::NotFound { index: 0, .. }
     ));
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
