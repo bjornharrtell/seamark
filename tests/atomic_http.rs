@@ -139,6 +139,10 @@ struct CountingHandler {
     calls: AtomicUsize,
 }
 
+struct AdditionalUpdateResultHandler {
+    calls: AtomicUsize,
+}
+
 struct RelationshipResultHandler {
     calls: AtomicUsize,
 }
@@ -213,6 +217,35 @@ impl AtomicOperationHandler for CountingHandler {
     ) -> Result<AtomicOperationOutcome, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(AtomicOperationOutcome::default())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for AdditionalUpdateResultHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        if !matches!(operation, PlannedOperation::UpdateResource { .. }) {
+            return Err("expected a resource update".to_owned());
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(AtomicOperationOutcome {
+            result: AtomicResult {
+                data: Some(json!({
+                    "type": "authors",
+                    "id": "1",
+                    "attributes": {
+                        "name": "Grace",
+                        "revision": 2
+                    }
+                })),
+                meta: None,
+            },
+            created_resource: None,
+        })
     }
 }
 
@@ -428,6 +461,15 @@ fn registry() -> Arc<ResourceRegistry> {
                 .attribute("title", "title", false, false)
                 .relationship("author", "author_id", "authors"),
         ])
+        .unwrap(),
+    )
+}
+
+fn update_result_registry() -> Arc<ResourceRegistry> {
+    Arc::new(
+        ResourceRegistry::new([ResourceDefinition::new("authors", "id")
+            .attribute("name", "name", false, false)
+            .attribute("revision", "revision", false, false)])
         .unwrap(),
     )
 }
@@ -1874,6 +1916,51 @@ async fn atomic_http_rejects_relationship_result_data_with_operation_pointer() {
         })
     );
     assert!(error.get("atomic:results").is_none());
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_returns_updated_resource_for_additional_server_fields() {
+    let database = database().await;
+    let handler = Arc::new(AdditionalUpdateResultHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        update_result_registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"},"data":{"type":"authors","attributes":{"name":"Grace"}}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    assert_eq!(
+        document(response).await,
+        json!({
+            "atomic:results": [{
+                "data": {
+                    "type": "authors",
+                    "id": "1",
+                    "attributes": {
+                        "name": "Grace",
+                        "revision": 2
+                    }
+                }
+            }]
+        })
+    );
     assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     database.close().await.unwrap();
 }
