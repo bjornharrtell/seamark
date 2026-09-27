@@ -1564,7 +1564,15 @@ async fn atomic_http_rejects_missing_or_non_string_operation_codes_before_author
         assert_eq!(response.headers()[VARY], "Accept");
         let error = error_document(response, body).await;
         assert_eq!(error["errors"].as_array().unwrap().len(), 1);
-        assert_eq!(error["errors"][0]["code"], "invalid_document");
+        assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+        assert_eq!(
+            error["errors"][0]["detail"],
+            "invalid operation 0 at `/atomic:operations/0`: operation must contain a string `op` member"
+        );
+        assert_eq!(
+            error["errors"][0]["source"]["pointer"],
+            "/atomic:operations/0"
+        );
         assert!(error.get("atomic:results").is_none());
     }
     assert_eq!(guard.calls.load(Ordering::SeqCst), 0);

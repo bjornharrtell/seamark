@@ -152,6 +152,9 @@ async fn post_operations(
             );
         }
     };
+    if let Err(error) = validate_operation_codes(&request_document) {
+        return atomic_request_error(error, &request_document);
+    }
     let document: AtomicOperationsDocument = match from_value(request_document.clone()) {
         Ok(document) => document,
         Err(error) => {
@@ -206,6 +209,29 @@ async fn post_operations(
     let mut response = (StatusCode::OK, Json(response)).into_response();
     set_jsonapi_headers(&mut response, true);
     response
+}
+
+fn validate_operation_codes(request_document: &Value) -> Result<(), AtomicOperationsError> {
+    let Some(operations) = request_document
+        .get("atomic:operations")
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+
+    for (index, operation) in operations.iter().enumerate() {
+        let Some(operation) = operation.as_object() else {
+            continue;
+        };
+        if !operation.get("op").is_some_and(Value::is_string) {
+            return Err(AtomicOperationsError::InvalidOperation {
+                index,
+                pointer: format!("/atomic:operations/{index}"),
+                message: "operation must contain a string `op` member".to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn atomic_request_error(error: AtomicOperationsError, request_document: &Value) -> Response {
