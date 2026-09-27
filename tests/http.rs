@@ -764,6 +764,75 @@ async fn query_router_rejects_unsupported_filter_operator_before_execution() {
 }
 
 #[tokio::test]
+async fn query_router_rejects_unknown_sparse_field_before_execution() {
+    let plans = Arc::new(Mutex::new(Vec::new()));
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: plans.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request(
+            "/ports?fields%5Bports%5D=name,owner&include=owner",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["data"][0]["attributes"], json!({"name": null}));
+    assert!(body["data"][0]["relationships"]["owner"].is_object());
+    assert_eq!(body["included"][0]["attributes"], json!({"name": "Ada"}));
+    assert_eq!(
+        plans.lock().unwrap()[0].fieldsets["ports"],
+        vec![
+            PlannedField::Attribute {
+                public_name: "name".to_owned(),
+                model_field: "title".to_owned(),
+            },
+            PlannedField::Relationship {
+                public_name: "owner".to_owned(),
+                model_field: "owner".to_owned(),
+                target_type: "people".to_owned(),
+            },
+        ]
+    );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 1);
+
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request(
+            "/ports?fields%5Bports%5D=secret&include=owner",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["status"], "400");
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "fields[ports]");
+    assert_eq!(
+        body["errors"][0]["detail"],
+        "fieldset field `secret` is not registered on resource `ports`"
+    );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn query_router_enforces_configured_page_size_limit_before_execution() {
     let query_adapter = Arc::new(TestQueryAdapter {
         plans: Arc::new(Mutex::new(Vec::new())),
