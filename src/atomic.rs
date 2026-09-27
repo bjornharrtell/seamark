@@ -187,8 +187,9 @@ impl AtomicOperationsDocument {
 
     /// Validates a response document against the operations that produced it.
     ///
-    /// Resource add/update results may include a resource object as `data`;
-    /// relationship and remove results must be empty result objects.
+    /// Resource add results must include the created resource as `data`;
+    /// resource updates may include a resource object, while relationship and
+    /// remove results must not include `data`.
     ///
     /// # Errors
     ///
@@ -201,14 +202,13 @@ impl AtomicOperationsDocument {
     ) -> Result<&[AtomicResult], AtomicOperationsError> {
         let results = self.validate_response(operations.len())?;
         for (index, (result, operation)) in results.iter().zip(operations).enumerate() {
-            if let PlannedOperation::AddResource { data, .. } = &operation.operation {
-                if data.id.is_none() && result.data.is_none() {
-                    return Err(AtomicOperationsError::InvalidResult {
-                        index,
-                        message: "a server-assigned resource ID requires a resource representation"
-                            .to_owned(),
-                    });
-                }
+            if matches!(&operation.operation, PlannedOperation::AddResource { .. })
+                && result.data.is_none()
+            {
+                return Err(AtomicOperationsError::InvalidResult {
+                    index,
+                    message: "a resource add result must include the created resource".to_owned(),
+                });
             }
             let Some(data) = &result.data else {
                 continue;
@@ -1770,20 +1770,16 @@ fn validate_operation_result(
 ) -> Result<(), String> {
     match operation {
         PlannedOperation::AddResource { data, .. } => {
-            if data.id.is_none() && result.data.is_none() {
-                return Err(
-                    "a server-assigned resource ID requires a resource representation".to_owned(),
-                );
-            }
-            if let Some(result_data) = &result.data {
-                let identifier = resource_result_identity(&data.type_name, result_data)?;
-                if data
-                    .id
-                    .as_ref()
-                    .is_some_and(|requested| identifier.id.as_ref() != Some(requested))
-                {
-                    return Err("resource result ID must match the requested ID".to_owned());
-                }
+            let result_data = result.data.as_ref().ok_or_else(|| {
+                "a resource add result must include the created resource".to_owned()
+            })?;
+            let identifier = resource_result_identity(&data.type_name, result_data)?;
+            if data
+                .id
+                .as_ref()
+                .is_some_and(|requested| identifier.id.as_ref() != Some(requested))
+            {
+                return Err("resource result ID must match the requested ID".to_owned());
             }
         }
         PlannedOperation::UpdateResource { target, data, .. } => {

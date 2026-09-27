@@ -157,6 +157,7 @@ impl SeaOrmMutationValueCodec for MutationCodec {
 pub struct AllowGuard;
 
 struct InvalidRelationshipResultHandler;
+struct MissingClientIdAddResultHandler;
 
 #[async_trait]
 impl AtomicOperationsGuard for AllowGuard {
@@ -198,6 +199,28 @@ impl AtomicOperationHandler for InvalidRelationshipResultHandler {
             },
             created_resource: None,
         })
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for MissingClientIdAddResultHandler {
+    async fn execute_operation(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        if !matches!(operation, PlannedOperation::AddResource { .. }) {
+            return Err("expected a resource add".to_owned());
+        }
+        transaction
+            .execute_unprepared(
+                "INSERT INTO seamark_m7_parity_people (person_id, display_name) \
+                 VALUES (99, 'must be rolled back')",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(AtomicOperationOutcome::default())
     }
 }
 
@@ -550,6 +573,81 @@ pub async fn execute_invalid_result_rollback_case(database: &DatabaseConnection)
             .is_empty(),
         "writes preceding an invalid server-generated result must roll back"
     );
+}
+
+pub async fn execute_client_assigned_add_result_http_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"people","id":"41","attributes":{"name":"Client ID"}}}]}"#;
+    let response = app.oneshot(atomic_request(request_body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        response_document,
+        json!({"atomic:results": [{"data": {"type": "people", "id": "41"}}]})
+    );
+    let person = person::Entity::find_by_id(41)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(person.display_name, "Client ID");
+}
+
+pub async fn execute_client_assigned_add_missing_result_rollback_http_case(
+    database: &DatabaseConnection,
+) {
+    create_tables(database).await;
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        registry,
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(MissingClientIdAddResultHandler),
+    );
+    let request_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"people","id":"99","attributes":{"name":"Client ID"}}}]}"#;
+    let response = app.oneshot(atomic_request(request_body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        response_document["errors"][0]["code"],
+        "invalid_atomic_response"
+    );
+    assert_eq!(
+        response_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
+    assert!(response_document.get("atomic:results").is_none());
+    assert!(
+        person::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty(),
+        "writes preceding an invalid add result must roll back before HTTP responds"
+    );
+}
+
+fn atomic_request(body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/operations")
+        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
+        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
+        .body(Body::from(body.to_owned()))
+        .unwrap()
 }
 
 pub async fn execute_case(database: &DatabaseConnection) -> JsonValue {

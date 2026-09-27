@@ -191,3 +191,12 @@ rejects duplicate or unsupported extension parameters.
 These focused protocol controls do not complete M5/M6 conformance or replace
 application-defined authorization, route resolution, codecs, limits, or
 association executors.
+
+Every successful resource-add result must include the created resource as
+`data`, including adds with a client-assigned `id`. This is the server's
+conservative choice under the extension's rule permitting omission only when
+the created representation is identical to the client-supplied resource. The
+transaction runner validates the representation before commit; a missing or
+invalid result returns HTTP 500 and rolls back the write. Shared Axum-to-SeaORM
+PostgreSQL/SQLite cases verify both a valid client-ID create and rollback of a
+create whose handler omits its result representation.
