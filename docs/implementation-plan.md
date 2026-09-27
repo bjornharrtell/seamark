@@ -286,7 +286,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 184 integration
+implementations. The complete all-features suite passes with 185 integration
 tests and 5 unit tests, including 11 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -456,12 +456,13 @@ remains partial: focused base-spec regressions reject a relationship object
 whose only member is an empty `links` object while retaining valid link-only,
 metadata-only, and linkage-bearing relationships, ignore `@`-members across
 typed base-document object contexts, and exclude `@` values from Atomic
-resource-data mapping while preserving ordinary member validation. The matrix
-now identifies tested `@` locations; malformed `@` name constraints and
-HTTP route-level processing is now verified by an Atomic POST regression;
-generated result documents reflect operation outcomes and do not promise
-request-annotation pass-through. Malformed `@` member-name constraints remain
-unverified. Remaining
+resource-data mapping while preserving ordinary member validation. Invalid
+`@` names in resource attribute maps, relationship maps, and links-object
+relation keys now return invalid-member-name errors; valid names with arbitrary
+values remain ignored. Malformed `@` names in Atomic request objects and other
+uncovered contexts remain open. HTTP route-level processing is verified by an
+Atomic POST regression; generated result documents reflect operation outcomes
+and do not promise request-annotation pass-through. Remaining
 top-level JSON:API rules, normative Atomic
 Operations edge cases, complete endpoint status mappings, and context-sensitive
 request/response rules still require coverage before M6 can be complete.

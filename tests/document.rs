@@ -1027,6 +1027,50 @@ fn ignores_at_members_when_interpreting_resource_relationships() {
 }
 
 #[test]
+fn rejects_invalid_at_member_names_while_ignoring_valid_members() {
+    for document in [
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"@bad/": "ignored"}
+            }
+        }),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"@bad/": "ignored"}
+            }
+        }),
+    ] {
+        assert!(
+            serde_json::from_value::<JsonApiDocument>(document).is_err(),
+            "invalid @-member names must be rejected before their values are ignored"
+        );
+    }
+
+    let invalid_link_relation: JsonApiDocument =
+        serde_json::from_value(json!({"links": {"@bad/": false}})).unwrap();
+    assert_eq!(
+        invalid_link_relation.validate(),
+        Err(DocumentValidationError::InvalidMemberName)
+    );
+
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "attributes": {"@valid-name": {"arbitrary": ["annotation"]}},
+            "relationships": {"@valid-name": false}
+        },
+        "links": {"@valid-name": false}
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+}
+
+#[test]
 fn relationship_objects_require_linkage_links_or_metadata() {
     for relationship in [
         json!({}),
