@@ -1,8 +1,10 @@
 # JSON:API conformance
 
-**Status: proposal for review; implementation is partial.** The Rust crate
-provides JSON:API document types and structural checks plus query and Atomic
-Operations prototypes, but no complete conformance suite exists yet.
+**Status: partial evidence for a bounded first-release profile.** The Rust
+crate provides JSON:API document types and structural checks plus query and
+Atomic Operations support, but no complete conformance suite exists yet. The
+first-useful release gate and deferrable follow-up categories are defined in
+[`docs/implementation-plan.md`](../implementation-plan.md).
 
 The validator distinguishes request-style local IDs from response resource
 IDs, rejects objects that contain both `id` and `lid`, rejects duplicate
@@ -15,22 +17,50 @@ checks registered-token or absolute-URI link relation types and `hreflang`
 language-tag syntax. A complete set of context-sensitive rules remains
 unfinished.
 
-The initial complete-release objective is full normative compliance with the JSON:API 1.1 base specification and complete support for its Atomic Operations extension. Other third-party extensions and profiles are deferred.
+The initial release target is common JSON:API 1.1 resource reads and
+mutations, relationship linkage, the documented query subset, and ordered
+Atomic resource/relationship operations with local IDs and transaction
+rollback. Applicable normative MUST requirements for those exposed paths
+remain release-blocking. Exhaustive behavior for optional or out-of-profile
+capabilities is tracked as follow-up, not as a claim of complete JSON:API or
+Atomic conformance. Third-party extensions and profile application are
+deferred.
 
-Tests should provide evidence for normative protocol behavior, including negotiation, valid and invalid requests, response documents, and extension behavior. Query tests should verify the documented server filter and pagination contracts; mutation tests should cover ordered Atomic Operations, local-ID references, transaction rollback, and the absence of partial success. M6 conformance work validates PostgreSQL first; M7 is responsible for the separate SQLite backend and cross-backend equivalence matrix for shared query and transaction semantics.
+Tests should provide evidence for normative protocol behavior within the
+supported profile, including negotiation, valid and invalid requests,
+response documents, and Atomic behavior. Query tests should verify the
+documented server filter and pagination contracts; mutation tests should
+cover ordered Atomic Operations, local-ID references, transaction rollback,
+and the absence of partial success. PostgreSQL is primary; M7 validates shared
+core query and transaction semantics on SQLite without claiming exhaustive
+engine parity.
 
-Atomic Operations planning checks operation shapes, explicit registry fields, relationship target types, ordered local-ID references, and application-resolved collection, resource, and relationship `href` targets. Planned resource mutations expose mapped changesets, and relationship operations expose mapped internal fields. A standalone Axum route negotiates the Atomic Operations extension and exercises success, malformed requests, unsupported media types, authorization denial, operation failure, and all three `href` target classes. Typed SeaORM handlers exercise resource CRUD, to-one foreign-key persistence, nullable direct-FK to-many add/remove/replacement, and explicitly configured two-column join-table membership operations in a shared transaction, with rollback coverage. Other association shapes remain available through application executors. Normative request/response and error cases remain uncovered. This objective describes intended scope only. It must not be read as a claim that Seamark currently implements any JSON:API behavior.
+Atomic Operations planning checks operation shapes, explicit registry fields,
+relationship target types, ordered local-ID references, and application-
+resolved collection, resource, and relationship `href` targets. Planned
+resource mutations expose mapped changesets, and relationship operations
+expose mapped internal fields. The Axum route negotiates Atomic Operations and
+tests success, malformed requests, unsupported media types, authorization
+denial, operation failure, and all three `href` target classes. Typed SeaORM
+handlers exercise resource CRUD, to-one foreign-key persistence, nullable
+direct-FK to-many add/remove/replacement, and explicitly configured two-column
+join-table operations in a shared transaction with rollback coverage. Other
+association shapes remain available through application executors. The
+behaviors cited here have test evidence, but broader normative request,
+response, and error cases remain open; no complete conformance claim is made.
 
 ## Initial requirement-to-test matrix
 
 This is a gap-tracking matrix, not a line-by-line completion claim. “Partial”
-means the cited tests cover selected behavior only; M6 must expand the entries
-against every applicable JSON:API 1.1 and Atomic Operations normative
-requirement before declaring conformance.
+means the cited tests cover selected behavior only. The first-useful release
+must close applicable MUSTs for its supported profile; optional and out-of-
+profile gaps may be deferred as recorded in `docs/implementation-plan.md`.
+Expand the matrix against every applicable JSON:API 1.1 and Atomic Operations
+requirement before making a full-conformance claim.
 
 | Requirement area | Current evidence | Status and remaining work |
 | --- | --- | --- |
-| Single-resource includes, sparse fieldsets, missing resources, and unsupported query controls | `tests/query.rs`: `single_resource_read_plans_includes_and_fieldsets`, `single_resource_read_rejects_collection_and_unknown_parameters_deterministically`; `tests/http.rs`: `query_router_plans_single_resource_includes_and_fieldsets`, `single_resource_query_rejects_invalid_parameters_before_authorization_or_adapters`, `missing_single_resource_returns_a_structured_not_found_error`; shared PG/SQLite route cases in `tests/seaorm.rs`: `executes_database_filters_sort_pagination_and_includes_with_fieldsets`, `postgres_single_resource_collection_queries_reject_before_authorization_or_adapters`; `tests/seaorm_sqlite.rs`: `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`, `sqlite_single_resource_collection_queries_reject_before_authorization_or_adapters`; `tests/support/query_cases.rs`: `single_resource_not_found_document`; `src/query.rs`: `plan_resource_read`; `src/seaorm.rs`: `SeaOrmQueryExecutor::resource` | Partial. Single-resource GETs use the shared `ReadPlan` and registry allowlists for `include` and `fields[resource-type]`, returning exact root linkage and included-resource sparse projection on both backends. Existing-ID requests return HTTP 200; absent persisted IDs return HTTP 404 with the exact JSON:API `resource_not_found` document, verified through the HTTP adapter and PostgreSQL/SQLite SeaORM-backed routes. Invalid include/fieldset mappings and collection-only filter/sort/page parameters return deterministic JSON:API 400 errors before authorization or either adapter; HTTP and database-backed controls assert the relevant call counts. Typed string, i64, and UUID identifiers are exercised. Broader nested/include combinations and resource-specific guard policies remain. |
+| Single-resource includes, sparse fieldsets, missing resources, and unsupported query controls | `tests/query.rs`: `single_resource_read_plans_includes_and_fieldsets`, `single_resource_read_rejects_collection_and_unknown_parameters_deterministically`; `tests/http.rs`: `query_router_plans_single_resource_includes_and_fieldsets`, `single_resource_query_rejects_invalid_parameters_before_authorization_or_adapters`, `missing_single_resource_returns_a_structured_not_found_error`; shared PG/SQLite route cases in `tests/seaorm.rs`: `executes_database_filters_sort_pagination_and_includes_with_fieldsets`, `postgres_single_resource_collection_queries_reject_before_authorization_or_adapters`; `tests/seaorm_sqlite.rs`: `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`, `sqlite_single_resource_collection_queries_reject_before_authorization_or_adapters`; `tests/support/query_cases.rs`: `single_resource_not_found_document`, `assert_single_resource_two_level_neighbors_document`; `src/query.rs`: `plan_resource_read`; `src/seaorm.rs`: `SeaOrmQueryExecutor::resource` | Partial. Single-resource GETs use the shared `ReadPlan` and registry allowlists for `include` and `fields[resource-type]`, returning exact root linkage and included-resource sparse projection on both backends. A shared PostgreSQL/SQLite HTTP regression requests `include=neighbors.neighbors` with a sparse fieldset and asserts root linkage plus both levels of included resources and their projected relationship linkage. Existing-ID requests return HTTP 200; absent persisted IDs return HTTP 404 with the exact JSON:API `resource_not_found` document, verified through the HTTP adapter and PostgreSQL/SQLite SeaORM-backed routes. Invalid include/fieldset mappings and collection-only filter/sort/page parameters return deterministic JSON:API 400 errors before authorization or either adapter; HTTP and database-backed controls assert the relevant call counts. Typed string, i64, and UUID identifiers are exercised. Other nested/include combinations and resource-specific guard policies remain. |
 | Base resource POST/PATCH/DELETE status, mapping, validation, and authorization | `tests/http.rs`: `base_resource_create_returns_created_representation_and_mapped_changeset`, `base_resource_patch_preserves_omitted_fields_and_explicit_null`, `base_resource_delete_returns_no_content`, `base_mutation_statuses_follow_resource_identity_and_linkage_rules`, `required_mutation_data_error_pointers_resolve_in_the_request_document`, `mutation_validation_and_authorization_precede_adapter_execution`; `src/http.rs`: `MutationCommand`, `MutationResourceAdapter`, `router_with_mutations` | Partial. The opt-in router creates with server-assigned identity and returns 201, a primary representation, and `Location`; client-assigned IDs are explicitly unsupported (403). Collection `type` mismatch and PATCH `type`/`id` mismatch return 409. PATCH changesets distinguish omitted fields from explicit null, require `data` on each supplied relationship, and use only registered public mappings. Missing primary data points to the existing request root, and omitted relationship linkage data points to the existing relationship object; regression assertions resolve each emitted pointer against the submitted document. DELETE returns 204 with no body. Invalid fields/media are rejected before authorization or adapter calls; authorization denial is verified to precede adapter execution. Resource operations remain application-executed through the base mutation adapter; complete validation, status, and authorization-policy coverage remains open. |
 | Base relationship-linkage reads and mutations | `tests/http.rs`: `relationship_linkage_routes_read_replace_add_and_remove`, `base_mutation_statuses_follow_resource_identity_and_linkage_rules`, `required_mutation_data_error_pointers_resolve_in_the_request_document`, `base_mutation_routes_reject_query_parameters_before_authorization_or_adapter`; shared PostgreSQL/SQLite case `tests/support/http_mutation_cases.rs`: `run_case`, invoked by `postgres_base_http_mutations_preserve_linkage_and_rollback` and `sqlite_base_http_mutations_preserve_linkage_and_rollback`; `src/registry.rs`: explicit `to_one_relationship`/`to_many_relationship` cardinality | Partial. Linkage GET returns 200 with primary `data`; PATCH replaces to-one or to-many linkage, while POST/DELETE accept to-many arrays only, including empty arrays. The shared typed fixture confirms repeated POST additions do not create duplicate join rows, already-absent DELETE members succeed, replacements persist exact membership, missing parent/related targets return 404, and a late missing-target failure rolls back earlier attribute writes on PostgreSQL and SQLite. Invalid cardinality/method combinations return 403. Unsupported nonempty query parameters on GET/PATCH/POST/DELETE linkage routes return JSON:API 400 `invalid_query` with the exact parameter source before authorization or adapter execution; the route regression exercises all four methods. Missing relationship-document `data` and non-object documents point to the existing request root. These database cases validate the explicit executor contract, not automatic inference of arbitrary ORM relationship shapes. Related-resource URLs, ordering, and broader relationship error policy remain. |
 | Atomic nullable direct-FK to-many add/remove/replacement and rollback parity | `tests/support/atomic_cases.rs`: `execute_to_many_foreign_key_relationship_case`; invoked by `tests/seaorm_mutation.rs`: `postgres_atomic_result_document_matches_shared_backend_case` and `tests/seaorm_sqlite.rs`: `sqlite_atomic_result_document_matches_shared_backend_case`; `src/seaorm_mutation.rs`: `SeaOrmToManyForeignKeyMutationHandler` | Partial. The same PostgreSQL/SQLite case attaches two resources to a source using local IDs, removes one member, replaces the set with one member, and clears the set with empty linkage; each operation returns the exact expected result and the test asserts persisted FK values. Add and replacement refuse to reassign a member owned by another source. A failing replacement first attaches an unowned member and then encounters a member owned by another source; it fails at operation 0 and transaction rollback restores the earlier FK values. The FK helper does not persist member ordering. Other association shapes remain custom-dispatched, and broader normative Atomic request/result/error/media-type cases remain. |
