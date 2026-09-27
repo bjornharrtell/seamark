@@ -160,6 +160,9 @@ existing member again. The typed nullable-FK add handler likewise accepts an
 already-owned member without changing its persisted relationship. Shared
 PostgreSQL/SQLite Atomic HTTP cases assert successful exact result documents
 and final persisted membership for pre-existing and repeated identifiers.
+The shared join-table and nullable-FK HTTP cases also accept empty `data`
+arrays for relationship add/remove as no-op operations and verify that the
+persisted membership remains unchanged.
 The helper does not infer cardinality or join-table structure from the
 registry's opaque relationship field.
 `SeaOrmToManyForeignKeyMutationHandler<E, C>` supports
