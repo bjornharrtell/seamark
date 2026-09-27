@@ -1150,6 +1150,28 @@ pub async fn execute_local_id_to_one_relationship_case(database: &DatabaseConnec
     assert_eq!(ports[0].port_id, 1);
     assert_eq!(ports[0].title, "Local Port");
     assert_eq!(ports[0].owner_id, Some(1));
+
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {
+                    "type": "ports",
+                    "attributes": {"name": "Missing Owner"},
+                    "relationships": {
+                        "owner": {"data": {"type": "people", "id": "999"}}
+                    }
+                }
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::NotFound { index: 0, .. }
+    ));
 }
 
 pub async fn execute_to_one_relationship_lifecycle_case(database: &DatabaseConnection) {
@@ -1205,6 +1227,34 @@ pub async fn execute_to_one_relationship_lifecycle_case(database: &DatabaseConne
         .unwrap();
     assert_eq!(port.owner_id, Some(1));
 
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "data": {
+                    "type": "ports",
+                    "id": "1",
+                    "relationships": {
+                        "owner": {"data": {"type": "people", "id": "999"}}
+                    }
+                }
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::NotFound { index: 0, .. }
+    ));
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.owner_id, Some(1));
+
     let clear_results = execute_request(
         database,
         json!({
@@ -1243,6 +1293,60 @@ pub async fn execute_to_one_relationship_lifecycle_case(database: &DatabaseConne
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(port.owner_id, Some(2));
+
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "ports", "id": "1", "relationship": "owner"},
+                "data": {"type": "people", "id": "999"}
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::NotFound { index: 0, .. }
+    ));
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.owner_id, Some(2));
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request = atomic_request(
+        r#"{"atomic:operations":[{"op":"update","data":{"type":"ports","id":"1","attributes":{"name":"Must Roll Back"}}},{"op":"update","ref":{"type":"ports","id":"1","relationship":"owner"},"data":{"type":"people","id":"999"}}]}"#,
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error_document["errors"][0]["code"], "resource_not_found");
+    assert_eq!(error_document["errors"][0]["status"], "404");
+    assert_eq!(
+        error_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(error_document.get("atomic:results").is_none());
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.title, "Owned Port");
     assert_eq!(port.owner_id, Some(2));
 
     let delete_results = execute_request(

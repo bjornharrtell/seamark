@@ -338,6 +338,17 @@ fn has_to_many_relationships(changeset: &AtomicResourceChangeset) -> bool {
         })
 }
 
+fn has_related_resource_reference(changeset: &AtomicResourceChangeset) -> bool {
+    changeset
+        .relationships
+        .as_ref()
+        .is_some_and(|relationships| {
+            relationships.values().any(|relationship| {
+                matches!(relationship.data.as_ref(), Some(RelationshipData::One(_)))
+            })
+        })
+}
+
 fn without_to_many_relationships(
     data: &AtomicResourceData,
     changeset: &AtomicResourceChangeset,
@@ -1155,6 +1166,11 @@ where
                 AtomicOperationFailure::Conflict(
                     "the resource conflicts with existing data".to_owned(),
                 )
+            } else if has_related_resource_reference(changeset) && is_foreign_key_violation(&error)
+            {
+                AtomicOperationFailure::NotFound(
+                    "a referenced relationship resource does not exist".to_owned(),
+                )
             } else {
                 AtomicOperationFailure::Operation(format!("resource create failed: {error}"))
             }
@@ -1226,6 +1242,11 @@ where
         active_model.update(transaction).await.map_err(|error| {
             if matches!(&error, DbErr::RecordNotUpdated) {
                 AtomicOperationFailure::NotFound("resource to update was not found".to_owned())
+            } else if has_related_resource_reference(changeset) && is_foreign_key_violation(&error)
+            {
+                AtomicOperationFailure::NotFound(
+                    "a referenced relationship resource does not exist".to_owned(),
+                )
             } else {
                 AtomicOperationFailure::Operation(format!("resource update failed: {error}"))
             }
@@ -1266,9 +1287,11 @@ where
         model_field: &str,
         data: &RelationshipData,
         local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         if reference.type_name != self.definition.type_name() {
-            return Err("relationship owner type does not match this entity".to_owned());
+            return Err(AtomicOperationFailure::Operation(
+                "relationship owner type does not match this entity".to_owned(),
+            ));
         }
         let target = AtomicTarget::Reference(reference.clone());
         let identity = self.target_identity(&target, local_ids)?;
@@ -1284,9 +1307,9 @@ where
                 })?)
             }
             RelationshipData::Many(_) => {
-                return Err(format!(
+                return Err(AtomicOperationFailure::Operation(format!(
                     "to-many relationship field `{model_field}` requires an application executor"
-                ));
+                )));
             }
         };
 
@@ -1297,10 +1320,17 @@ where
             .try_set(id_column, id_value)
             .map_err(|error| format!("could not map identifier field: {error}"))?;
         self.set_field(&mut active_model, model_field, &value)?;
-        active_model
-            .update(transaction)
-            .await
-            .map_err(|error| format!("relationship update failed: {error}"))?;
+        active_model.update(transaction).await.map_err(|error| {
+            if matches!(&error, DbErr::RecordNotUpdated) {
+                AtomicOperationFailure::NotFound("relationship owner was not found".to_owned())
+            } else if matches!(data, RelationshipData::One(_)) && is_foreign_key_violation(&error) {
+                AtomicOperationFailure::NotFound(
+                    "a referenced relationship resource does not exist".to_owned(),
+                )
+            } else {
+                AtomicOperationFailure::Operation(format!("relationship update failed: {error}"))
+            }
+        })?;
         Ok(AtomicOperationOutcome::default())
     }
 }
@@ -1364,10 +1394,10 @@ where
                 reference,
                 model_field,
                 data,
-            } => {
-                self.update_relationship(transaction, reference, model_field, data, local_ids)
-                    .await
-            }
+            } => self
+                .update_relationship(transaction, reference, model_field, data, local_ids)
+                .await
+                .map_err(|failure| failure.to_string()),
             PlannedOperation::AddRelationshipMembers { .. }
             | PlannedOperation::RemoveRelationshipMembers { .. } => {
                 Err("to-many relationship operations require an application executor".to_owned())
@@ -1390,6 +1420,14 @@ where
             } => self.update(transaction, target, changeset, local_ids).await,
             PlannedOperation::RemoveResource { target } => {
                 self.remove(transaction, target, local_ids).await
+            }
+            PlannedOperation::UpdateRelationship {
+                reference,
+                model_field,
+                data,
+            } => {
+                self.update_relationship(transaction, reference, model_field, data, local_ids)
+                    .await
             }
             _ => self
                 .execute(transaction, operation, local_ids)
