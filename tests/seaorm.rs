@@ -36,6 +36,7 @@ mod port {
         pub title: String,
         pub berth_count: Option<i32>,
         pub depth_m: i32,
+        pub active: bool,
         pub owner_id: i32,
     }
 
@@ -69,6 +70,7 @@ fn resource_definitions() -> (ResourceDefinition, ResourceDefinition) {
             .attribute("name", "title", true, true)
             .attribute("capacity", "berth_count", true, false)
             .attribute("depth", "depth_m", true, true)
+            .attribute("active", "active", true, true)
             .relationship("owner", "owner_id", "people"),
         ResourceDefinition::new("people", "person_id")
             .attribute("name", "display_name", false, true)
@@ -96,6 +98,7 @@ fn port_resource(model: &port::Model) -> AdapterResource {
             ("title".to_owned(), json!(model.title)),
             ("berth_count".to_owned(), json!(model.berth_count)),
             ("depth_m".to_owned(), json!(model.depth_m)),
+            ("active".to_owned(), json!(model.active)),
             ("private".to_owned(), json!("must not be mapped")),
         ]),
         relationships: BTreeMap::from([(
@@ -116,6 +119,10 @@ fn encode_filter_value(model_field: &str, value: &str) -> Result<Value, String> 
     match model_field {
         "berth_count" | "depth_m" => value
             .parse::<i32>()
+            .map(Value::from)
+            .map_err(|error| error.to_string()),
+        "active" => value
+            .parse::<bool>()
             .map(Value::from)
             .map_err(|error| error.to_string()),
         _ => Ok(Value::from(value.to_owned())),
@@ -307,16 +314,17 @@ async fn insert_fixtures(database: &DatabaseConnection) {
         .await
         .unwrap();
     }
-    for (id, name, capacity, depth, owner) in [
-        (1, "Alpha", Some(4), 2, 11),
-        (2, "Beta", Some(8), 9, 12),
-        (3, "Gamma", None, 6, 11),
+    for (id, name, capacity, depth, active, owner) in [
+        (1, "Alpha", Some(4), 2, true, 11),
+        (2, "Beta", Some(8), 9, false, 12),
+        (3, "Gamma", None, 6, true, 11),
     ] {
         port::ActiveModel {
             port_id: Set(id),
             title: Set(name.to_owned()),
             berth_count: Set(capacity),
             depth_m: Set(depth),
+            active: Set(active),
             owner_id: Set(owner),
         }
         .insert(database)
@@ -432,6 +440,24 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             .map(|resource| resource.id.as_str())
             .collect::<Vec<_>>(),
         vec!["2"]
+    );
+
+    let boolean_query = ReadQuery {
+        filters: vec!["equals(active,'true')".to_owned()],
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    };
+    let boolean_result = executor
+        .collection(&database, &plan(&boolean_query), &guard, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        boolean_result
+            .resources
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["1", "3"])
     );
 
     let nested_filter_query = ReadQuery {

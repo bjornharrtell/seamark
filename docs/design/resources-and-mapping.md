@@ -27,13 +27,13 @@ Registered relationship metadata should identify target resource types and suppo
 ## Prototype and open choices
 
 A focused PostgreSQL test now verifies typed field resolution, database-side
-filtering (including OR, null, and mapped numeric values), sorting, pagination,
-identifier serialization, sparse projection, and include loading. The
-PostgreSQL HTTP integration also executes planned collection queries through
-Axum and the SeaORM executor. This validates the prototype approach but does
-not freeze the declaration API. The registry still maps public names to opaque strings and does not
-automatically derive SeaORM relationships, identifier codecs, or CRUD
-behavior. Atomic Operations plans map registered public attribute and
+filtering (including OR, null, mapped numeric and boolean values), sorting,
+pagination, identifier serialization, sparse projection, and include loading.
+The PostgreSQL HTTP integration also executes planned collection queries
+through Axum and the SeaORM executor. This validates the prototype approach
+but does not freeze the declaration API. The registry still maps public names
+to opaque strings and does not automatically derive SeaORM relationships,
+identifier codecs, or CRUD behavior. Atomic Operations plans map registered public attribute and
 relationship names to internal model-field names in request-scoped changesets.
 Typed SeaORM handlers use these changesets for CRUD and to-one foreign-key
 writes; to-many persistence still requires an application executor. Derive and configuration syntax,
