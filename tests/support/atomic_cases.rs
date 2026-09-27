@@ -612,8 +612,16 @@ pub async fn execute_failure_case(database: &DatabaseConnection) -> AtomicExecut
             "atomic:operations": [
                 {
                     "op": "add",
+                    "data": {
+                        "type": "tags",
+                        "lid": "rolled-back-tag",
+                        "attributes": {"name": "Temporary"}
+                    }
+                },
+                {
+                    "op": "add",
                     "href": "/ports/1/relationships/tags",
-                    "data": [{"type": "tags", "id": "1"}]
+                    "data": [{"type": "tags", "lid": "rolled-back-tag"}]
                 },
                 {
                     "op": "update",

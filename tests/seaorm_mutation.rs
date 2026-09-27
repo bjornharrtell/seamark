@@ -703,7 +703,7 @@ async fn postgres_atomic_result_document_matches_shared_backend_case() {
     let error = atomic_cases::execute_failure_case(&database).await;
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 1, .. }
+        AtomicExecutionError::Operation { index: 2, .. }
     ));
     atomic_cases::assert_final_state(&database).await;
     atomic_cases::execute_local_id_to_one_relationship_case(&database).await;
