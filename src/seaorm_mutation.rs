@@ -997,7 +997,10 @@ where
 /// relationship executors support explicitly configured join-table and
 /// nullable direct-foreign-key shapes. Other associations and `href` target
 /// behavior remain available to custom [`SeaOrmAtomicOperationExecutor`]
-/// implementations in the dispatcher.
+/// implementations in the dispatcher. Resource updates return no result
+/// representation; if entity hooks or database triggers change additional
+/// public fields, a higher-priority custom executor must return the updated
+/// representation required by the Atomic Operations extension.
 pub struct SeaOrmResourceMutationHandler<E, C>
 where
     E: EntityTrait,

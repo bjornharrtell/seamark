@@ -136,6 +136,15 @@ executors that directly support the original operation retain first-match
 precedence. Unsupported association shapes remain available to custom handlers
 or dedicated typed relationship executors.
 
+The typed resource handler constructs updates from registered operation
+changesets and omits result `data` for resource updates. Per the Atomic
+Operations update-result rule, an executor must return the updated resource
+when processing changes fields beyond those specified in the operation. If
+SeaORM entity hooks or database triggers change additional public fields,
+applications must register a higher-priority custom executor that returns
+that representation; those application side effects are not inferred by the
+typed handler.
+
 `SeaOrmJoinTableMutationHandler<E, C>` handles to-many add/remove operations
 and full membership replacement through Atomic `update` for a configured
 relationship backed by a typed two-column join-table entity.

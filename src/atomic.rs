@@ -1428,7 +1428,9 @@ fn escape_json_pointer_segment(segment: &str) -> String {
 /// A request result plus an optional created identity for local-ID resolution.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AtomicOperationOutcome {
-    /// The positional result object.
+    /// The positional result object. Resource updates that change fields
+    /// beyond those specified by the operation must include the updated
+    /// resource in `data`.
     pub result: AtomicResult,
     /// The persistent identity assigned by an add-resource operation.
     pub created_resource: Option<ResourceIdentifier>,
@@ -1523,6 +1525,9 @@ pub trait AtomicOperationHandler: Send + Sync {
     /// The handler must resolve any `lid` values through `local_ids` before
     /// writing relationship linkage. It returns the assigned persistent
     /// identity for an add operation that declared a resource `lid`.
+    /// For a resource update, include the updated resource in `result.data`
+    /// whenever server-side processing changes fields beyond those specified
+    /// in the operation.
     ///
     /// # Errors
     ///
