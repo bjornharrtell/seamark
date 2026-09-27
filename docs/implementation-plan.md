@@ -287,7 +287,7 @@ invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
 implementations. At this revision, the complete all-features suite passes with
-205 integration tests and 6 unit tests, including 11 isolated SQLite tests
+206 integration tests and 6 unit tests, including 11 isolated SQLite tests
 and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
@@ -615,7 +615,10 @@ result data.
 concrete and wildcard ranges carrying the quoted Atomic extension, qvalue
 syntax and precedence, q=0 specificity, repeated ranges, profile lists, and
 rejection of malformed qvalues, duplicate parameters, and unsupported
-extension lists before authorization/limits/handlers. The Atomic parser now
+extension lists before authorization/limits/handlers. The separate
+`atomic_http_combines_repeated_accept_header_fields` route test also confirms
+repeated exact Atomic media-range field values combine by highest quality.
+The Atomic parser now
 uses RFC 9110 qvalue syntax and most-specific media-range precedence rather
 than floating-point parsing and first-match acceptance. The request-shape
 planner matrix remains partial; no general conformance claim is made.
