@@ -1362,7 +1362,7 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
     });
     let app = atomic_http::router(registry(), database, guard.clone(), handler.clone());
     let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
-    let content_type = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown https://example.test/also-unknown\"";
+    let content_type = "APPLICATION/VND.API+JSON;EXT=\"https://jsonapi.org/ext/atomic\";PROFILE=\"https://example.test/unknown https://example.test/also-unknown\"";
     let response = app
         .clone()
         .oneshot(request(
