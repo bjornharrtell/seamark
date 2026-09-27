@@ -982,10 +982,85 @@ impl AtomicOperationHandler for LogHandler {
     }
 }
 
+struct MismatchedLocalIdResultHandler;
+
+#[async_trait]
+impl AtomicOperationHandler for MismatchedLocalIdResultHandler {
+    async fn execute_operation(
+        &self,
+        transaction: &sea_orm::DatabaseTransaction,
+        _operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        transaction
+            .execute_unprepared(
+                "INSERT INTO seamark_atomic_mismatched_local_id_log (event) VALUES ('created')",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(AtomicOperationOutcome {
+            result: AtomicResult {
+                data: Some(json!({"type": "authors", "id": "returned-id"})),
+                meta: None,
+            },
+            created_resource: Some(ResourceIdentifier {
+                type_name: "authors".to_owned(),
+                id: Some("mapped-id".to_owned()),
+                ..ResourceIdentifier::default()
+            }),
+        })
+    }
+}
+
 async fn database() -> DatabaseConnection {
     let url = std::env::var("SEAMARK_TEST_DATABASE_URL")
         .expect("set SEAMARK_TEST_DATABASE_URL to a dedicated PostgreSQL test database");
     Database::connect(url).await.unwrap()
+}
+
+#[tokio::test]
+async fn rolls_back_add_when_result_identity_disagrees_with_local_id_mapping() {
+    let database = database().await;
+    database
+        .execute_unprepared(
+            "DROP TABLE IF EXISTS seamark_atomic_mismatched_local_id_log; CREATE TABLE seamark_atomic_mismatched_local_id_log (event TEXT NOT NULL)",
+        )
+        .await
+        .unwrap();
+    let operations = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {"type": "authors", "lid": "author-local", "attributes": {"name": "Ada"}}
+        }]
+    }))
+    .unwrap();
+    let error = execute_atomic_operations(
+        &database,
+        &operations,
+        &HeaderMap::new(),
+        &TestGuard {
+            authorized: true,
+            maximum_operations: 1,
+        },
+        &MismatchedLocalIdResultHandler,
+    )
+    .await;
+    assert!(matches!(
+        error,
+        Err(AtomicExecutionError::InvalidResult { index: 0, .. })
+    ));
+    let count = database
+        .query_one(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT COUNT(*) AS count FROM seamark_atomic_mismatched_local_id_log",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "count")
+        .unwrap();
+    assert_eq!(count, 0);
+    database.close().await.unwrap();
 }
 
 #[tokio::test]
