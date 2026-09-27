@@ -437,6 +437,32 @@ fn build_router(state: ApiState) -> Router {
     router.with_state(Arc::new(state))
 }
 
+/// Returns a JSON:API 404 response for an unmatched application route.
+///
+/// Install this as the application's final Axum fallback when unmatched
+/// requests should use JSON:API errors:
+///
+/// ```no_run
+/// # use axum::Router;
+/// # use seamark::http;
+/// let app: Router = Router::new().fallback(http::not_found_fallback);
+/// ```
+///
+/// This handler is opt-in so a Seamark component router does not capture
+/// unmatched paths belonging to the rest of an application.
+pub async fn not_found_fallback(headers: HeaderMap) -> Response {
+    if !accepts_jsonapi(&headers) {
+        return request_error_response(RequestValidationError::NotAcceptable);
+    }
+    protocol_error(
+        StatusCode::NOT_FOUND,
+        "route_not_found",
+        "Route not found",
+        Some("The requested URL does not match a registered JSON:API route.".to_owned()),
+        None,
+    )
+}
+
 async fn method_not_allowed(headers: HeaderMap) -> Response {
     if !accepts_jsonapi(&headers) {
         return request_error_response(RequestValidationError::NotAcceptable);
