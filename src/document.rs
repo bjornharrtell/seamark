@@ -85,7 +85,7 @@ struct JsonApiDocumentRepr {
     included: Option<Vec<ResourceObject>>,
     #[serde(
         default,
-        deserialize_with = "deserialize_non_null",
+        deserialize_with = "deserialize_links",
         skip_serializing_if = "Option::is_none"
     )]
     links: Option<Map<String, Value>>,
@@ -407,7 +407,7 @@ struct ResourceObjectRepr {
     attributes: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_relationships")]
     relationships: Option<BTreeMap<String, Relationship>>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_links")]
     links: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_metadata")]
     meta: Option<Map<String, Value>>,
@@ -500,7 +500,7 @@ pub struct Relationship {
 struct RelationshipRepr {
     #[serde(default, deserialize_with = "deserialize_relationship_data")]
     data: Option<RelationshipData>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_links")]
     links: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_metadata")]
     meta: Option<Map<String, Value>>,
@@ -684,7 +684,7 @@ pub struct ErrorObject {
 struct ErrorObjectRepr {
     #[serde(default, deserialize_with = "deserialize_non_null")]
     id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_links")]
     links: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     status: Option<String>,
@@ -1303,7 +1303,7 @@ where
     RelationshipData::deserialize(deserializer).map(Some)
 }
 
-pub(crate) fn deserialize_metadata<'de, D>(
+fn deserialize_object_map_ignoring_at_members<'de, D>(
     deserializer: D,
 ) -> Result<Option<Map<String, Value>>, D::Error>
 where
@@ -1311,15 +1311,33 @@ where
 {
     let values = ObjectOnly::<Map<String, Value>>::deserialize(deserializer)?.into_inner();
     let had_members = !values.is_empty();
-    let metadata = values
+    let members = values
         .into_iter()
         .filter(|(name, _)| !is_at_member(name))
         .collect::<Map<_, _>>();
-    if had_members && metadata.is_empty() {
+    if had_members && members.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(metadata))
+        Ok(Some(members))
     }
+}
+
+pub(crate) fn deserialize_links<'de, D>(
+    deserializer: D,
+) -> Result<Option<Map<String, Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_object_map_ignoring_at_members(deserializer)
+}
+
+pub(crate) fn deserialize_metadata<'de, D>(
+    deserializer: D,
+) -> Result<Option<Map<String, Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_object_map_ignoring_at_members(deserializer)
 }
 
 pub(crate) fn deserialize_relationships<'de, D>(

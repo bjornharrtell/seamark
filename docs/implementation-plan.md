@@ -457,12 +457,12 @@ whose only member is an empty `links` object while retaining valid link-only,
 metadata-only, and linkage-bearing relationships, ignore `@`-members across
 typed base-document object contexts, and exclude `@` values from Atomic
 resource-data mapping while preserving ordinary member validation. Invalid
-`@` names in resource attribute maps, relationship maps, and links-object
-relation keys now return invalid-member-name errors; valid names with arbitrary
-values remain ignored. Atomic document, operation, resource-data, reference,
-result, and metadata maps also reject malformed `@` names before ignoring
-unknown members; valid `@` annotations inside metadata maps are discarded.
-Other uncovered contexts remain open. HTTP
+`@` names in resource attribute maps, relationship maps, link maps, and
+metadata maps now return invalid-member-name errors; valid annotations in
+those maps are discarded while ordinary values remain intact. Atomic document,
+operation, resource-data, reference, result, link, and metadata maps reject
+malformed `@` names before ignoring unknown members. Other uncovered contexts
+remain open. HTTP
 route-level processing is verified by an
 Atomic POST regression; generated result documents reflect operation outcomes
 and do not promise request-annotation pass-through. Remaining

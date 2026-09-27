@@ -11,8 +11,9 @@ use serde_json::{Map, Value};
 
 use crate::document::{
     ErrorObject, JsonApiDocument, JsonApiObject, ObjectOnly, PrimaryData, RelationshipData,
-    ResourceIdentifier, ResourceObject, deserialize_attributes, deserialize_metadata,
-    deserialize_relationships, is_at_member, is_valid_uri_reference, validate_links,
+    ResourceIdentifier, ResourceObject, deserialize_attributes, deserialize_links,
+    deserialize_metadata, deserialize_relationships, is_at_member, is_valid_uri_reference,
+    validate_links,
 };
 use crate::registry::ResourceRegistry;
 
@@ -99,7 +100,7 @@ struct AtomicOperationsDocumentRepr {
     results: Option<Vec<AtomicResult>>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     errors: Option<Vec<ErrorObject>>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_links")]
     links: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_metadata")]
     meta: Option<Map<String, Value>>,
@@ -471,7 +472,7 @@ struct AtomicResourceDataRepr {
     attributes: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_relationships")]
     relationships: Option<BTreeMap<String, crate::document::Relationship>>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_links")]
     links: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_metadata")]
     meta: Option<Map<String, Value>>,
