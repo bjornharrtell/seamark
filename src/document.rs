@@ -210,19 +210,28 @@ impl ResourceObject {
             (Some(_), Some(_)) => return Err(DocumentValidationError::BothIdentifiers),
             _ => {}
         }
-        if let Some(relationships) = &self.relationships {
-            for relationship in relationships.values() {
-                if let Some(data) = &relationship.data {
-                    match data {
-                        RelationshipData::Null => {}
-                        RelationshipData::One(identifier) => identifier.validate()?,
-                        RelationshipData::Many(identifiers) => {
-                            for identifier in identifiers {
-                                identifier.validate()?;
-                            }
-                        }
-                    }
+        if let Some(attributes) = &self.attributes {
+            for name in attributes.keys() {
+                if name == "type"
+                    || name == "id"
+                    || self
+                        .relationships
+                        .as_ref()
+                        .is_some_and(|relationships| relationships.contains_key(name))
+                {
+                    return Err(DocumentValidationError::ConflictingFieldName);
                 }
+            }
+        }
+        if let Some(relationships) = &self.relationships {
+            if relationships
+                .keys()
+                .any(|name| name == "type" || name == "id")
+            {
+                return Err(DocumentValidationError::ConflictingFieldName);
+            }
+            for relationship in relationships.values() {
+                relationship.validate()?;
             }
         }
         Ok(())
@@ -253,6 +262,26 @@ pub struct Relationship {
         skip_serializing_if = "Option::is_none"
     )]
     pub meta: Option<Map<String, Value>>,
+}
+
+impl Relationship {
+    fn validate(&self) -> Result<(), DocumentValidationError> {
+        if self.data.is_none() && self.links.is_none() && self.meta.is_none() {
+            return Err(DocumentValidationError::EmptyRelationship);
+        }
+        if let Some(data) = &self.data {
+            match data {
+                RelationshipData::Null => {}
+                RelationshipData::One(identifier) => identifier.validate()?,
+                RelationshipData::Many(identifiers) => {
+                    for identifier in identifiers {
+                        identifier.validate()?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Resource linkage in a relationship.
@@ -445,6 +474,10 @@ pub enum DocumentValidationError {
     MissingIdentifier,
     /// A resource object or identifier has both an `id` and a `lid`.
     BothIdentifiers,
+    /// A resource has fields that conflict with its `type` or `id`, or each other.
+    ConflictingFieldName,
+    /// A relationship object has no linkage, links, or metadata.
+    EmptyRelationship,
     /// An included resource cannot be reached through primary resource linkage.
     UnreachableIncludedResource,
     /// A response resource object has no persistent `id`.
@@ -467,6 +500,10 @@ impl fmt::Display for DocumentValidationError {
             Self::BothIdentifiers => {
                 "a resource object or identifier must not contain both id and lid"
             }
+            Self::ConflictingFieldName => {
+                "resource field names must not conflict with type, id, or each other"
+            }
+            Self::EmptyRelationship => "a relationship object must contain data, links, or meta",
             Self::UnreachableIncludedResource => {
                 "every included resource must be reachable from primary data through relationship linkage"
             }

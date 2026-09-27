@@ -317,6 +317,59 @@ fn resource_objects_and_identifiers_must_not_contain_both_id_and_lid() {
 }
 
 #[test]
+fn resource_fields_must_not_conflict_with_type_id_or_each_other() {
+    for data in [
+        json!({"type": "ports", "id": "1", "attributes": {"type": "nested"}}),
+        json!({"type": "ports", "id": "1", "attributes": {"id": "nested"}}),
+        json!({"type": "ports", "id": "1", "relationships": {"type": {"data": null}}}),
+        json!({"type": "ports", "id": "1", "relationships": {"id": {"data": null}}}),
+        json!({
+            "type": "ports",
+            "id": "1",
+            "attributes": {"owner": "not a relationship"},
+            "relationships": {"owner": {"data": null}}
+        }),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({"data": data})).unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::ConflictingFieldName)
+        );
+    }
+}
+
+#[test]
+fn relationship_objects_require_linkage_links_or_metadata() {
+    let empty: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {"owner": {}}
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        empty.validate(),
+        Err(DocumentValidationError::EmptyRelationship)
+    );
+
+    for relationship in [
+        json!({"links": {"related": "/ports/1/owner"}}),
+        json!({"meta": {}}),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": relationship}
+            }
+        }))
+        .unwrap();
+        document.validate().unwrap();
+    }
+}
+
+#[test]
 fn validates_relationship_identifier_objects_and_local_ids() {
     let mut relationships = BTreeMap::new();
     relationships.insert(
