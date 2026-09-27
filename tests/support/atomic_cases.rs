@@ -660,33 +660,39 @@ pub async fn execute_http_href_to_many_relationship_dispatch_case(database: &Dat
         Arc::new(dispatcher(&registry)),
         Arc::new(ParityHrefResolver),
     );
-    let add_request = atomic_request(
-        r#"{"atomic:operations":[{"op":"add","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
-    );
-    let response = app.clone().oneshot(add_request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let response_document: JsonValue =
-        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}]}));
-    let links = port_tag::Entity::find().all(database).await.unwrap();
-    assert_eq!(links.len(), 1);
-    assert_eq!((links[0].port_id, links[0].tag_id), (1, 1));
+    let add_body = r#"{"atomic:operations":[{"op":"add","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#;
+    for _ in 0..2 {
+        let response = app.clone().oneshot(atomic_request(add_body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_document: JsonValue =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(response_document, json!({"atomic:results": [{}]}));
+        let links = port_tag::Entity::find().all(database).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!((links[0].port_id, links[0].tag_id), (1, 1));
+    }
 
-    let remove_request = atomic_request(
-        r#"{"atomic:operations":[{"op":"remove","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
-    );
-    let response = app.oneshot(remove_request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let response_document: JsonValue =
-        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(response_document, json!({"atomic:results": [{}]}));
-    assert!(
-        port_tag::Entity::find()
-            .all(database)
+    let remove_body = r#"{"atomic:operations":[{"op":"remove","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#;
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(atomic_request(remove_body))
             .await
-            .unwrap()
-            .is_empty()
-    );
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_document: JsonValue =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(response_document, json!({"atomic:results": [{}]}));
+        assert!(
+            port_tag::Entity::find()
+                .all(database)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) {

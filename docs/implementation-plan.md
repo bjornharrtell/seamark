@@ -168,11 +168,12 @@ reject the malformed `not a URI reference` value.
 `postgres_atomic_result_document_matches_shared_backend_case` and
 `sqlite_atomic_result_document_matches_shared_backend_case`. It drives
 `atomic_http::router_with_href_resolver` with href-targeted to-many add and
-remove operations, asserts each positional empty result, and verifies the
-typed join-table rows after each request. This closes the Axum-to-resolver-to-
-typed-persistence evidence gap without broadening association support; ordered
-associations, additional join-table columns, and unusual combinations remain
-deferred.
+remove operations twice each, asserts each positional empty result, and verifies
+that repeated add preserves exactly one typed join-table row while repeated
+remove leaves no rows after each request. This closes the
+Axum-to-resolver-to-typed-persistence idempotency evidence gap without
+broadening association support; ordered associations, additional join-table
+columns, and unusual combinations remain deferred.
 
 ### M5 Atomic authorization transaction-order evidence
 
@@ -541,7 +542,11 @@ Atomic operation-execution failure coverage now explicitly verifies the
 permitted 422 status, JSON:API response headers, and a resolvable
 `/atomic:operations/1` source pointer when the second operation fails after the
 first succeeds; the error document also omits `atomic:results` as required by
-the extension's document-structure rule. Other error categories remain partial.
+the extension's document-structure rule. The current authorization, guard-limit,
+operation, conflict, not-found, local-ID, invalid-result, rollback, and
+database error categories have mapping evidence in
+`docs/design/conformance.md`; backend-specific transport failures and
+exhaustive combinations remain partial.
 The same route test verifies that an unsupported operation code returns 400
 with a source pointer to its operation object.
 The Atomic HTTP regression also verifies that guard limit failures return 413
