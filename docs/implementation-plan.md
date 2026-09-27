@@ -113,6 +113,18 @@ SQLite with the allow-listed sort `active,-capacity`. Ports 1 and 3 tie on
 ascending and descending capacity controls remain in place and continue to
 assert NULLS LAST on both backends.
 
+### M7 sparse-fieldset include parity evidence
+
+Per the JSON:API [compound-document full-linkage rule](https://jsonapi.org/format/#document-compound-documents),
+included resources need not be visibly linked when the linking relationship
+was excluded by a requested sparse fieldset. Both PostgreSQL and SQLite route
+controls request `include=owner` while selecting only `fields[ports]=name` and
+`fields[people]=name`; each asserts the exact same response document: root
+port `1` has only its `name` attribute, and included person `11` has only its
+`name` attribute. The relationship is omitted but the requested include is
+retained; shared executor assertions verify the same primary and included
+projection on both backends.
+
 ## Delivery and verification workflow
 
 - Work iteratively in a pull request tracking issue #1. Keep this roadmap

@@ -173,6 +173,13 @@ impl JsonApiDocument {
     /// resource identity is duplicated, or a resource/identifier, link, or
     /// JSON:API capability URI is invalid.
     pub fn validate(&self) -> Result<(), DocumentValidationError> {
+        self.validate_with_included_reachability(true)
+    }
+
+    fn validate_with_included_reachability(
+        &self,
+        require_included_reachability: bool,
+    ) -> Result<(), DocumentValidationError> {
         validate_links(self.links.as_ref())?;
         if let Some(jsonapi) = &self.jsonapi {
             jsonapi.validate()?;
@@ -221,8 +228,10 @@ impl JsonApiDocument {
             self.included.as_deref().unwrap_or_default(),
             &identities,
         )?;
-        if let Some(included) = &self.included {
-            validate_included_reachability(self.data.as_ref(), included)?;
+        if require_included_reachability {
+            if let Some(included) = &self.included {
+                validate_included_reachability(self.data.as_ref(), included)?;
+            }
         }
 
         Ok(())
@@ -240,6 +249,21 @@ impl JsonApiDocument {
     /// a primary or included resource has no `id`.
     pub fn validate_response(&self) -> Result<(), DocumentValidationError> {
         self.validate()?;
+        self.validate_response_resource_ids()
+    }
+
+    /// Validates a response when a requested sparse fieldset excludes include linkage.
+    ///
+    /// The caller must establish that the sparse fieldset excludes a relationship
+    /// from the validated include plan.
+    pub(crate) fn validate_response_with_sparse_fieldset_exception(
+        &self,
+    ) -> Result<(), DocumentValidationError> {
+        self.validate_with_included_reachability(false)?;
+        self.validate_response_resource_ids()
+    }
+
+    fn validate_response_resource_ids(&self) -> Result<(), DocumentValidationError> {
         if let Some(PrimaryData::One(resource)) = &self.data {
             validate_response_resource_id(resource)?;
             validate_response_relationship_identifiers(resource)?;

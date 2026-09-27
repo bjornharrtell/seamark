@@ -175,6 +175,51 @@ pub fn two_level_neighbors() -> ReadQuery {
     }
 }
 
+pub fn sparse_fieldset_with_owner_include() -> ReadQuery {
+    ReadQuery {
+        filters: vec!["equals(name,'Alpha')".to_owned()],
+        fieldsets: BTreeMap::from([
+            ("ports".to_owned(), "name".to_owned()),
+            ("people".to_owned(), "name".to_owned()),
+        ]),
+        includes: vec!["owner".to_owned()],
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    }
+}
+
+pub fn assert_sparse_fieldset_owner_include(result: &SeaOrmReadResult) {
+    assert_eq!(result.resources.len(), 1);
+    assert_eq!(result.resources[0].id, "1");
+    assert_eq!(
+        result.resources[0].attributes,
+        BTreeMap::from([("title".to_owned(), json!("Alpha"))])
+    );
+    assert!(!result.resources[0].relationships.contains_key("owner_id"));
+    assert_eq!(result.included.len(), 1);
+    assert_eq!(result.included[0].resource_type, "people");
+    assert_eq!(result.included[0].resource.id, "11");
+    assert_eq!(
+        result.included[0].resource.attributes,
+        BTreeMap::from([("display_name".to_owned(), json!("Mara"))])
+    );
+}
+
+pub fn sparse_fieldset_owner_include_document() -> Value {
+    json!({
+        "data": [{
+            "type": "ports",
+            "id": "1",
+            "attributes": {"name": "Alpha"}
+        }],
+        "included": [{
+            "type": "people",
+            "id": "11",
+            "attributes": {"name": "Mara"}
+        }]
+    })
+}
+
 pub fn assert_two_level_neighbors(result: &SeaOrmReadResult) {
     assert_eq!(result.resources.len(), 1);
     assert_eq!(result.resources[0].id, "2");

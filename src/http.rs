@@ -17,7 +17,9 @@ use crate::document::{
     ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship, RelationshipData,
     ResourceObject, is_valid_absolute_uri,
 };
-use crate::query::{PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read};
+use crate::query::{
+    IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
+};
 use crate::registry::{ResourceDefinition, ResourceRegistry};
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -261,15 +263,7 @@ async fn get_collection(
         };
     let resources = match records
         .iter()
-        .map(|record| {
-            project_resource_with_fieldset(
-                definition,
-                record,
-                plan.as_ref()
-                    .and_then(|plan| plan.fieldsets.get(definition.type_name()))
-                    .map(Vec::as_slice),
-            )
-        })
+        .map(|record| project_resource(definition, record))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(resources) => resources,
@@ -282,27 +276,48 @@ async fn get_collection(
                 .registry
                 .resource(&included.resource_type)
                 .map_err(|_| AdapterError)?;
-            project_resource_with_fieldset(
-                definition,
-                &included.resource,
-                plan.as_ref()
-                    .and_then(|plan| plan.fieldsets.get(definition.type_name()))
-                    .map(Vec::as_slice),
-            )
+            project_resource(definition, &included.resource)
         })
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(included) => included,
         Err(_) => return adapter_error(),
     };
-    respond_with_document(
-        StatusCode::OK,
-        JsonApiDocument {
-            data: Some(PrimaryData::Many(resources)),
-            included: (!included.is_empty()).then_some(included),
-            ..JsonApiDocument::default()
-        },
-    )
+    let mut document = JsonApiDocument {
+        data: Some(PrimaryData::Many(resources)),
+        included: (!included.is_empty()).then_some(included),
+        ..JsonApiDocument::default()
+    };
+    if document.validate_response().is_err() {
+        let sparse_fieldset_exception_applies = document.included.is_some()
+            && plan
+                .as_ref()
+                .is_some_and(has_sparse_fieldset_include_relationship)
+            && document
+                .validate_response_with_sparse_fieldset_exception()
+                .is_ok();
+        if !sparse_fieldset_exception_applies {
+            return adapter_error();
+        }
+    }
+    if let Some(plan) = plan.as_ref() {
+        if let (Some(PrimaryData::Many(resources)), Some(fieldset)) = (
+            document.data.as_mut(),
+            plan.fieldsets.get(definition.type_name()),
+        ) {
+            for resource in resources {
+                apply_fieldset(resource, fieldset);
+            }
+        }
+        if let Some(included) = document.included.as_mut() {
+            for resource in included {
+                if let Some(fieldset) = plan.fieldsets.get(&resource.type_name) {
+                    apply_fieldset(resource, fieldset);
+                }
+            }
+        }
+    }
+    respond_with_validated_document(StatusCode::OK, document)
 }
 
 async fn get_resource(
@@ -708,41 +723,57 @@ fn project_resource(
     })
 }
 
-fn project_resource_with_fieldset(
-    definition: &ResourceDefinition,
-    record: &AdapterResource,
-    fieldset: Option<&[PlannedField]>,
-) -> Result<ResourceObject, AdapterError> {
-    let mut resource = project_resource(definition, record)?;
-    if let Some(fieldset) = fieldset {
-        let attributes = fieldset
-            .iter()
-            .filter_map(|field| match field {
-                PlannedField::Attribute { public_name, .. } => Some(public_name.as_str()),
-                PlannedField::Relationship { .. } => None,
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        let relationships = fieldset
-            .iter()
-            .filter_map(|field| match field {
-                PlannedField::Attribute { .. } => None,
-                PlannedField::Relationship { public_name, .. } => Some(public_name.as_str()),
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        if let Some(resource_attributes) = resource.attributes.as_mut() {
-            resource_attributes.retain(|name, _| attributes.contains(name.as_str()));
-            if resource_attributes.is_empty() {
-                resource.attributes = None;
-            }
-        }
-        if let Some(resource_relationships) = resource.relationships.as_mut() {
-            resource_relationships.retain(|name, _| relationships.contains(name.as_str()));
-            if resource_relationships.is_empty() {
-                resource.relationships = None;
-            }
+fn apply_fieldset(resource: &mut ResourceObject, fieldset: &[PlannedField]) {
+    let attributes = fieldset
+        .iter()
+        .filter_map(|field| match field {
+            PlannedField::Attribute { public_name, .. } => Some(public_name.as_str()),
+            PlannedField::Relationship { .. } => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let relationships = fieldset
+        .iter()
+        .filter_map(|field| match field {
+            PlannedField::Attribute { .. } => None,
+            PlannedField::Relationship { public_name, .. } => Some(public_name.as_str()),
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(resource_attributes) = resource.attributes.as_mut() {
+        resource_attributes.retain(|name, _| attributes.contains(name.as_str()));
+        if resource_attributes.is_empty() {
+            resource.attributes = None;
         }
     }
-    Ok(resource)
+    if let Some(resource_relationships) = resource.relationships.as_mut() {
+        resource_relationships.retain(|name, _| relationships.contains(name.as_str()));
+        if resource_relationships.is_empty() {
+            resource.relationships = None;
+        }
+    }
+}
+
+fn has_sparse_fieldset_include_relationship(plan: &ReadPlan) -> bool {
+    fn has_hidden_relationship(
+        resource_type: &str,
+        includes: &[IncludeNode],
+        fieldsets: &BTreeMap<String, Vec<PlannedField>>,
+    ) -> bool {
+        includes.iter().any(|include| {
+            let relationship_is_hidden = fieldsets.get(resource_type).is_some_and(|fieldset| {
+                !fieldset.iter().any(|field| {
+                    matches!(
+                        field,
+                        PlannedField::Relationship { public_name, .. }
+                            if public_name == &include.public_name
+                    )
+                })
+            });
+            relationship_is_hidden
+                || has_hidden_relationship(&include.target_type, &include.children, fieldsets)
+        })
+    }
+
+    has_hidden_relationship(&plan.resource_type, &plan.includes, &plan.fieldsets)
 }
 
 fn relationship_matches_target(relationship: &Relationship, target_type: &str) -> bool {
@@ -757,13 +788,15 @@ fn relationship_matches_target(relationship: &Relationship, target_type: &str) -
 
 fn respond_with_document(status: StatusCode, document: JsonApiDocument) -> Response {
     match document.validate_response() {
-        Ok(()) => {
-            let mut response = (status, Json(document)).into_response();
-            set_jsonapi_headers(&mut response);
-            response
-        }
+        Ok(()) => respond_with_validated_document(status, document),
         Err(_) => adapter_error(),
     }
+}
+
+fn respond_with_validated_document(status: StatusCode, document: JsonApiDocument) -> Response {
+    let mut response = (status, Json(document)).into_response();
+    set_jsonapi_headers(&mut response);
+    response
 }
 
 fn forbidden_error() -> Response {
