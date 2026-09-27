@@ -1510,6 +1510,25 @@ fn rejects_duplicate_resource_identifiers_in_a_collection() {
 }
 
 #[test]
+fn rejects_duplicate_included_resources_with_same_type_and_id() {
+    let mut primary = resource("ports", "1");
+    primary.relationships = Some(BTreeMap::from([(
+        "owner".to_owned(),
+        relationship_to("people", "2"),
+    )]));
+    let document = JsonApiDocument {
+        data: Some(PrimaryData::One(primary)),
+        included: Some(vec![resource("people", "2"), resource("people", "2")]),
+        ..JsonApiDocument::default()
+    };
+
+    assert_eq!(
+        document.validate(),
+        Err(DocumentValidationError::DuplicateResourceIdentifier)
+    );
+}
+
+#[test]
 fn rejects_resources_with_an_empty_type() {
     let document = JsonApiDocument {
         data: Some(PrimaryData::One(resource("", "1"))),
