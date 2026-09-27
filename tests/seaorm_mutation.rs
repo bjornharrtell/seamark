@@ -700,6 +700,12 @@ async fn postgres_atomic_result_document_matches_shared_backend_case() {
     let result_document = atomic_cases::execute_case(&database).await;
     assert_eq!(result_document, atomic_cases::expected_result_document());
     atomic_cases::assert_final_state(&database).await;
+    let error = atomic_cases::execute_failure_case(&database).await;
+    assert!(matches!(
+        error,
+        AtomicExecutionError::Operation { index: 1, .. }
+    ));
+    atomic_cases::assert_final_state(&database).await;
 
     database.close().await.unwrap();
 }
