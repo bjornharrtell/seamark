@@ -227,7 +227,9 @@ document, operation, reference, and resource-add shapes produce 400 errors.
 Base GET media negotiation now validates quoted
 absolute profile URI lists, rejects malformed or duplicate profile
 parameters, accepts only HTTP qvalue syntax with at most three fractional
-digits, ignores Accept extensions after `q`, rejects unsupported media
+digits, and treats `profile=unquoted` after valid `q=0.5` as an Accept extension
+on both base GET routes; an unsupported media parameter before `q` remains
+unacceptable. It rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not
 alter the base response. A route regression pairs valid `q=0.125` with
 out-of-grammar `q=0.1234` rejection on both GET routes and checks response
