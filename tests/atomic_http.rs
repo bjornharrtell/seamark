@@ -145,6 +145,10 @@ struct LocalIdHandler {
     calls: AtomicUsize,
 }
 
+struct MissingCreatedIdentityHandler {
+    calls: AtomicUsize,
+}
+
 #[async_trait]
 impl AtomicOperationHandler for AtMemberHandler {
     async fn execute_operation(
@@ -266,6 +270,28 @@ impl AtomicOperationHandler for LocalIdHandler {
             }
             _ => Err("unexpected operation or unresolved local ID".to_owned()),
         }
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for MissingCreatedIdentityHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let PlannedOperation::AddResource { data, .. } = operation else {
+            return Err("expected a resource add".to_owned());
+        };
+        Ok(AtomicOperationOutcome {
+            result: AtomicResult {
+                data: Some(json!({"type": data.type_name, "id": "created"})),
+                meta: None,
+            },
+            created_resource: None,
+        })
     }
 }
 
@@ -1461,6 +1487,47 @@ async fn atomic_http_rejects_relationship_result_data_with_operation_pointer() {
             "code": "invalid_atomic_response",
             "title": "Atomic Operations response failed validation",
             "detail": "this operation result must not contain `data`",
+            "source": {"pointer": "/atomic:operations/0"}
+        })
+    );
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_maps_missing_created_local_id_identity_to_server_error() {
+    let database = database().await;
+    let handler = Arc::new(MissingCreatedIdentityHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","lid":"author-one","attributes":{"name":"Ada"}}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(
+        error["errors"][0],
+        json!({
+            "status": "500",
+            "code": "atomic_local_id_mapping_failed",
+            "title": "Atomic local ID mapping failed",
+            "detail": "add operation did not return an identity for lid `author-one`",
             "source": {"pointer": "/atomic:operations/0"}
         })
     );
