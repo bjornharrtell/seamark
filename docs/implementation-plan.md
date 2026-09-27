@@ -559,3 +559,22 @@ lookups. The HTTP route tests reject collection-only query components,
 unregistered fields, and relationships with exact parameter sources and zero
 authorization or adapter calls; the backend route regressions pair the valid
 document with an invalid-filter control that performs no SQL.
+
+### M5 relationship result and Accept negotiation evidence
+
+`validates_relationship_results_for_add_update_and_remove_operations` now
+accepts empty relationship result objects (including permitted `meta`) and
+rejects `data` for relationship add, update, and remove results at the exact
+index. `atomic_http_rejects_relationship_result_data_with_operation_pointer`
+verifies the HTTP boundary returns 500 with a matching JSON:API status and an
+operation pointer when an application handler returns invalid relationship
+result data.
+
+`atomic_http_negotiates_qvalues_wildcards_and_extension_parameters` tests
+concrete and wildcard ranges carrying the quoted Atomic extension, qvalue
+syntax and precedence, q=0 specificity, repeated ranges, profile lists, and
+rejection of malformed qvalues, duplicate parameters, and unsupported
+extension lists before authorization/limits/handlers. The Atomic parser now
+uses RFC 9110 qvalue syntax and most-specific media-range precedence rather
+than floating-point parsing and first-match acceptance. The request-shape
+planner matrix remains partial; no general conformance claim is made.

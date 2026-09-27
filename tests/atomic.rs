@@ -529,6 +529,64 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
 }
 
 #[test]
+fn validates_relationship_results_for_add_update_and_remove_operations() {
+    let operations = plan(json!({
+        "atomic:operations": [
+            {
+                "op": "add",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": [{"type": "tags", "id": "2"}]
+            },
+            {
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": null
+            },
+            {
+                "op": "remove",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": [{"type": "tags", "id": "2"}]
+            }
+        ]
+    }))
+    .unwrap();
+    let valid_results = document(json!({
+        "atomic:results": [
+            {"meta": {"changed": true}},
+            {},
+            {}
+        ]
+    }));
+    valid_results.validate_response_for(&operations).unwrap();
+
+    for (index, data) in [
+        json!([{"type": "tags", "id": "2"}]),
+        json!(null),
+        json!([{"type": "tags", "id": "2"}]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invalid_results = document(json!({
+            "atomic:results": [
+                {"meta": {"changed": true}},
+                {},
+                {}
+            ]
+        }));
+        let mut invalid_results = invalid_results;
+        invalid_results.results.as_mut().unwrap()[index].data = Some(data);
+        assert!(matches!(
+            invalid_results.validate_response_for(&operations),
+            Err(AtomicOperationsError::InvalidResult {
+                index: result_index,
+                ..
+            }) if result_index == index
+        ));
+    }
+}
+
+#[test]
 fn validates_atomic_client_assigned_add_result_identity() {
     let add = plan(json!({
         "atomic:operations": [{
@@ -758,6 +816,89 @@ fn rejects_malformed_operation_shapes_and_unknown_registry_fields() {
     ];
     for value in cases {
         assert!(plan(value).is_err());
+    }
+}
+
+#[test]
+fn validates_operation_specific_request_data_shapes() {
+    let valid_operations = [
+        json!({"op": "add", "data": {"type": "authors"}}),
+        json!({
+            "op": "add",
+            "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+            "data": [{"type": "tags", "id": "2"}]
+        }),
+        json!({
+            "op": "update",
+            "ref": {"type": "authors", "id": "1"},
+            "data": {"type": "authors", "attributes": {"name": "Ada"}}
+        }),
+        json!({
+            "op": "update",
+            "ref": {"type": "articles", "id": "1", "relationship": "author"},
+            "data": null
+        }),
+        json!({"op": "remove", "ref": {"type": "authors", "id": "1"}}),
+        json!({
+            "op": "remove",
+            "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+            "data": [{"type": "tags", "id": "2"}]
+        }),
+    ];
+    for operation in valid_operations {
+        assert!(
+            plan(json!({"atomic:operations": [operation]})).is_ok(),
+            "expected valid operation: {operation}"
+        );
+    }
+
+    let invalid_operations = [
+        (
+            json!({
+                "op": "add",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": {"type": "tags", "id": "2"}
+            }),
+            "/atomic:operations/0",
+        ),
+        (
+            json!({
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"}
+            }),
+            "/atomic:operations/0",
+        ),
+        (
+            json!({
+                "op": "remove",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": null
+            }),
+            "/atomic:operations/0",
+        ),
+        (
+            json!({
+                "op": "add",
+                "ref": {"type": "authors", "id": "1"},
+                "data": {"type": "authors"}
+            }),
+            "/atomic:operations/0/ref",
+        ),
+        (
+            json!({
+                "op": "remove",
+                "ref": {"type": "authors", "id": "1"},
+                "data": null
+            }),
+            "/atomic:operations/0",
+        ),
+    ];
+    for (operation, expected_pointer) in invalid_operations {
+        assert!(matches!(
+            plan(json!({"atomic:operations": [operation]})),
+            Err(AtomicOperationsError::InvalidOperation { index: 0, pointer, .. })
+                if pointer == expected_pointer
+        ));
     }
 }
 

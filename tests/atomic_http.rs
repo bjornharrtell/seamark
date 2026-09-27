@@ -137,6 +137,10 @@ struct CountingHandler {
     calls: AtomicUsize,
 }
 
+struct RelationshipResultHandler {
+    calls: AtomicUsize,
+}
+
 struct LocalIdHandler {
     calls: AtomicUsize,
 }
@@ -197,6 +201,28 @@ impl AtomicOperationHandler for CountingHandler {
     ) -> Result<AtomicOperationOutcome, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(AtomicOperationOutcome::default())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for RelationshipResultHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        if !matches!(operation, PlannedOperation::UpdateRelationship { .. }) {
+            return Err("expected a relationship update".to_owned());
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(AtomicOperationOutcome {
+            result: AtomicResult {
+                data: Some(json!({"type": "authors", "id": "1"})),
+                meta: None,
+            },
+            created_resource: None,
+        })
     }
 }
 
@@ -708,6 +734,8 @@ async fn negotiates_and_executes_atomic_http_requests() {
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     let error = error_document(response, valid_body).await;
+    assert_eq!(error["errors"][0]["status"], "422");
+    assert_eq!(error["errors"][0]["code"], "operation_failed");
     assert_eq!(
         error["errors"][0]["source"]["pointer"],
         "/atomic:operations/0"
@@ -1275,7 +1303,7 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
     });
     let app = atomic_http::router(registry(), database, guard.clone(), handler.clone());
     let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
-    let content_type = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\"";
+    let content_type = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown https://example.test/also-unknown\"";
     let response = app
         .clone()
         .oneshot(request(
@@ -1294,9 +1322,12 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
     assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 
     for content_type in [
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";unknown",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\";charset=utf-8",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";version=1",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic https://example.test/unsupported\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";ext=\"https://jsonapi.org/ext/atomic\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/one\";profile=\"https://example.test/two\"",
     ] {
         let response = app
             .clone()
@@ -1318,4 +1349,121 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
         assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
         assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }
+}
+
+#[tokio::test]
+async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
+    let database = database().await;
+    let body = r#"{"atomic:operations":[]}"#;
+    let accepted = [
+        ATOMIC_MEDIA_TYPE,
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.500",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.000;foo=bar",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1;foo",
+        "application/*;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
+        "*/*;ext=\"https://jsonapi.org/ext/atomic\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/one https://example.test/two\";q=1",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0,application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
+    ];
+    let rejected = [
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.001",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.1234",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1e0",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=+1",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=.5",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=\"0.5\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic https://example.test/other\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";ext=\"https://jsonapi.org/ext/atomic\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/one\";profile=\"https://example.test/two\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";foo;q=1",
+        "application/*",
+        "*/*;q=1",
+        "*/*;ext=\"https://jsonapi.org/ext/atomic\";q=1,application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
+    ];
+
+    for accept in accepted {
+        let guard = Arc::new(CountingGuard {
+            calls: AtomicUsize::new(0),
+        });
+        let handler = Arc::new(CountingHandler {
+            calls: AtomicUsize::new(0),
+        });
+        let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+        let response = app
+            .oneshot(request("/operations", ATOMIC_MEDIA_TYPE, accept, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{accept}");
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        assert_eq!(document(response).await, json!({"atomic:results": []}));
+        assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    }
+
+    for accept in rejected {
+        let guard = Arc::new(CountingGuard {
+            calls: AtomicUsize::new(0),
+        });
+        let handler = Arc::new(CountingHandler {
+            calls: AtomicUsize::new(0),
+        });
+        let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+        let response = app
+            .oneshot(request("/operations", ATOMIC_MEDIA_TYPE, accept, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{accept}");
+        assert_eq!(response.headers()[CONTENT_TYPE], "application/vnd.api+json");
+        assert_eq!(response.headers()[VARY], "Accept");
+        let error = error_document(response, body).await;
+        assert_eq!(error["errors"][0]["status"], "406");
+        assert_eq!(error["errors"][0]["code"], "not_acceptable");
+        assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    }
+
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_rejects_relationship_result_data_with_operation_pointer() {
+    let database = database().await;
+    let handler = Arc::new(RelationshipResultHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        database.clone(),
+        Arc::new(TestGuard { allowed: true }),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1","relationship":"author"},"data":null}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(
+        error["errors"][0],
+        json!({
+            "status": "500",
+            "code": "invalid_atomic_response",
+            "title": "Atomic Operations response failed validation",
+            "detail": "this operation result must not contain `data`",
+            "source": {"pointer": "/atomic:operations/0"}
+        })
+    );
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+    database.close().await.unwrap();
 }
