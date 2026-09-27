@@ -141,6 +141,10 @@ The shared `FILTER_CASES` fixture now also applies the nested
 `and(equals(name,'Beta'),not(equals(depth,'2')))` filter to both backends and
 asserts the same matching port ID (`2`); the former PostgreSQL-only assertion
 has been replaced by these paired shared-fixture checks.
+The shared Atomic backend case also runs
+`execute_local_id_to_one_relationship_case`: it creates an owner and port in
+order, links the port to the owner's local ID, compares the exact result
+document, and verifies the persisted owner foreign key on PostgreSQL and SQLite.
 
 M6 conformance work has begun with a gap-tracking requirement-to-test matrix.
 Document validation now rejects simultaneous `id`/`lid`, requires persistent

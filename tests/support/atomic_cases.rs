@@ -436,6 +436,64 @@ pub async fn execute_case(database: &DatabaseConnection) -> JsonValue {
     .unwrap()
 }
 
+pub async fn execute_local_id_to_one_relationship_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "people",
+                        "lid": "local-owner",
+                        "attributes": {"name": "Local Owner"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "local-port",
+                        "attributes": {"name": "Local Port"},
+                        "relationships": {
+                            "owner": {
+                                "data": {"type": "people", "lid": "local-owner"}
+                            }
+                        }
+                    }
+                }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    let result_document = serde_json::to_value(AtomicOperationsDocument {
+        results: Some(results),
+        ..AtomicOperationsDocument::default()
+    })
+    .unwrap();
+    assert_eq!(
+        result_document,
+        json!({
+            "atomic:results": [
+                {"data": {"type": "people", "id": "1"}},
+                {"data": {"type": "ports", "id": "1"}}
+            ]
+        })
+    );
+
+    let people = person::Entity::find().all(database).await.unwrap();
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].person_id, 1);
+    assert_eq!(people[0].display_name, "Local Owner");
+    let ports = port::Entity::find().all(database).await.unwrap();
+    assert_eq!(ports.len(), 1);
+    assert_eq!(ports[0].port_id, 1);
+    assert_eq!(ports[0].title, "Local Port");
+    assert_eq!(ports[0].owner_id, 1);
+}
+
 pub async fn execute_failure_case(database: &DatabaseConnection) -> AtomicExecutionError {
     execute_request(
         database,

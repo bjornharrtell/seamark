@@ -706,6 +706,7 @@ async fn postgres_atomic_result_document_matches_shared_backend_case() {
         AtomicExecutionError::Operation { index: 1, .. }
     ));
     atomic_cases::assert_final_state(&database).await;
+    atomic_cases::execute_local_id_to_one_relationship_case(&database).await;
 
     database.close().await.unwrap();
 }
