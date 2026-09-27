@@ -514,13 +514,15 @@ produce 400 errors.
 Base GET media negotiation now validates quoted
 absolute profile URI lists, rejects malformed or duplicate profile
 parameters, accepts only HTTP qvalue syntax with at most three fractional
-digits, and treats `profile=unquoted` after valid `q=0.5` as an Accept extension
+digits (including the empty fractional form `q=1.`), and treats
+`profile=unquoted` after valid `q=0.5` as an Accept extension
 on both base GET routes; an unsupported media parameter before `q` remains
 unacceptable. It rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not
 alter the base response. A route regression pairs valid `q=0.125` with
 out-of-grammar `q=0.1234` rejection on both GET routes and checks response
-status and JSON:API media type.
+status and JSON:API media type. Atomic negotiation also accepts `q=1.` with
+the required extension.
 The Atomic POST route now has an end-to-end Content-Type regression: it accepts
 the required Atomic extension with an unknown valid profile, and returns 415
 with a JSON:API error document for unpermitted `charset` and `version`

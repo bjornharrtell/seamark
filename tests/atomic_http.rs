@@ -1473,6 +1473,7 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
     let accepted = [
         ATOMIC_MEDIA_TYPE,
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.500",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.000;foo=bar",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1;foo",
         r#"application/vnd.api+json;ext="https://jsonapi.org/ext/atomic";q=1;foo="x\"y""#,
