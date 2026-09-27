@@ -2,8 +2,9 @@
 
 **Status: partial implementation.** An Atomic Operations planner, mapped
 changesets, a standalone Axum route, extension negotiation, typed SeaORM
-resource CRUD, to-one foreign-key writes, and transaction orchestration are
-implemented. To-many persistence and full normative conformance remain
+resource CRUD, to-one foreign-key writes, explicitly configured two-column
+join-table membership writes, and transaction orchestration are implemented.
+Other to-many association shapes and full normative conformance remain
 application-specific or incomplete.
 
 ## Mutations and concurrency
@@ -43,7 +44,7 @@ routers require the quoted Atomic Operations extension in `Content-Type` and
 `Accept`, reject query parameters, validate request documents, and emit
 JSON:API result/error documents with `Vary: Accept`.
 
-`SeaOrmResourceMutationHandler<E, F, I>` maps a public resource to one typed
+`SeaOrmResourceMutationHandler<E, C>` maps a public resource to one typed
 SeaORM entity and performs add/update/remove plus to-one relationship FK
 updates. Applications supply explicit value and identifier codecs. A
 `SeaOrmAtomicOperationDispatcher` composes typed handlers and application
@@ -52,6 +53,16 @@ and deletes and collection `href` adds after the planner normalizes or
 validates them. Relationship `href` targets are normalized to
 registry-checked references. Unsupported to-many relationships and unresolved
 `href` targets remain available for custom handlers.
+
+`SeaOrmJoinTableMutationHandler<E, C>` handles to-many add/remove operations
+for a configured relationship backed by a typed two-column join-table entity.
+The application explicitly supplies the source resource, public relationship,
+join entity columns, and mutation codec; the helper resolves persistent and
+request-local identifiers and uses the operation's shared transaction. It does
+not infer cardinality or join-table structure from the registry's opaque
+relationship field. Direct foreign-key to-many associations, join tables with
+additional required columns, and other custom persistence rules continue to
+use application-provided `SeaOrmAtomicOperationExecutor` implementations.
 
 `execute_atomic_operations` runs planned operations sequentially in one
 SeaORM transaction. A required guard authorizes the request and applies
@@ -63,6 +74,6 @@ operation fails. HTTP tests cover negotiation, success, and error paths.
 
 This is a partial persistence integration, not complete extension support.
 Applications still define each resource's entity, value/identifier codecs,
-route mappings, resource-level authorization, and custom to-many persistence.
-It does not implement every normative
+route mappings, resource-level authorization, and persistence for association
+shapes outside the configured two-column join-table helper. It does not implement every normative
 operation/result/error case. Exact changeset and hook APIs remain provisional.

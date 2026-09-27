@@ -43,7 +43,11 @@ CRUD behavior; identifier conversion is an explicit mutation-codec hook.
 Atomic Operations plans map registered public attribute and
 relationship names to internal model-field names in request-scoped changesets.
 Typed SeaORM handlers use these changesets for CRUD and to-one foreign-key
-writes; to-many persistence still requires an application executor. Derive and configuration syntax,
+writes. `SeaOrmJoinTableMutationHandler` supports to-many add/remove for an
+explicitly configured two-column join-table entity, using the mutation codec
+and shared transaction; the registry does not contain enough cardinality or
+join-table metadata to infer that configuration. Other association shapes
+still require an application executor. Derive and configuration syntax,
 generalized identifier conversion, relation metadata, hook ordering, and
 transaction details remain open. Shared query and mutation codec traits now
 provide typed boundaries for their respective executor paths, while mapping

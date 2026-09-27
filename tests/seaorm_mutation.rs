@@ -22,7 +22,8 @@ use seamark::document::ResourceIdentifier;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
-    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
+    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
+    SeaOrmResourceMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -690,6 +691,23 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
             }]
     ));
     assert!(!handler.supports(&operations[1].operation));
+}
+
+#[test]
+fn join_table_handler_rejects_reused_source_and_target_columns() {
+    let registry = registry();
+    let error = match SeaOrmJoinTableMutationHandler::<article_tag::Entity, _>::new(
+        &registry,
+        "articles",
+        "tags",
+        "article_id",
+        "article_id",
+        MutationCodec,
+    ) {
+        Ok(_) => panic!("a join table must use distinct source and target columns"),
+        Err(error) => error,
+    };
+    assert!(error.contains("must be different"));
 }
 
 #[tokio::test]

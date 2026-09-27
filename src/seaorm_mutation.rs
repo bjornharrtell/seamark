@@ -68,6 +68,206 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
     }
 }
 
+/// Executes to-many relationship membership operations against an explicit
+/// SeaORM join-table entity.
+///
+/// The source resource, public relationship, and join-table columns are
+/// configured explicitly because registry relationship fields do not encode
+/// association cardinality or join-table structure. Other association shapes
+/// remain available to custom [`SeaOrmAtomicOperationExecutor`] implementations.
+pub struct SeaOrmJoinTableMutationHandler<E, C>
+where
+    E: EntityTrait,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::Model: IntoActiveModel<E::ActiveModel> + Send,
+    E::Column: ColumnTrait + FromStr,
+    C: SeaOrmMutationValueCodec,
+{
+    source_type: String,
+    model_field: String,
+    target_type: String,
+    source_column: String,
+    target_column: String,
+    value_codec: C,
+    entity: PhantomData<fn() -> E>,
+}
+
+impl<E, C> SeaOrmJoinTableMutationHandler<E, C>
+where
+    E: EntityTrait,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::Model: IntoActiveModel<E::ActiveModel> + Send,
+    E::Column: ColumnTrait + FromStr,
+    C: SeaOrmMutationValueCodec,
+{
+    /// Creates a typed executor for a declared relationship backed by a
+    /// two-column join table.
+    ///
+    /// `source_column` and `target_column` are SeaORM column names on `E`;
+    /// the supplied codec encodes the corresponding resource identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resource or relationship is not registered or
+    /// either join-table column is not present on the typed entity.
+    pub fn new(
+        registry: &ResourceRegistry,
+        source_type: &str,
+        relationship_name: &str,
+        source_column: impl Into<String>,
+        target_column: impl Into<String>,
+        value_codec: C,
+    ) -> Result<Self, String> {
+        let source = registry
+            .resource(source_type)
+            .map_err(|error| error.to_string())?;
+        let relationship = source
+            .relationship_by_name(relationship_name)
+            .ok_or_else(|| {
+                format!("relationship `{relationship_name}` is not registered for `{source_type}`")
+            })?;
+        let target = registry
+            .resource(relationship.target_type())
+            .map_err(|error| error.to_string())?;
+        let source_column = source_column.into();
+        let target_column = target_column.into();
+        if source_column == target_column {
+            return Err("join-table source and target columns must be different".to_owned());
+        }
+        E::Column::from_str(&source_column)
+            .map_err(|_| format!("join-table field `{source_column}` is not a SeaORM column"))?;
+        E::Column::from_str(&target_column)
+            .map_err(|_| format!("join-table field `{target_column}` is not a SeaORM column"))?;
+
+        Ok(Self {
+            source_type: source_type.to_owned(),
+            model_field: relationship.model_field().to_owned(),
+            target_type: target.type_name().to_owned(),
+            source_column,
+            target_column,
+            value_codec,
+            entity: PhantomData,
+        })
+    }
+
+    fn supports_membership_operation(&self, operation: &PlannedOperation) -> bool {
+        matches!(
+            operation,
+            PlannedOperation::AddRelationshipMembers {
+                reference,
+                model_field,
+                ..
+            } | PlannedOperation::RemoveRelationshipMembers {
+                reference,
+                model_field,
+                ..
+            } if reference.type_name == self.source_type && model_field == &self.model_field
+        )
+    }
+
+    fn encode_identifier(&self, model_field: &str, identifier: &str) -> Result<Value, String> {
+        self.value_codec
+            .encode_mutation_value(model_field, &JsonValue::String(identifier.to_owned()))
+    }
+}
+
+#[async_trait]
+impl<E, C> SeaOrmAtomicOperationExecutor for SeaOrmJoinTableMutationHandler<E, C>
+where
+    E: EntityTrait,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::Model: IntoActiveModel<E::ActiveModel> + Send,
+    E::Column: ColumnTrait + FromStr,
+    C: SeaOrmMutationValueCodec,
+{
+    fn supports(&self, operation: &PlannedOperation) -> bool {
+        self.supports_membership_operation(operation)
+    }
+
+    async fn execute(
+        &self,
+        transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        let (reference, identifiers, add) = match operation {
+            PlannedOperation::AddRelationshipMembers {
+                reference, data, ..
+            } => (reference, data, true),
+            PlannedOperation::RemoveRelationshipMembers {
+                reference, data, ..
+            } => (reference, data, false),
+            _ => return Err("unsupported join-table relationship operation".to_owned()),
+        };
+        if !self.supports_membership_operation(operation) {
+            return Err("join-table relationship mapping does not match operation".to_owned());
+        }
+
+        let source = local_ids.resolve_reference(reference)?;
+        if source.type_name != self.source_type {
+            return Err("relationship owner type does not match join-table mapping".to_owned());
+        }
+        let source_id = source
+            .id
+            .ok_or_else(|| "relationship owner has no persistent identifier".to_owned())?;
+        let source_value = self.encode_identifier(&self.source_column, &source_id)?;
+        let source_column = E::Column::from_str(&self.source_column).map_err(|_| {
+            format!(
+                "join-table field `{}` is not a SeaORM column",
+                self.source_column
+            )
+        })?;
+        let target_column = E::Column::from_str(&self.target_column).map_err(|_| {
+            format!(
+                "join-table field `{}` is not a SeaORM column",
+                self.target_column
+            )
+        })?;
+
+        let target_values = identifiers
+            .iter()
+            .map(|identifier| {
+                let target = local_ids.resolve(identifier)?;
+                if target.type_name != self.target_type {
+                    return Err(format!(
+                        "relationship member type `{}` does not match `{}`",
+                        target.type_name, self.target_type
+                    ));
+                }
+                let id = target
+                    .id
+                    .ok_or_else(|| "relationship member has no persistent identifier".to_owned())?;
+                self.encode_identifier(&self.target_column, &id)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if add {
+            for target_value in target_values {
+                let mut active_model = <E::ActiveModel as Default>::default();
+                active_model
+                    .try_set(source_column, source_value.clone())
+                    .map_err(|error| format!("could not map join-table source: {error}"))?;
+                active_model
+                    .try_set(target_column, target_value)
+                    .map_err(|error| format!("could not map join-table target: {error}"))?;
+                active_model
+                    .insert(transaction)
+                    .await
+                    .map_err(|error| format!("join-table insert failed: {error}"))?;
+            }
+        } else if !target_values.is_empty() {
+            E::delete_many()
+                .filter(source_column.eq(source_value))
+                .filter(target_column.is_in(target_values))
+                .exec(transaction)
+                .await
+                .map_err(|error| format!("join-table delete failed: {error}"))?;
+        }
+
+        Ok(AtomicOperationOutcome::default())
+    }
+}
+
 /// A SeaORM CRUD executor bound to one public resource and entity type.
 ///
 /// Attribute and identifier conversion is explicit. Mapped to-one

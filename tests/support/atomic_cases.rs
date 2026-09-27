@@ -4,19 +4,18 @@ use async_trait::async_trait;
 use axum::http::HeaderMap;
 use sea_orm::entity::prelude::*;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
-    EntityTrait, QueryFilter, Schema, Set, Value,
+    ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Schema, Set, Value,
 };
 use seamark::atomic::{
-    AtomicExecutionError, AtomicHrefResolver, AtomicOperationOutcome, AtomicOperationsDocument,
-    AtomicOperationsGuard, AtomicResourceReference, AtomicResult, LocalIdMap,
-    PlannedAtomicOperation, PlannedOperation, execute_atomic_operations,
+    AtomicExecutionError, AtomicHrefResolver, AtomicOperationsDocument, AtomicOperationsGuard,
+    AtomicResourceReference, AtomicResult, PlannedAtomicOperation, execute_atomic_operations,
     plan_atomic_operations_with_href_resolver,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
-    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
+    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
+    SeaOrmResourceMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -161,80 +160,6 @@ impl AtomicOperationsGuard for AllowGuard {
 
     fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
         Ok(())
-    }
-}
-
-struct PortTagExecutor;
-
-#[async_trait]
-impl SeaOrmAtomicOperationExecutor for PortTagExecutor {
-    fn supports(&self, operation: &PlannedOperation) -> bool {
-        matches!(
-            operation,
-            PlannedOperation::AddRelationshipMembers {
-                reference,
-                model_field,
-                ..
-            } | PlannedOperation::RemoveRelationshipMembers {
-                reference,
-                model_field,
-                ..
-            } if reference.type_name == "ports" && model_field == "tag_links"
-        )
-    }
-
-    async fn execute(
-        &self,
-        transaction: &DatabaseTransaction,
-        operation: &PlannedOperation,
-        local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
-        let (reference, identifiers, add) = match operation {
-            PlannedOperation::AddRelationshipMembers {
-                reference, data, ..
-            } => (reference, data, true),
-            PlannedOperation::RemoveRelationshipMembers {
-                reference, data, ..
-            } => (reference, data, false),
-            _ => return Err("unsupported port-tag operation".to_owned()),
-        };
-        let port = local_ids.resolve_reference(reference)?;
-        let port_id = port
-            .id
-            .ok_or_else(|| "port target has no persistent identifier".to_owned())?
-            .parse::<i32>()
-            .map_err(|error| format!("invalid port identifier: {error}"))?;
-        let tag_ids = identifiers
-            .iter()
-            .map(|identifier| {
-                local_ids
-                    .resolve(identifier)?
-                    .id
-                    .ok_or_else(|| "tag target has no persistent identifier".to_owned())?
-                    .parse::<i32>()
-                    .map_err(|error| format!("invalid tag identifier: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        if add {
-            for tag_id in tag_ids {
-                port_tag::ActiveModel {
-                    port_id: Set(port_id),
-                    tag_id: Set(tag_id),
-                }
-                .insert(transaction)
-                .await
-                .map_err(|error| error.to_string())?;
-            }
-        } else {
-            port_tag::Entity::delete_many()
-                .filter(port_tag::Column::PortId.eq(port_id))
-                .filter(port_tag::Column::TagId.is_in(tag_ids))
-                .exec(transaction)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(AtomicOperationOutcome::default())
     }
 }
 
@@ -431,8 +356,17 @@ async fn execute_request(
         Arc::new(MutationCodec),
     )
     .unwrap();
+    let join_table = SeaOrmJoinTableMutationHandler::<port_tag::Entity, _>::new(
+        &registry,
+        "ports",
+        "tags",
+        "port_id",
+        "tag_id",
+        Arc::new(MutationCodec),
+    )
+    .unwrap();
     let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
-        Arc::new(PortTagExecutor),
+        Arc::new(join_table),
         Arc::new(people),
         Arc::new(ports),
         Arc::new(tags),
