@@ -370,12 +370,15 @@ selected operation coverage, not the complete normative matrix.
 `atomic_http_negotiates_qvalues_wildcards_and_extension_parameters` covers
 the required Atomic extension on concrete and wildcard Accept ranges,
 extension/range specificity and q=0 precedence, repeated ranges, valid
-three-digit qvalues, and acceptance of a valueless token Accept extension after
-`q`; malformed qvalues, absent/duplicate extensions, unsupported extension
+three-digit qvalues, acceptance of a valueless token Accept extension after
+`q`, and a comma-containing quoted profile URI that must not split the media
+range; malformed qvalues, absent/duplicate extensions, unsupported extension
 lists, and duplicate profiles are rejected before the guard or operation
 handler. Its qvalue grammar follows
 [RFC 9110 quality values](https://www.rfc-editor.org/rfc/rfc9110.html#name-quality-values).
 `atomic_http_enforces_content_type_parameter_rules` also verifies duplicate
 extension/profile parameters are rejected and valid unknown profile URIs are
-ignored. Broader media negotiation, processing-error mappings, and Atomic
+ignored, including a comma-containing URI kept as one profile-list member.
+Broader media-range and Content-Type grammar, backend-specific database
+transport failures, exhaustive error combinations, and other Atomic
 request/result cases remain partial.
