@@ -1434,6 +1434,7 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.500",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.000;foo=bar",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1;foo",
+        r#"application/vnd.api+json;ext="https://jsonapi.org/ext/atomic";q=1;foo="x\"y""#,
         "application/*;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
         "*/*;ext=\"https://jsonapi.org/ext/atomic\"",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/one https://example.test/two\";q=1",
