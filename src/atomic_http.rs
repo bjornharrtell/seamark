@@ -76,7 +76,10 @@ fn build_router(
     href_resolver: Option<Arc<dyn AtomicHrefResolver>>,
 ) -> Router {
     Router::new()
-        .route("/operations", post(post_operations))
+        .route(
+            "/operations",
+            post(post_operations).fallback(operations_method_not_allowed),
+        )
         .with_state(Arc::new(AtomicApiState {
             registry,
             database,
@@ -84,6 +87,24 @@ fn build_router(
             handler,
             href_resolver,
         }))
+}
+
+async fn operations_method_not_allowed(headers: HeaderMap) -> Response {
+    if !accepts_atomic_media_type(&headers) {
+        return base_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "not_acceptable",
+            "Atomic Operations response is not acceptable",
+            "Accept must include the JSON:API Atomic Operations extension.",
+        );
+    }
+    atomic_error(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        "Method not allowed",
+        "The Atomic Operations endpoint only accepts POST requests.",
+        None,
+    )
 }
 
 async fn post_operations(

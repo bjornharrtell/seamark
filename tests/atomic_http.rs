@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
 use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{Method, Request, Response, StatusCode};
 use sea_orm::{Database, DatabaseConnection, DatabaseTransaction};
 use seamark::atomic::{
     AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsGuard,
@@ -537,6 +537,36 @@ async fn atomic_http_denial_precedes_transaction_and_operation_handler() {
     assert_eq!(authorized_limit_calls.load(Ordering::SeqCst), 1);
     assert_eq!(authorized_handler.calls.load(Ordering::SeqCst), 1);
     authorized_database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_returns_jsonapi_error_for_unsupported_method() {
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        DatabaseConnection::default(),
+        guard.clone(),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[]}"#;
+    let mut request = request("/operations", ATOMIC_MEDIA_TYPE, ATOMIC_MEDIA_TYPE, body);
+    *request.method_mut() = Method::GET;
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    assert!(response.headers().contains_key("allow"));
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"][0]["status"], "405");
+    assert_eq!(error["errors"][0]["code"], "method_not_allowed");
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

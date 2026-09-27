@@ -582,6 +582,26 @@ async fn relationship_linkage_routes_read_replace_add_and_remove() {
 }
 
 #[tokio::test]
+async fn registered_base_routes_return_jsonapi_errors_for_unsupported_methods() {
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    for uri in ["/ports", "/ports/1", "/ports/1/relationships/tags"] {
+        let response = app
+            .clone()
+            .oneshot(mutation_request("PUT", uri, ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{uri}");
+        assert_jsonapi_headers(&response);
+        assert!(response.headers().contains_key("allow"));
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("method_not_allowed"));
+        assert_eq!(errors[0].status.as_deref(), Some("405"));
+    }
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn mutation_validation_and_authorization_precede_adapter_execution() {
     let (app, adapter, authorizer) = mutation_test_app(true);
     let response = app

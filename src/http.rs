@@ -404,27 +404,50 @@ fn build_router(state: ApiState) -> Router {
         Router::new()
             .route(
                 "/{resource_type}",
-                get(get_collection).post(create_resource),
+                get(get_collection)
+                    .post(create_resource)
+                    .fallback(method_not_allowed),
             )
             .route(
                 "/{resource_type}/{id}",
                 get(get_resource)
                     .patch(update_resource)
-                    .delete(delete_resource),
+                    .delete(delete_resource)
+                    .fallback(method_not_allowed),
             )
             .route(
                 "/{resource_type}/{id}/relationships/{relationship}",
                 get(get_relationship)
                     .patch(replace_relationship)
                     .post(add_relationship_members)
-                    .delete(remove_relationship_members),
+                    .delete(remove_relationship_members)
+                    .fallback(method_not_allowed),
             )
     } else {
         Router::new()
-            .route("/{resource_type}", get(get_collection))
-            .route("/{resource_type}/{id}", get(get_resource))
+            .route(
+                "/{resource_type}",
+                get(get_collection).fallback(method_not_allowed),
+            )
+            .route(
+                "/{resource_type}/{id}",
+                get(get_resource).fallback(method_not_allowed),
+            )
     };
     router.with_state(Arc::new(state))
+}
+
+async fn method_not_allowed(headers: HeaderMap) -> Response {
+    if !accepts_jsonapi(&headers) {
+        return request_error_response(RequestValidationError::NotAcceptable);
+    }
+    protocol_error(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        "Method not allowed",
+        Some("The requested method is not supported for this route.".to_owned()),
+        None,
+    )
 }
 
 async fn get_collection(
