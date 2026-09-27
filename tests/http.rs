@@ -1399,15 +1399,17 @@ async fn exact_zero_quality_overrides_wildcard_but_repeated_exact_ranges_are_com
 #[tokio::test]
 async fn accepts_only_spec_conformant_accept_quality_values_on_both_routes() {
     for path in ["/ports", "/ports/1"] {
-        let adapter = Arc::new(TestAdapter::default());
-        *adapter.resource_result.lock().unwrap() = Some(port_record());
-        let (app, _) = test_app(adapter, true);
-        let response = app
-            .oneshot(request(path, Some("application/vnd.api+json;q=0.125")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_jsonapi_headers(&response);
+        for accept in [
+            "application/vnd.api+json;q=0.125",
+            r#"application/vnd.api+json;q=1;foo="x\"y""#,
+        ] {
+            let adapter = Arc::new(TestAdapter::default());
+            *adapter.resource_result.lock().unwrap() = Some(port_record());
+            let (app, _) = test_app(adapter, true);
+            let response = app.oneshot(request(path, Some(accept))).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}: {accept}");
+            assert_jsonapi_headers(&response);
+        }
     }
 
     for path in ["/ports", "/ports/1"] {
