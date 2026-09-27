@@ -549,6 +549,17 @@ where
             JoinTableOperation::Add | JoinTableOperation::Replace
         ) {
             for target_value in target_values {
+                if matches!(action, JoinTableOperation::Add)
+                    && E::find()
+                        .filter(source_column.eq(source_value.clone()))
+                        .filter(target_column.eq(target_value.clone()))
+                        .one(transaction)
+                        .await
+                        .map_err(|error| format!("join-table membership lookup failed: {error}"))?
+                        .is_some()
+                {
+                    continue;
+                }
                 let mut active_model = <E::ActiveModel as Default>::default();
                 active_model
                     .try_set(source_column, source_value.clone())
@@ -795,6 +806,19 @@ where
         }
 
         for target_value in target_values {
+            if matches!(action, ForeignKeyOperation::Add)
+                && E::find()
+                    .filter(target_identifier_column.eq(target_value.clone()))
+                    .filter(foreign_key_column.eq(source_value.clone()))
+                    .one(transaction)
+                    .await
+                    .map_err(|error| {
+                        format!("to-many foreign-key membership lookup failed: {error}")
+                    })?
+                    .is_some()
+            {
+                continue;
+            }
             let query = E::update_many()
                 .filter(target_identifier_column.eq(target_value))
                 .filter(match action {

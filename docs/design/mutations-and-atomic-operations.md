@@ -141,9 +141,19 @@ and full membership replacement through Atomic `update` for a configured
 relationship backed by a typed two-column join-table entity.
 The application explicitly supplies the source resource, public relationship,
 join entity columns, and mutation codec; the helper resolves persistent and
-request-local identifiers and uses the operation's shared transaction. It does
-not infer cardinality or join-table structure from the registry's opaque
-relationship field. `SeaOrmToManyForeignKeyMutationHandler<E, C>` supports
+request-local identifiers and uses the operation's shared transaction. Atomic
+`add` checks existing membership before inserting, so an already-linked
+`(type,id)` member—including one repeated within the same operation—is a
+successful no-op. This follows the JSON:API 1.1 [to-many relationship update
+rule](https://jsonapi.org/format/1.1/#crud-updating-to-many-relationships):
+POST adds specified members unless already present and MUST NOT add an
+existing member again. The typed nullable-FK add handler likewise accepts an
+already-owned member without changing its persisted relationship. Shared
+PostgreSQL/SQLite Atomic HTTP cases assert successful exact result documents
+and final persisted membership for pre-existing and repeated identifiers.
+The helper does not infer cardinality or join-table structure from the
+registry's opaque relationship field.
+`SeaOrmToManyForeignKeyMutationHandler<E, C>` supports
 to-many add/remove for a relationship represented by a nullable FK column on
 the related entity. It takes the source resource and relationship from the
 registry plus the target FK column explicitly. Add assigns an unowned target

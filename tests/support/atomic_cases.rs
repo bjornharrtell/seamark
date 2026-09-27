@@ -482,6 +482,13 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
     .insert(database)
     .await
     .unwrap();
+    port_tag::ActiveModel {
+        port_id: Set(1),
+        tag_id: Set(1),
+    }
+    .insert(database)
+    .await
+    .unwrap();
 
     let registry = Arc::new(registry());
     let app = atomic_http::router(
@@ -490,7 +497,7 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
         Arc::new(AllowGuard),
         Arc::new(dispatcher(&registry)),
     );
-    let request_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]},{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"2"}]},{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]}]}"#;
+    let request_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"1"},{"type":"tags","id":"2"}]},{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"},{"type":"tags","id":"2"}]},{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]}]}"#;
     let request = Request::builder()
         .method("POST")
         .uri("/operations")
@@ -543,6 +550,56 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
     let links = port_tag::Entity::find().all(database).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
+}
+
+pub async fn execute_http_to_many_foreign_key_idempotent_add_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    person::ActiveModel {
+        person_id: Set(1),
+        display_name: Set("Owner".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    for (port_id, owner_id) in [(1, Some(1)), (2, None)] {
+        port::ActiveModel {
+            port_id: Set(port_id),
+            title: Set(format!("Port {port_id}")),
+            owner_id: Set(owner_id),
+        }
+        .insert(database)
+        .await
+        .unwrap();
+    }
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request = atomic_request(
+        r#"{"atomic:operations":[{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"1"},{"type":"ports","id":"2"}]},{"op":"add","ref":{"type":"people","id":"1","relationship":"ports"},"data":[{"type":"ports","id":"1"},{"type":"ports","id":"2"}]}]}"#,
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}, {}]}));
+
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, Some(1)), (2, Some(1))]
+    );
 }
 
 pub async fn execute_http_href_to_many_relationship_dispatch_case(database: &DatabaseConnection) {
