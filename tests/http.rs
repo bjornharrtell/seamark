@@ -1309,4 +1309,26 @@ async fn query_router_authorizes_before_calling_query_adapter() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
     assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), false);
+    let response = app
+        .oneshot(request(
+            "/ports/1?include=owner&fields%5Bports%5D=name,owner&fields%5Bpeople%5D=name",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["code"], "forbidden");
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
 }
