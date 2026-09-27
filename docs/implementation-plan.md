@@ -286,7 +286,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 190 integration
+implementations. The complete all-features suite passes with 192 integration
 tests and 5 unit tests, including 11 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -305,7 +305,7 @@ join-table or nullable direct-FK handlers, while custom executors retain
 first-match precedence for unsupported shapes. Applications can resolve
 relationship `href` routes before planning. The transaction runner invokes
 handlers in order, checks result identities, and rolls back on failure.
-**Current focused evidence:** 30 Atomic Operations planner tests, 16 Atomic
+**Current focused evidence:** 30 Atomic Operations planner tests, 17 Atomic
 HTTP tests, 5 PostgreSQL mutation-suite tests, and 5 library unit tests. A
 shared PostgreSQL/SQLite case verifies string primary-key query/filter
 behavior, included to-one linkage, Atomic
@@ -342,8 +342,10 @@ reassignment and the shared regression verifies result ordering, persisted
 linkage, and rollback after an earlier FK update. The resource CRUD handler
 still declines to-many changesets; replacement, ordered associations,
 non-nullable direct FKs, and unsupported association shapes retain custom
-dispatch. Additional normative request/result/error/media-type cases remain
-incomplete.
+dispatch. Unsupported methods on registered base and Atomic routes return
+JSON:API 405 errors with `Allow` and `Vary: Accept` headers before authorization
+or adapter/handler execution. Unmatched-path fallback and additional normative
+request/result/error/media-type cases remain incomplete.
 Resource, collection, and relationship href resolution now has planner, HTTP,
 and PostgreSQL mutation coverage. Absolute URI-reference matching remains
 application-defined: `AtomicHrefResolver` receives the original value and
