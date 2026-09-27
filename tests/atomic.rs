@@ -491,22 +491,6 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
         Err(AtomicOperationsError::InvalidResult { index: 0, .. })
     ));
 
-    let update = plan(json!({
-        "atomic:operations": [{
-            "op": "update",
-            "ref": {"type": "articles", "id": "1"},
-            "data": {"type": "articles", "attributes": {"title": "Updated"}}
-        }]
-    }))
-    .unwrap();
-    let mismatched_id = document(json!({
-        "atomic:results": [{"data": {"type": "articles", "id": "2"}}]
-    }));
-    assert!(matches!(
-        mismatched_id.validate_response_for(&update),
-        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
-    ));
-
     let relationship_update = plan(json!({
         "atomic:operations": [{
             "op": "update",
@@ -545,6 +529,45 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
     document(json!({"atomic:results": [{}]}))
         .validate_response_for(&remove)
         .unwrap();
+}
+
+#[test]
+fn validates_atomic_resource_update_result_shapes() {
+    let update = plan(json!({
+        "atomic:operations": [{
+            "op": "update",
+            "ref": {"type": "articles", "id": "1"},
+            "data": {"type": "articles", "attributes": {"title": "Updated"}}
+        }]
+    }))
+    .unwrap();
+
+    document(json!({"atomic:results": [{}]}))
+        .validate_response_for(&update)
+        .unwrap();
+    document(json!({
+        "atomic:results": [{
+            "data": {
+                "type": "articles",
+                "id": "1",
+                "attributes": {"title": "Updated"}
+            }
+        }]
+    }))
+    .validate_response_for(&update)
+    .unwrap();
+
+    for data in [
+        json!({"type": "articles", "id": "2"}),
+        json!({"type": "articles", "lid": "local"}),
+    ] {
+        let mismatched_or_nonpersistent_identity =
+            document(json!({"atomic:results": [{"data": data}]}));
+        assert!(matches!(
+            mismatched_or_nonpersistent_identity.validate_response_for(&update),
+            Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+        ));
+    }
 }
 
 #[test]
