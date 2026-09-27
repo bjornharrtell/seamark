@@ -559,6 +559,131 @@ pub async fn execute_to_one_relationship_lifecycle_case(database: &DatabaseConne
     assert_eq!(person::Entity::find().all(database).await.unwrap().len(), 2);
 }
 
+pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "tags",
+                        "lid": "first-tag",
+                        "attributes": {"name": "First"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "tags",
+                        "lid": "second-tag",
+                        "attributes": {"name": "Second"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "replacement-port",
+                        "attributes": {"name": "Replacement Port"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "ref": {
+                        "type": "ports",
+                        "lid": "replacement-port",
+                        "relationship": "tags"
+                    },
+                    "data": [
+                        {"type": "tags", "lid": "first-tag"},
+                        {"type": "tags", "lid": "second-tag"}
+                    ]
+                },
+                {
+                    "op": "update",
+                    "ref": {
+                        "type": "ports",
+                        "lid": "replacement-port",
+                        "relationship": "tags"
+                    },
+                    "data": [{"type": "tags", "lid": "second-tag"}]
+                }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(results).unwrap(),
+        json!([
+            {"data": {"type": "tags", "id": "1"}},
+            {"data": {"type": "tags", "id": "2"}},
+            {"data": {"type": "ports", "id": "1"}},
+            {},
+            {}
+        ])
+    );
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].port_id, 1);
+    assert_eq!(links[0].tag_id, 2);
+
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {
+                    "type": "ports",
+                    "id": "1",
+                    "relationship": "tags"
+                },
+                "data": [
+                    {"type": "tags", "id": "1"},
+                    {"type": "tags", "id": "999"}
+                ]
+            }]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::Operation { index: 0, .. }
+    ));
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].port_id, 1);
+    assert_eq!(links[0].tag_id, 2);
+
+    let results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {
+                    "type": "ports",
+                    "id": "1",
+                    "relationship": "tags"
+                },
+                "data": []
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(results).unwrap(), json!([{}]));
+    assert!(
+        port_tag::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 pub async fn execute_failure_case(database: &DatabaseConnection) -> AtomicExecutionError {
     execute_request(
         database,

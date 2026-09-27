@@ -55,7 +55,8 @@ registry-checked references. Unsupported to-many relationships and unresolved
 `href` targets remain available for custom handlers.
 
 `SeaOrmJoinTableMutationHandler<E, C>` handles to-many add/remove operations
-for a configured relationship backed by a typed two-column join-table entity.
+and full membership replacement through Atomic `update` for a configured
+relationship backed by a typed two-column join-table entity.
 The application explicitly supplies the source resource, public relationship,
 join entity columns, and mutation codec; the helper resolves persistent and
 request-local identifiers and uses the operation's shared transaction. It does
