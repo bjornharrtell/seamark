@@ -545,6 +545,61 @@ pub async fn execute_http_to_many_relationship_dispatch_case(database: &Database
     assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
 }
 
+pub async fn execute_http_href_to_many_relationship_dispatch_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    tag::ActiveModel {
+        tag_id: Set(1),
+        tag_name: Set("First".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    port::ActiveModel {
+        port_id: Set(1),
+        title: Set("Pier".to_owned()),
+        owner_id: Set(None),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router_with_href_resolver(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+        Arc::new(ParityHrefResolver),
+    );
+    let add_request = atomic_request(
+        r#"{"atomic:operations":[{"op":"add","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
+    );
+    let response = app.clone().oneshot(add_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}]}));
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!((links[0].port_id, links[0].tag_id), (1, 1));
+
+    let remove_request = atomic_request(
+        r#"{"atomic:operations":[{"op":"remove","href":"/ports/1/relationships/tags","data":[{"type":"tags","id":"1"}]}]}"#,
+    );
+    let response = app.oneshot(remove_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}]}));
+    assert!(
+        port_tag::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) {
     create_tables(database).await;
     person::ActiveModel {
