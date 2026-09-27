@@ -741,6 +741,49 @@ fn validates_uri_references_and_registered_or_extension_link_relations() {
 }
 
 #[test]
+fn validates_link_object_media_type_hints() {
+    for media_type in [
+        "application/vnd.api+json",
+        "application/problem+json",
+        "text/plain; charset=utf-8",
+        "text/plain; note=\"a;b\"",
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "data": null,
+            "links": {"describedby": {"href": "/schema", "type": media_type}}
+        }))
+        .unwrap();
+        document.validate().unwrap();
+    }
+
+    for media_type in [
+        "plain",
+        "application/",
+        "/json",
+        "application/*",
+        "*/json",
+        "*/vnd.api+json",
+        "*/*",
+        "application/*+json",
+        "text/plain; charset=",
+        "text/plain; =utf-8",
+        "text/plain; charset",
+        "text/plain; charset=\"unterminated",
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "data": null,
+            "links": {"describedby": {"href": "/schema", "type": media_type}}
+        }))
+        .unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidLinkObject),
+            "{media_type}"
+        );
+    }
+}
+
+#[test]
 fn accepts_well_formed_bcp47_language_tags() {
     for hreflang in [
         json!("en"),

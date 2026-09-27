@@ -1437,6 +1437,7 @@ dependencies = [
  "async-trait",
  "axum",
  "language-tags",
+ "mime",
  "sea-orm",
  "serde",
  "serde_json",
