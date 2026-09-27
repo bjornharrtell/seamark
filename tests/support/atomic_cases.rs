@@ -46,7 +46,7 @@ pub mod port {
         #[sea_orm(primary_key)]
         pub port_id: i32,
         pub title: String,
-        pub owner_id: i32,
+        pub owner_id: Option<i32>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -127,6 +127,7 @@ struct MutationCodec;
 impl SeaOrmMutationValueCodec for MutationCodec {
     fn encode_mutation_value(&self, field: &str, value: &JsonValue) -> Result<Value, String> {
         match (field, value) {
+            ("owner_id", JsonValue::Null) => Ok(Value::Int(None)),
             ("person_id" | "port_id" | "owner_id" | "tag_id", JsonValue::String(value)) => value
                 .parse::<i32>()
                 .map(|value| Value::Int(Some(value)))
@@ -491,7 +492,117 @@ pub async fn execute_local_id_to_one_relationship_case(database: &DatabaseConnec
     assert_eq!(ports.len(), 1);
     assert_eq!(ports[0].port_id, 1);
     assert_eq!(ports[0].title, "Local Port");
-    assert_eq!(ports[0].owner_id, 1);
+    assert_eq!(ports[0].owner_id, Some(1));
+}
+
+pub async fn execute_to_one_relationship_lifecycle_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let create_results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "people",
+                        "lid": "owner-one",
+                        "attributes": {"name": "Owner One"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "people",
+                        "lid": "owner-two",
+                        "attributes": {"name": "Owner Two"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "owned-port",
+                        "attributes": {"name": "Owned Port"},
+                        "relationships": {
+                            "owner": {"data": {"type": "people", "lid": "owner-one"}}
+                        }
+                    }
+                }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(create_results).unwrap(),
+        json!([
+            {"data": {"type": "people", "id": "1"}},
+            {"data": {"type": "people", "id": "2"}},
+            {"data": {"type": "ports", "id": "1"}}
+        ])
+    );
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.owner_id, Some(1));
+
+    let clear_results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "ports", "id": "1", "relationship": "owner"},
+                "data": null
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(clear_results).unwrap(), json!([{}]));
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.owner_id, None);
+
+    let reassign_results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "ports", "id": "1", "relationship": "owner"},
+                "data": {"type": "people", "id": "2"}
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(reassign_results).unwrap(), json!([{}]));
+    let port = port::Entity::find_by_id(1)
+        .one(database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.owner_id, Some(2));
+
+    let delete_results = execute_request(
+        database,
+        json!({"atomic:operations": [{"op": "remove", "ref": {"type": "ports", "id": "1"}}]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(delete_results).unwrap(), json!([{}]));
+    assert!(
+        port::Entity::find_by_id(1)
+            .one(database)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(person::Entity::find().all(database).await.unwrap().len(), 2);
 }
 
 pub async fn execute_failure_case(database: &DatabaseConnection) -> AtomicExecutionError {
@@ -525,7 +636,7 @@ pub async fn assert_final_state(database: &DatabaseConnection) {
     assert_eq!(ports.len(), 1);
     assert_eq!(ports[0].port_id, 1);
     assert_eq!(ports[0].title, "Updated Pier");
-    assert_eq!(ports[0].owner_id, 2);
+    assert_eq!(ports[0].owner_id, Some(2));
     let mut tags = tag::Entity::find().all(database).await.unwrap();
     tags.sort_by_key(|tag| tag.tag_id);
     assert_eq!(tags.len(), 2);

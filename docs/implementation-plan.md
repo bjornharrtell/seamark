@@ -148,6 +148,12 @@ The shared Atomic backend case also runs
 `execute_local_id_to_one_relationship_case`: it creates an owner and port in
 order, links the port to the owner's local ID, compares the exact result
 document, and verifies the persisted owner foreign key on PostgreSQL and SQLite.
+The shared `execute_to_one_relationship_lifecycle_case` additionally compares
+Atomic result shapes and persisted state after resource creation, relationship
+clearing with `data: null`, reassignment, and resource removal. The built-in
+typed resource handler still declines to-many relationship operations, as
+verified by `typed_executor_declines_to_many_relationships_for_application_dispatch`;
+applications continue to supply that persistence behavior through dispatch.
 
 M6 conformance work has begun with a gap-tracking requirement-to-test matrix.
 Document validation now rejects simultaneous `id`/`lid`, requires persistent
