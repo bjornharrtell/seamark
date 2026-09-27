@@ -147,6 +147,25 @@ pub fn sorted_nullable_capacity(descending: bool) -> ReadQuery {
     }
 }
 
+pub fn multi_field_sorted_ports() -> ReadQuery {
+    ReadQuery {
+        sort: Some("active,-capacity".to_owned()),
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    }
+}
+
+pub fn assert_multi_field_sorted_ports(result: &SeaOrmReadResult) {
+    assert_eq!(
+        result
+            .resources
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2", "1", "3"]
+    );
+}
+
 pub fn two_level_neighbors() -> ReadQuery {
     ReadQuery {
         filters: vec!["equals(name,'Beta')".to_owned()],
