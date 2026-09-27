@@ -3,6 +3,9 @@
 #[path = "support/query_cases.rs"]
 mod query_cases;
 
+#[path = "support/string_identifier_cases.rs"]
+mod string_identifier_cases;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -634,4 +637,11 @@ async fn authorization_limits_and_validation_failures_precede_queries() {
             .await,
         Err(SeaOrmExecutionError::InvalidFilterValue { .. })
     ));
+}
+
+#[tokio::test]
+async fn postgres_string_identifiers_and_relationship_mapping_work() {
+    let database = database().await;
+    string_identifier_cases::run(&database).await;
+    database.close().await.unwrap();
 }
