@@ -1,9 +1,10 @@
 # Architecture and request lifecycle
 
 **Status: partial implementation.** The repository has a protocol model, an
-adapter-independent resource registry prototype, and an Axum read-only GET
-slice. SeaORM persistence and complete JSON:API conformance are not
-implemented.
+adapter-independent resource registry and read planner, an Axum read-only GET
+slice, and a focused SeaORM/PostgreSQL collection-executor prototype. The
+executor is not yet wired into the HTTP routes; complete JSON:API conformance
+is not implemented.
 
 ## Boundaries
 
@@ -20,7 +21,7 @@ The design separates protocol handling, public API metadata, application policy,
 
 The current HTTP integration registers only collection and single-resource GET routes. Resource definitions are intended to grow into conventional CRUD and relationship routes, with per-route overrides, in later milestones.
 
-A current GET request is negotiated as JSON:API, rejected if it contains query parameters, resolved against the resource registry, and authorized before the read adapter is called. The adapter receives the public resource definition and returns normalized resource records; only explicitly declared fields are serialized. The adapter is persistence-independent. SeaORM planning/execution, query support, mutations, and their hooks remain future work.
+A current GET request is negotiated as JSON:API, rejected if it contains query parameters, resolved against the resource registry, and authorized before the read adapter is called. The adapter receives the public resource definition and returns normalized resource records; only explicitly declared fields are serialized. The adapter is persistence-independent. Separately, callers can validate query parameters into a read plan and execute supported collection predicates, ordering, and pagination through a typed SeaORM executor. Application-specific filter-value conversion, authorization/limit checks, model mapping, and included-resource loading are explicit executor inputs. HTTP query integration, mutations, and their routes remain future work.
 
 Capability negotiation must expose only supported behavior; unsupported behavior should fail explicitly rather than being silently approximated.
 

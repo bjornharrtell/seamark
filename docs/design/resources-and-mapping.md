@@ -1,8 +1,8 @@
 # Resources and SeaORM mapping
 
 **Status: partial implementation.** An adapter-independent resource registry
-prototype is implemented. SeaORM entity mapping and database execution are
-not implemented yet.
+and a focused SeaORM collection-execution prototype are implemented. A
+finalized production entity/relationship mapping API is not implemented.
 
 ## Public resource schema
 
@@ -14,7 +14,7 @@ This explicit metadata is also the basis for dynamic request queries. Public fie
 
 SeaORM is the initial persistence foundation, with PostgreSQL first. Reads should translate supported plans into database-side selection and relationship loading. Writes should map validated requests to explicit, request-scoped changesets or commands that distinguish an omitted property from one explicitly set to `null`.
 
-The mapping must keep public resource definitions independent of persistence details while making the mapping explicit enough to validate and execute supported queries. It does not require a generic multi-ORM abstraction or promise alternative resource-definition patterns in the initial release.
+The mapping must keep public resource definitions independent of persistence details while making the mapping explicit enough to validate and execute supported queries. The current executor resolves internal field strings through a typed entity's SeaORM `Column` parser and requires an application-provided filter-value encoder and model-to-adapter mapper. Relationship loading is supplied through an explicit loader hook rather than inferred from opaque registry strings. It does not require a generic multi-ORM abstraction or promise alternative resource-definition patterns in the initial release.
 
 ## Relationships and application integration
 
@@ -22,4 +22,11 @@ Registered relationship metadata should identify target resource types and suppo
 
 ## Prototype and open choices
 
-A small resource-to-SeaORM mapping prototype should establish which mappings and dynamic queries are practical before the declaration API is finalized. The current registry is a deliberately provisional first step: it maps public resource, attribute, and relationship names to opaque internal field-name strings; validates relationship targets; and requires explicit attribute filter/sort flags. To avoid ambiguous serialization and query resolution, this initial prototype rejects duplicate internal field mappings, including collisions with the identifier mapping; public aliases over one backing field are not supported. It does not inspect SeaORM entities, resolve database columns, or execute reads or writes. The SeaORM/PostgreSQL milestone must verify whether these mappings are practical before the declaration API is frozen. Derive and configuration syntax, identifier conversion types, exact field and nullability APIs, hook ordering, and transaction details remain undecided until that work is done.
+A focused PostgreSQL test now verifies typed field resolution, database-side
+filtering (including OR, null, and mapped numeric values), sorting, pagination,
+identifier serialization, sparse projection, and include loading. This validates
+the prototype approach but does not freeze the declaration API. The registry
+still maps public names to opaque strings and does not automatically derive
+SeaORM relationships, identifier codecs, or CRUD behavior. Derive and
+configuration syntax, generalized identifier conversion, relation metadata,
+hook ordering, and transaction details remain open.

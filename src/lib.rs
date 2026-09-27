@@ -8,4 +8,6 @@
 
 pub mod document;
 pub mod http;
+pub mod query;
 pub mod registry;
+pub mod seaorm;

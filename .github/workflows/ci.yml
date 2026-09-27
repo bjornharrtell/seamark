@@ -11,6 +11,22 @@ jobs:
   test:
     name: Test and lint
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: seamark
+          POSTGRES_USER: seamark
+          POSTGRES_PASSWORD: seamark
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U seamark -d seamark"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SEAMARK_TEST_DATABASE_URL: postgres://seamark:seamark@localhost:5432/seamark
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
