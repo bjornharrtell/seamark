@@ -22,6 +22,17 @@ pub const PEOPLE: [PersonFixture; 2] = [
     },
 ];
 
+pub fn expected_person_attributes(id: &str) -> BTreeMap<String, Value> {
+    let person = PEOPLE
+        .iter()
+        .find(|person| person.id.to_string() == id)
+        .expect("included person ID must match a shared fixture");
+    BTreeMap::from([
+        ("display_name".to_owned(), json!(person.name)),
+        ("private_note".to_owned(), json!(person.note)),
+    ])
+}
+
 pub struct PortFixture {
     pub id: i32,
     pub name: &'static str,
