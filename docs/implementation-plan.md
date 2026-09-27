@@ -208,6 +208,9 @@ with a source pointer to its operation object.
 The Atomic HTTP regression also verifies that guard limit failures return 413
 with matching error status and JSON:API headers before an intentionally failing
 operation handler can run; endpoint error mappings remain partial overall.
+The query HTTP route now pairs a successful planned query with a
+`QueryAdapterError::ReadFailed` response and verifies HTTP 500, JSON:API
+`Content-Type`, and the matching string-valued error `status`.
 An Atomic database-acquisition failure is also verified to return a 500 error
 document with matching JSON:API headers and status.
 Document validation now explicitly covers empty `id` and `lid` strings as
