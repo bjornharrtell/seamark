@@ -1669,9 +1669,19 @@ async fn atomic_http_rejects_missing_or_non_string_operation_codes_before_author
         handler.clone(),
     );
 
-    for body in [
-        r#"{"atomic:operations":[{}]}"#,
-        r#"{"atomic:operations":[{"op":1}]}"#,
+    for (body, detail) in [
+        (
+            r#"{"atomic:operations":[{}]}"#,
+            "invalid operation 0 at `/atomic:operations/0`: operation must contain a string `op` member",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":1}]}"#,
+            "invalid operation 0 at `/atomic:operations/0`: operation must contain a string `op` member",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"patch"}]}"#,
+            "invalid operation 0 at `/atomic:operations/0`: unsupported operation code `patch`",
+        ),
     ] {
         let response = app
             .clone()
@@ -1690,10 +1700,7 @@ async fn atomic_http_rejects_missing_or_non_string_operation_codes_before_author
         let error = error_document(response, body).await;
         assert_eq!(error["errors"].as_array().unwrap().len(), 1);
         assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
-        assert_eq!(
-            error["errors"][0]["detail"],
-            "invalid operation 0 at `/atomic:operations/0`: operation must contain a string `op` member"
-        );
+        assert_eq!(error["errors"][0]["detail"], detail);
         assert_eq!(
             error["errors"][0]["source"]["pointer"],
             "/atomic:operations/0"
