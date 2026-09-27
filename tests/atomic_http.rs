@@ -155,15 +155,25 @@ async fn document(response: Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn error_document(response: Response<Body>) -> Value {
+async fn error_document(response: Response<Body>, request_body: &str) -> Value {
     let expected_status = response.status().as_u16().to_string();
     let document = document(response).await;
     let errors = document["errors"]
         .as_array()
         .expect("error response document");
     assert!(!errors.is_empty());
+    let request_document: Option<Value> = serde_json::from_str(request_body).ok();
     for error in errors {
         assert_eq!(error["status"], expected_status);
+        if let Some(pointer) = error["source"]["pointer"].as_str() {
+            assert!(
+                request_document
+                    .as_ref()
+                    .and_then(|document| document.pointer(pointer))
+                    .is_some(),
+                "error pointer {pointer} must resolve in the request document"
+            );
+        }
     }
     document
 }
@@ -233,6 +243,13 @@ async fn negotiates_and_executes_atomic_http_requests() {
             "/operations",
             ATOMIC_MEDIA_TYPE,
             ATOMIC_MEDIA_TYPE,
+            "{}",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
             "{",
             StatusCode::BAD_REQUEST,
         ),
@@ -257,7 +274,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
         let content_type = response.headers()[CONTENT_TYPE].to_str().unwrap();
         assert!(content_type == "application/vnd.api+json" || content_type == ATOMIC_MEDIA_TYPE);
         assert_eq!(response.headers()[VARY], "Accept");
-        let error = error_document(response).await;
+        let error = error_document(response, body).await;
         assert!(error.get("errors").is_some());
     }
 
@@ -280,7 +297,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    error_document(response).await;
+    error_document(response, valid_body).await;
 
     let failing = atomic_http::router(
         registry(),
@@ -301,7 +318,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    error_document(response).await;
+    error_document(response, valid_body).await;
 
     let href_router = atomic_http::router_with_href_resolver(
         registry(),
