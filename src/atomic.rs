@@ -1219,14 +1219,26 @@ fn validate_resource_data(
             if is_at_member(name) {
                 continue;
             }
-            relationship
-                .validate()
-                .map_err(|error| fail(format!("relationship `{name}` is invalid: {error}")))?;
+            let relationship_pointer = format!(
+                "{path}/data/relationships/{}",
+                escape_json_pointer_segment(name)
+            );
+            relationship.validate().map_err(|error| {
+                invalid_operation(
+                    index,
+                    &relationship_pointer,
+                    &format!("relationship `{name}` is invalid: {error}"),
+                )
+            })?;
             let mapping = definition.relationship_by_name(name).ok_or_else(|| {
-                fail(format!(
-                    "relationship `{name}` is not registered on `{}`",
-                    data.type_name
-                ))
+                invalid_operation(
+                    index,
+                    &relationship_pointer,
+                    &format!(
+                        "relationship `{name}` is not registered on `{}`",
+                        data.type_name
+                    ),
+                )
             })?;
             if let Some(linkage) = &relationship.data {
                 validate_relationship_data(
