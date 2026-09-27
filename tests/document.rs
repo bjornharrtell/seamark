@@ -150,6 +150,32 @@ fn ignores_unrecognized_members_in_documents_and_base_objects() {
 }
 
 #[test]
+fn ignores_unrecognized_members_in_error_objects_and_sources() {
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "errors": [{
+            "title": "Invalid request",
+            "futureErrorMember": true,
+            "source": {
+                "pointer": "/data",
+                "futureSourceMember": "ignored"
+            }
+        }]
+    }))
+    .unwrap();
+
+    document.validate().unwrap();
+    assert_eq!(
+        serde_json::to_value(document).unwrap(),
+        json!({
+            "errors": [{
+                "title": "Invalid request",
+                "source": {"pointer": "/data"}
+            }]
+        })
+    );
+}
+
+#[test]
 fn accepts_local_id_resource_objects_but_requires_response_ids() {
     let document = JsonApiDocument {
         data: Some(PrimaryData::One(ResourceObject {

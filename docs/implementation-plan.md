@@ -287,7 +287,7 @@ invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
 implementations. At this revision, the complete all-features suite passes with
-206 integration tests and 6 unit tests, including 11 isolated SQLite tests
+207 integration tests and 6 unit tests, including 11 isolated SQLite tests
 and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
@@ -499,7 +499,8 @@ document with matching JSON:API headers and status.
 Document validation now explicitly covers empty `id` and `lid` strings as
 opaque JSON:API string identifiers, including local-ID relationship resolution.
 Unrecognized unique members are also verified to be ignored across base
-document, JSON:API, resource, relationship, and identifier objects.
+document, JSON:API, resource, relationship, identifier, error, and error-source
+objects.
 The document decoder rejects non-object roots and array-shaped resource,
 relationship, identifier, error, error-source, and JSON:API objects.
 Atomic Operations documents now ignore unrecognized members per JSON:API
