@@ -339,7 +339,7 @@ async fn insert_fixtures(database: &DatabaseConnection) {
             berth_count: Set(capacity),
             depth_m: Set(depth),
             active: Set(active),
-            owner_id: Set(Some(owner_id)),
+            owner_id: Set(owner_id),
         }
         .insert(database)
         .await
@@ -492,6 +492,38 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
             .map(|resource| resource.id.as_str())
             .collect::<Vec<_>>(),
         vec![query_cases::SECOND_PAGE_PORT_ID]
+    );
+
+    let unfielded_include_query = ReadQuery {
+        includes: vec!["owner".to_owned()],
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    };
+    let unfielded_result = executor
+        .collection(
+            &database,
+            &plan(&unfielded_include_query),
+            &AllowGuard,
+            Some(&PortOwnerLoader),
+        )
+        .await
+        .unwrap();
+    let unowned_port = unfielded_result
+        .resources
+        .iter()
+        .find(|resource| resource.id == "3")
+        .unwrap();
+    assert_eq!(
+        unowned_port.relationships["owner_id"].data,
+        Some(seamark::document::RelationshipData::Null)
+    );
+    assert_eq!(
+        unfielded_result
+            .included
+            .iter()
+            .map(|included| included.resource.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["11", "12"]
     );
 
     for (filter, expected_ids) in query_cases::FILTER_CASES {

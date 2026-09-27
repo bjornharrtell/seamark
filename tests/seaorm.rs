@@ -45,7 +45,7 @@ mod port {
         pub berth_count: Option<i32>,
         pub depth_m: i32,
         pub active: bool,
-        pub owner_id: i32,
+        pub owner_id: Option<i32>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -168,11 +168,14 @@ fn port_resource(model: &port::Model) -> AdapterResource {
         relationships: BTreeMap::from([(
             "owner_id".to_owned(),
             Relationship {
-                data: Some(RelationshipData::One(ResourceIdentifier {
-                    type_name: "people".to_owned(),
-                    id: Some(model.owner_id.to_string()),
-                    ..ResourceIdentifier::default()
-                })),
+                data: Some(match model.owner_id {
+                    Some(owner_id) => RelationshipData::One(ResourceIdentifier {
+                        type_name: "people".to_owned(),
+                        id: Some(owner_id.to_string()),
+                        ..ResourceIdentifier::default()
+                    }),
+                    None => RelationshipData::Null,
+                }),
                 ..Relationship::default()
             },
         )]),
@@ -239,7 +242,7 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
         }
         let ids = roots
             .iter()
-            .map(|root| root.owner_id)
+            .filter_map(|root| root.owner_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -576,6 +579,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
 
     let unfielded_include_query = ReadQuery {
         includes: vec!["owner".to_owned()],
+        page_size: Some("10".to_owned()),
         ..ReadQuery::default()
     };
     let unfielded_result = executor
@@ -587,6 +591,23 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         )
         .await
         .unwrap();
+    let unowned_port = unfielded_result
+        .resources
+        .iter()
+        .find(|resource| resource.id == "3")
+        .unwrap();
+    assert_eq!(
+        unowned_port.relationships["owner_id"].data,
+        Some(RelationshipData::Null)
+    );
+    assert_eq!(
+        unfielded_result
+            .included
+            .iter()
+            .map(|included| included.resource.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["11", "12"]
+    );
     assert!(unfielded_result.included.iter().all(|included| {
         included
             .resource

@@ -28,7 +28,7 @@ pub struct PortFixture {
     pub capacity: Option<i32>,
     pub depth: i32,
     pub active: bool,
-    pub owner_id: i32,
+    pub owner_id: Option<i32>,
 }
 
 pub const PORTS: [PortFixture; 3] = [
@@ -38,7 +38,7 @@ pub const PORTS: [PortFixture; 3] = [
         capacity: Some(4),
         depth: 2,
         active: true,
-        owner_id: 11,
+        owner_id: Some(11),
     },
     PortFixture {
         id: 2,
@@ -46,7 +46,7 @@ pub const PORTS: [PortFixture; 3] = [
         capacity: Some(8),
         depth: 9,
         active: false,
-        owner_id: 12,
+        owner_id: Some(12),
     },
     PortFixture {
         id: 3,
@@ -54,7 +54,7 @@ pub const PORTS: [PortFixture; 3] = [
         capacity: None,
         depth: 6,
         active: true,
-        owner_id: 11,
+        owner_id: None,
     },
 ];
 
