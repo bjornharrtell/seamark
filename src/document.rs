@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use language_tags::LanguageTag;
 use serde::de::value::MapAccessDeserializer;
-use serde::de::{Error as _, MapAccess, Visitor};
+use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use uriparse::URIReference;
@@ -149,11 +149,59 @@ where
             where
                 M: MapAccess<'de>,
             {
-                T::deserialize(MapAccessDeserializer::new(map)).map(ObjectOnly)
+                T::deserialize(MapAccessDeserializer::new(ValidatingMapAccess(map))).map(ObjectOnly)
             }
         }
 
         deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
+}
+
+struct ValidatingMapAccess<M>(M);
+
+struct ValidatingKeySeed<S>(S);
+
+impl<'de, S> DeserializeSeed<'de> for ValidatingKeySeed<S>
+where
+    S: DeserializeSeed<'de>,
+{
+    type Value = S::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let key = String::deserialize(deserializer)?;
+        if is_at_member(&key) {
+            validate_member_name(&key).map_err(D::Error::custom)?;
+        }
+        self.0
+            .deserialize(serde::de::value::StringDeserializer::<D::Error>::new(key))
+    }
+}
+
+impl<'de, M> MapAccess<'de> for ValidatingMapAccess<M>
+where
+    M: MapAccess<'de>,
+{
+    type Error = M::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        self.0.next_key_seed(ValidatingKeySeed(seed))
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        self.0.next_value_seed(seed)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        self.0.size_hint()
     }
 }
 

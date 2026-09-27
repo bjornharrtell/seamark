@@ -684,6 +684,48 @@ fn ignores_unrecognized_members_in_atomic_documents_and_operation_objects() {
 }
 
 #[test]
+fn rejects_invalid_at_member_names_in_atomic_protocol_objects() {
+    for (index, value) in [
+        json!({"@bad/": false, "atomic:operations": []}),
+        json!({
+            "atomic:operations": [{
+                "@bad/": false,
+                "op": "remove",
+                "ref": {"type": "authors", "id": "1"}
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {
+                    "@bad/": false,
+                    "type": "authors"
+                }
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "remove",
+                "ref": {"type": "authors", "id": "1", "@bad/": false}
+            }]
+        }),
+        json!({"atomic:results": [{"@bad/": false}]}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rejected = match serde_json::from_value::<AtomicOperationsDocument>(value) {
+            Ok(document) => plan_atomic_operations(&registry(), &document).is_err(),
+            Err(_) => true,
+        };
+        assert!(
+            rejected,
+            "invalid @-member names must be rejected before unknown members are ignored (case {index})"
+        );
+    }
+}
+
+#[test]
 fn ignores_at_members_when_planning_atomic_resource_data() {
     let operations = plan(json!({
         "@documentAnnotation": false,
