@@ -800,6 +800,25 @@ fn validates_included_resource_reachability_through_relationship_linkage() {
 }
 
 #[test]
+fn validates_included_resources_reachable_from_any_collection_member() {
+    let mut second_primary = resource("ports", "2");
+    second_primary.relationships = Some(BTreeMap::from([(
+        "owner".to_owned(),
+        relationship_to("people", "3"),
+    )]));
+    let document = JsonApiDocument {
+        data: Some(PrimaryData::Many(vec![
+            resource("ports", "1"),
+            second_primary,
+        ])),
+        included: Some(vec![resource("people", "3")]),
+        ..JsonApiDocument::default()
+    };
+
+    document.validate().unwrap();
+}
+
+#[test]
 fn resource_objects_and_identifiers_must_not_contain_both_id_and_lid() {
     let resource_with_both: JsonApiDocument = serde_json::from_value(json!({
         "data": {"type": "ports", "id": "1", "lid": "local"}

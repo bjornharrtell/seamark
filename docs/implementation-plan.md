@@ -268,6 +268,12 @@ parameters or an unsupported extension URI. The regression also verifies
 rejected parameters do not invoke authorization or the operation handler. The
 broader media-negotiation matrix remains partial.
 The conformance matrix cites these cases but remains partial.
+`validates_included_resources_reachable_from_any_collection_member` adds
+collection-root coverage: an included resource linked only from the second
+primary resource is accepted. The existing reachability regression retains
+direct/transitive positive and disconnected-negative controls, and
+`rejects_included_resources_without_primary_data` covers the no-primary-data
+case.
 The [published Atomic Operations extension](https://jsonapi.org/ext/atomic/)
 distinguishes relationship membership targets from resource references:
 `relationship_adds_require_relationship_refs_without_reclassifying_resource_updates`
