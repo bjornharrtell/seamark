@@ -693,6 +693,16 @@ async fn base_mutation_routes_reject_query_parameters_before_authorization_or_ad
             "/ports/1/relationships/owner?fields[ports]=name",
             r#"{"data":null}"#,
         ),
+        (
+            "POST",
+            "/ports/1/relationships/tags?fields[ports]=name",
+            r#"{"data":[{"type":"tags","id":"2"}]}"#,
+        ),
+        (
+            "DELETE",
+            "/ports/1/relationships/tags?fields[ports]=name",
+            r#"{"data":[{"type":"tags","id":"2"}]}"#,
+        ),
     ];
 
     for (method, uri, body) in cases {
@@ -705,6 +715,7 @@ async fn base_mutation_routes_reject_query_parameters_before_authorization_or_ad
         assert_jsonapi_headers(&response);
         let errors = error_document(response).await.errors.unwrap();
         assert_eq!(errors[0].code.as_deref(), Some("invalid_query"));
+        assert_eq!(errors[0].status.as_deref(), Some("400"));
         assert_eq!(
             errors[0].source.as_ref().unwrap().parameter.as_deref(),
             Some("fields[ports]")
