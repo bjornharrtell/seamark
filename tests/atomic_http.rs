@@ -888,7 +888,7 @@ async fn atomic_http_accepts_empty_operations_as_a_successful_no_op() {
 }
 
 #[tokio::test]
-async fn atomic_http_rejects_errors_member_in_operations_request() {
+async fn atomic_http_rejects_response_members_in_operations_request() {
     let database = database().await;
     let guard = Arc::new(CountingGuard {
         calls: AtomicUsize::new(0),
@@ -897,24 +897,28 @@ async fn atomic_http_rejects_errors_member_in_operations_request() {
         calls: AtomicUsize::new(0),
     });
     let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
-    let body = r#"{"atomic:operations":[],"errors":[{"title":"bad"}]}"#;
+    for body in [
+        r#"{"atomic:operations":[],"errors":[{"title":"bad"}]}"#,
+        r#"{"atomic:operations":[],"atomic:results":[]}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                ATOMIC_MEDIA_TYPE,
+                body,
+            ))
+            .await
+            .unwrap();
 
-    let response = app
-        .oneshot(request(
-            "/operations",
-            ATOMIC_MEDIA_TYPE,
-            ATOMIC_MEDIA_TYPE,
-            body,
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
-    assert_eq!(response.headers()[VARY], "Accept");
-    let error = error_document(response, body).await;
-    assert_eq!(error["errors"].as_array().unwrap().len(), 1);
-    assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        let error = error_document(response, body).await;
+        assert_eq!(error["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+    }
     assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     database.close().await.unwrap();
