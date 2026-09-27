@@ -60,8 +60,43 @@ struct TestHandler {
     require_resolved_targets: bool,
 }
 
+struct AtMemberHandler {
+    calls: AtomicUsize,
+}
+
 struct FailSecondHandler {
     calls: AtomicUsize,
+}
+
+#[async_trait]
+impl AtomicOperationHandler for AtMemberHandler {
+    async fn execute_operation(
+        &self,
+        _transaction: &DatabaseTransaction,
+        operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        let PlannedOperation::AddResource { changeset, .. } = operation else {
+            return Err("expected an add-resource operation".to_owned());
+        };
+        let Some(attributes) = changeset.attributes.as_ref() else {
+            return Err("expected mapped attributes".to_owned());
+        };
+        if attributes.len() != 1 || attributes.get("name") != Some(&json!("Ada")) {
+            return Err("unexpected mapped attributes".to_owned());
+        }
+        if changeset.relationships.is_some() {
+            return Err("unexpected mapped relationships".to_owned());
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(AtomicOperationOutcome {
+            result: AtomicResult {
+                data: Some(json!({"type": "authors", "id": "created"})),
+                meta: None,
+            },
+            created_resource: None,
+        })
+    }
 }
 
 #[async_trait]
@@ -535,4 +570,54 @@ async fn execution_failure_pointer_identifies_later_failed_operation() {
         "/atomic:operations/1"
     );
     assert_eq!(handler.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn atomic_http_ignores_at_members_and_rejects_unknown_attributes() {
+    let database = database().await;
+    let handler = Arc::new(AtMemberHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        registry(),
+        database,
+        Arc::new(TestGuard { allowed: true }),
+        handler.clone(),
+    );
+    let valid_body = r#"{"@documentAnnotation":false,"atomic:operations":[{"@operationAnnotation":false,"op":"add","data":{"@resourceAnnotation":false,"type":"authors","attributes":{"@attributeAnnotation":false,"name":"Ada"},"relationships":{"@relationshipAnnotation":false},"links":{"@resourceLink":false,"self":"/authors/created"},"meta":{"@resourceMeta":false}}}]}"#;
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            valid_body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    assert_eq!(
+        document(response).await,
+        json!({"atomic:results": [{"data": {"type": "authors", "id": "created"}}]})
+    );
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+
+    let invalid_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Grace","unknown":"not ignored"}}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            invalid_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, invalid_body).await;
+    assert_eq!(error["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 }
