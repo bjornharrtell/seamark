@@ -160,6 +160,12 @@ fn rejects_invalid_fields_identifiers_and_relationship_targets() {
         Err(RegistryError::EmptyResourceType)
     );
     assert_eq!(
+        ResourceRegistry::new([ResourceDefinition::new("bad.type", "id")]),
+        Err(RegistryError::InvalidResourceTypeName(
+            "bad.type".to_owned()
+        ))
+    );
+    assert_eq!(
         ResourceRegistry::new([ResourceDefinition::new("ports", "")]),
         Err(RegistryError::EmptyIdentifierField {
             resource_type: "ports".to_owned()
@@ -199,6 +205,15 @@ fn rejects_invalid_fields_identifiers_and_relationship_targets() {
         ]),
         Err(RegistryError::EmptyFieldName {
             resource_type: "ports".to_owned()
+        })
+    );
+    assert_eq!(
+        ResourceRegistry::new([
+            ResourceDefinition::new("ports", "id").attribute("bad/name", "field", false, false)
+        ]),
+        Err(RegistryError::InvalidFieldName {
+            resource_type: "ports".to_owned(),
+            field_name: "bad/name".to_owned()
         })
     );
     assert_eq!(

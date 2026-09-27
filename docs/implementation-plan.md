@@ -76,11 +76,13 @@ decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
 fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
-fieldsets. The full suite now has 89 passing integration tests and 2 unit
-tests with PostgreSQL 17; formatting, warning-free Clippy, rustdoc, and
-whitespace checks pass. M4 remains in progress pending reusable production
-mapping APIs, broader database type/relation cases, and expanded
-authorization/resource-limit and unsupported-request coverage.
+fieldsets. The registry rejects resource type and public field names that do
+not meet JSON:API member-name rules. The full suite now has 89 passing
+integration tests and 2 unit tests with PostgreSQL 17; formatting,
+warning-free Clippy, rustdoc, and whitespace checks pass. M4 remains in
+progress pending reusable production mapping APIs, broader database
+type/relation cases, and expanded authorization/resource-limit and
+unsupported-request coverage.
 
 M5 now adds an Atomic Operations document/planner with operation and local-ID
 validation, public-to-internal resource changesets, and relationship field

@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
+use crate::document::is_valid_member_name;
+
 /// An explicitly declared public JSON:API resource type.
 ///
 /// The internal field names are opaque strings in this prototype. A later
@@ -109,6 +111,11 @@ impl ResourceDefinition {
     fn validate(&self) -> Result<(), RegistryError> {
         if self.type_name.is_empty() {
             return Err(RegistryError::EmptyResourceType);
+        }
+        if !is_valid_member_name(&self.type_name) {
+            return Err(RegistryError::InvalidResourceTypeName(
+                self.type_name.clone(),
+            ));
         }
         if self.identifier_field.is_empty() {
             return Err(RegistryError::EmptyIdentifierField {
@@ -359,6 +366,15 @@ pub enum RegistryError {
         /// The public resource type.
         resource_type: String,
     },
+    /// A public field name violates JSON:API member-name rules.
+    InvalidFieldName {
+        /// The public resource type.
+        resource_type: String,
+        /// The invalid public field name.
+        field_name: String,
+    },
+    /// A public resource type violates JSON:API member-name rules.
+    InvalidResourceTypeName(String),
     /// An internal field mapping is empty.
     EmptyModelField {
         /// The public resource type.
@@ -446,6 +462,17 @@ impl fmt::Display for RegistryError {
                     "resource `{resource_type}` has an empty public field name"
                 )
             }
+            Self::InvalidFieldName {
+                resource_type,
+                field_name,
+            } => write!(
+                formatter,
+                "field `{field_name}` on resource `{resource_type}` is not a valid JSON:API member name"
+            ),
+            Self::InvalidResourceTypeName(resource_type) => write!(
+                formatter,
+                "resource type `{resource_type}` is not a valid JSON:API member name"
+            ),
             Self::EmptyModelField {
                 resource_type,
                 field_name,
@@ -536,6 +563,12 @@ fn validate_field_name(
     }
     if public_name == "id" || public_name == "type" {
         return Err(RegistryError::ReservedFieldName {
+            resource_type: resource_type.to_owned(),
+            field_name: public_name.to_owned(),
+        });
+    }
+    if !is_valid_member_name(public_name) {
+        return Err(RegistryError::InvalidFieldName {
             resource_type: resource_type.to_owned(),
             field_name: public_name.to_owned(),
         });

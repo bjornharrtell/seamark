@@ -10,6 +10,10 @@ An API resource is a public JSON:API model, separate from its SeaORM entity, and
 
 This explicit metadata is also the basis for dynamic request queries. Public fields and relationships map to SeaORM columns and relations through registered mapping information; neither queryability nor sortability is inferred from a resource or entity's structure. Attributes must be explicitly marked filterable to accept filters and explicitly marked sortable to accept sorting.
 
+The registry rejects resource type, attribute, and relationship names that
+violate JSON:API member-name constraints, in addition to rejecting reserved
+`id`/`type` fields and duplicate mappings.
+
 ## Persistence mapping
 
 SeaORM is the persistence foundation. PostgreSQL is the first validated backend; SQLite is planned as the separately implemented and tested M7 second backend. Reads should translate supported plans into database-side selection and relationship loading. Writes should map validated requests to explicit, request-scoped changesets or commands that distinguish an omitted property from one explicitly set to `null`.

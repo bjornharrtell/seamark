@@ -683,23 +683,30 @@ fn validate_type(type_name: &str) -> Result<(), DocumentValidationError> {
 }
 
 fn validate_member_name(name: &str) -> Result<(), DocumentValidationError> {
+    if !is_valid_member_name(name) {
+        return Err(DocumentValidationError::InvalidMemberName);
+    }
+    Ok(())
+}
+
+pub(crate) fn is_valid_member_name(name: &str) -> bool {
     let name = name.strip_prefix('@').unwrap_or(name);
     let mut characters = name.chars();
     let Some(first) = characters.next() else {
-        return Err(DocumentValidationError::InvalidMemberName);
+        return false;
     };
     let mut last = first;
     for character in characters {
         if !is_globally_allowed_member_character(character) && !matches!(character, '-' | '_' | ' ')
         {
-            return Err(DocumentValidationError::InvalidMemberName);
+            return false;
         }
         last = character;
     }
     if !is_globally_allowed_member_character(first) || !is_globally_allowed_member_character(last) {
-        return Err(DocumentValidationError::InvalidMemberName);
+        return false;
     }
-    Ok(())
+    true
 }
 
 fn validate_links(links: Option<&Map<String, Value>>) -> Result<(), DocumentValidationError> {
