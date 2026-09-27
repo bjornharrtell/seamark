@@ -139,6 +139,66 @@ pub fn sorted_ports_page(page_number: &str) -> ReadQuery {
     }
 }
 
+pub fn two_level_neighbors() -> ReadQuery {
+    ReadQuery {
+        filters: vec!["equals(name,'Beta')".to_owned()],
+        includes: vec!["neighbors.neighbors".to_owned()],
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    }
+}
+
+pub fn assert_two_level_neighbors(result: &SeaOrmReadResult) {
+    assert_eq!(result.resources.len(), 1);
+    assert_eq!(result.resources[0].id, "2");
+    let root_neighbors = result.resources[0]
+        .relationships
+        .get("neighbor_ids")
+        .and_then(|relationship| relationship.data.as_ref());
+    let root_neighbor_ids = match root_neighbors {
+        Some(seamark::document::RelationshipData::Many(identifiers)) => identifiers
+            .iter()
+            .map(|identifier| identifier.id.as_deref().expect("neighbor must use id"))
+            .collect::<Vec<_>>(),
+        other => panic!("expected root to-many linkage, got {other:?}"),
+    };
+    assert_eq!(root_neighbor_ids, vec!["1"]);
+
+    assert_eq!(result.included.len(), 2);
+    let included = result
+        .included
+        .iter()
+        .map(|included| {
+            assert_eq!(included.resource_type, "ports");
+            let relationship = included
+                .resource
+                .relationships
+                .get("neighbor_ids")
+                .and_then(|relationship| relationship.data.as_ref());
+            let neighbor_ids = match relationship {
+                Some(seamark::document::RelationshipData::Many(identifiers)) => identifiers
+                    .iter()
+                    .map(|identifier| {
+                        identifier
+                            .id
+                            .clone()
+                            .expect("neighbor linkage must use an id")
+                    })
+                    .collect::<Vec<_>>(),
+                other => panic!("expected included to-many linkage, got {other:?}"),
+            };
+            (included.resource.id.clone(), neighbor_ids)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        included,
+        BTreeMap::from([
+            ("1".to_owned(), vec!["2".to_owned(), "3".to_owned()]),
+            ("3".to_owned(), vec!["1".to_owned()]),
+        ])
+    );
+}
+
 pub fn assert_sorted_ports_page(result: &SeaOrmReadResult, page_number: u8) {
     let (expected_ports, expected_owner_id, expected_owner_name) = match page_number {
         1 => (&SORTED_FIRST_PAGE[..], "12", "Niko"),
