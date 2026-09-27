@@ -427,6 +427,13 @@ impl ErrorObject {
         }
         validate_links(self.links.as_ref())?;
         if self
+            .status
+            .as_deref()
+            .is_some_and(|status| !is_valid_http_status(status))
+        {
+            return Err(DocumentValidationError::InvalidErrorStatus);
+        }
+        if self
             .source
             .as_ref()
             .and_then(|source| source.pointer.as_deref())
@@ -510,6 +517,8 @@ pub enum DocumentValidationError {
     EmptyErrorObject,
     /// A links object contains an invalid link, URI-reference, or relation type.
     InvalidLinkObject,
+    /// An error object contains an invalid HTTP status code.
+    InvalidErrorStatus,
     /// An error source contains an invalid JSON Pointer.
     InvalidErrorSourcePointer,
     /// The document contains included resources without primary data.
@@ -545,6 +554,9 @@ impl fmt::Display for DocumentValidationError {
             Self::EmptyErrorObject => "a JSON:API error object must contain at least one member",
             Self::InvalidLinkObject => {
                 "each links member must use a valid relation type and a valid URI-reference href"
+            }
+            Self::InvalidErrorStatus => {
+                "an error status must be an HTTP status code from 100 through 599"
             }
             Self::InvalidErrorSourcePointer => {
                 "an error source pointer must use valid JSON Pointer syntax"
@@ -788,6 +800,14 @@ fn is_valid_json_pointer(value: &str) -> bool {
         }
     }
     true
+}
+
+fn is_valid_http_status(value: &str) -> bool {
+    value.len() == 3
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value
+            .parse::<u16>()
+            .is_ok_and(|status| (100..=599).contains(&status))
 }
 
 fn is_valid_link_relation_type(value: &str) -> bool {

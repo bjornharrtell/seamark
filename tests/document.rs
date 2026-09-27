@@ -253,6 +253,28 @@ fn validates_json_pointer_syntax_in_error_sources() {
 }
 
 #[test]
+fn validates_error_status_codes_as_http_status_strings() {
+    for status in ["100", "200", "422", "599"] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "errors": [{"status": status}]
+        }))
+        .unwrap();
+        document.validate().unwrap();
+    }
+
+    for status in ["", "99", "099", "600", "4a2", " 422"] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "errors": [{"status": status}]
+        }))
+        .unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidErrorStatus)
+        );
+    }
+}
+
+#[test]
 fn accepts_metadata_only_documents() {
     let mut meta = serde_json::Map::new();
     meta.insert("total".to_owned(), json!(0));
