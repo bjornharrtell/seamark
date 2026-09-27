@@ -1114,6 +1114,7 @@ pub(crate) fn validate_links(
     };
     for (relation, link) in links {
         if is_at_member(relation) {
+            validate_member_name(relation)?;
             continue;
         }
         if !is_valid_link_relation_type(relation) || !is_valid_link(link) {
@@ -1265,6 +1266,7 @@ where
     let mut relationships = BTreeMap::new();
     for (name, value) in values {
         if is_at_member(&name) {
+            validate_member_name(&name).map_err(D::Error::custom)?;
             continue;
         }
         let relationship = serde_json::from_value(value).map_err(D::Error::custom)?;
@@ -1285,6 +1287,9 @@ where
 {
     let values = Map::<String, Value>::deserialize(deserializer)?;
     let had_members = !values.is_empty();
+    for name in values.keys().filter(|name| is_at_member(name)) {
+        validate_member_name(name).map_err(D::Error::custom)?;
+    }
     let attributes = values
         .into_iter()
         .filter(|(name, _)| !is_at_member(name))
