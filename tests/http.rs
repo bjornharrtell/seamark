@@ -881,9 +881,21 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
             "APPLICATION/VND.API+JSON;PROFILE=\"https://example.com/profile;version=1\"",
         ),
     );
-    let response = app.oneshot(valid_profile).await.unwrap();
+    let response = app.clone().oneshot(valid_profile).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+
+    let mut multiple_profiles = mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
+    multiple_profiles.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(
+            "application/vnd.api+json;profile=\"https://example.com/one https://example.com/two\"",
+        ),
+    );
+    let response = app.oneshot(multiple_profiles).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 2);
     assert!(adapter.commands.lock().unwrap().is_empty());
 }
 
