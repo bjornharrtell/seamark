@@ -63,6 +63,13 @@ run `first_page_with_owner` with `equals(name,'Alpha')` and
 union). The shared matrix now adds the previously missing boolean complement,
 `equals(active,'false')` -> ID `2`, beside `equals(active,'true')` -> IDs `1`
 and `3`; both PostgreSQL and SQLite assert these exact results.
+Nullable-sort parity is also exercised through
+`sorted_nullable_capacity` in the shared PostgreSQL and SQLite query tests:
+ascending `capacity` returns IDs `1,2,3`, and descending returns `2,1,3`.
+`src/seaorm.rs` explicitly sorts the null predicate ascending before each
+requested field order, so null values are last in either direction rather
+than relying on differing native backend defaults. Existing non-null
+descending-depth coverage remains unchanged.
 
 The matrix must eventually cite concrete test names or conformance cases for
 every applicable normative requirement. Uncovered rows stay partial or

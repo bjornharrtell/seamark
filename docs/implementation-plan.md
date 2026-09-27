@@ -187,6 +187,11 @@ validated as URI references.
 Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
 two pages (`2,3` then `1`), projected root attributes, and matching owner
 includes against both database engines.
+The shared nullable-capacity sort cases also assert ascending IDs `1,2,3` and
+descending IDs `2,1,3` on PostgreSQL and SQLite, placing null values last in
+both directions. `SeaOrmQueryExecutor` sorts the null predicate before each
+requested field order so the result does not depend on backend-native null
+ordering; the existing non-null depth sort remains unchanged.
 The shared Atomic backend case also runs
 `execute_local_id_to_one_relationship_case`: it creates an owner and port in
 order, links the port to the owner's local ID, compares the exact result

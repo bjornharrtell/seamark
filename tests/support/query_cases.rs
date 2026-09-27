@@ -139,6 +139,14 @@ pub fn sorted_ports_page(page_number: &str) -> ReadQuery {
     }
 }
 
+pub fn sorted_nullable_capacity(descending: bool) -> ReadQuery {
+    ReadQuery {
+        sort: Some(if descending { "-capacity" } else { "capacity" }.to_owned()),
+        page_size: Some("10".to_owned()),
+        ..ReadQuery::default()
+    }
+}
+
 pub fn two_level_neighbors() -> ReadQuery {
     ReadQuery {
         filters: vec!["equals(name,'Beta')".to_owned()],
@@ -231,6 +239,17 @@ pub fn assert_sorted_ports_page(result: &SeaOrmReadResult, page_number: u8) {
     assert_eq!(
         result.included[0].resource.attributes,
         BTreeMap::from([("display_name".to_owned(), json!(expected_owner_name))])
+    );
+}
+
+pub fn assert_sorted_nullable_capacity(result: &SeaOrmReadResult, expected_ids: &[&str]) {
+    assert_eq!(
+        result
+            .resources
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<Vec<_>>(),
+        expected_ids
     );
 }
 

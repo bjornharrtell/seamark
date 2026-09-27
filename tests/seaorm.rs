@@ -99,7 +99,7 @@ fn resource_definitions() -> (ResourceDefinition, ResourceDefinition) {
     (
         ResourceDefinition::new("ports", "port_id")
             .attribute("name", "title", true, true)
-            .attribute("capacity", "berth_count", true, false)
+            .attribute("capacity", "berth_count", true, true)
             .attribute("depth", "depth_m", true, true)
             .attribute("active", "active", true, true)
             .relationship("owner", "owner_id", "people")
@@ -660,6 +660,20 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             .await
             .unwrap();
         query_cases::assert_sorted_ports_page(&result, page_number.parse().unwrap());
+    }
+
+    for (descending, expected_ids) in [(false, &["1", "2", "3"][..]), (true, &["2", "1", "3"][..])]
+    {
+        let result = executor
+            .collection(
+                &database,
+                &plan(&query_cases::sorted_nullable_capacity(descending)),
+                &guard,
+                None,
+            )
+            .await
+            .unwrap();
+        query_cases::assert_sorted_nullable_capacity(&result, expected_ids);
     }
 
     let nested_neighbors = executor
