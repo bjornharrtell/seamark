@@ -484,8 +484,9 @@ fn read_plan_error(error: ReadPlanError) -> Response {
         | ReadPlanError::DuplicateSortField(_)
         | ReadPlanError::UnknownSortAttribute { .. }
         | ReadPlanError::AttributeNotSortable { .. } => Some("sort".to_owned()),
-        ReadPlanError::UnknownFieldsetField { .. } | ReadPlanError::InvalidFieldset { .. } => {
-            Some("fields".to_owned())
+        ReadPlanError::UnknownFieldsetField { resource_type, .. }
+        | ReadPlanError::InvalidFieldset { resource_type, .. } => {
+            Some(format!("fields[{resource_type}]"))
         }
         ReadPlanError::InvalidIncludePath(_) | ReadPlanError::UnknownRelationship { .. } => {
             Some("include".to_owned())
