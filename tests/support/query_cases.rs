@@ -117,6 +117,17 @@ pub fn single_resource_owner_document() -> Value {
     })
 }
 
+pub fn single_resource_not_found_document(id: &str) -> Value {
+    json!({
+        "errors": [{
+            "status": "404",
+            "code": "resource_not_found",
+            "title": "Resource not found",
+            "detail": format!("No `ports` resource has id `{id}`.")
+        }]
+    })
+}
+
 // Application-defined self-referential to-many mapping shared by both backends.
 pub fn neighbor_ids(port_id: i32) -> &'static [i32] {
     match port_id {
