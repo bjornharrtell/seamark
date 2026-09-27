@@ -607,10 +607,7 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("q") {
-            quality = value.parse().ok()?;
-            if !(0.0..=1.0).contains(&quality) {
-                return None;
-            }
+            quality = parse_quality_value(value)?;
             has_quality = true;
         } else if name.eq_ignore_ascii_case("profile") {
             // Profiles are advisory; unrecognized profiles do not change this
@@ -627,6 +624,18 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
         }
     }
     Some((specificity, quality))
+}
+
+fn parse_quality_value(value: &str) -> Option<f32> {
+    let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
+    if fractional.len() > 3 || !fractional.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    match whole {
+        "0" => value.parse().ok(),
+        "1" if fractional.bytes().all(|digit| digit == b'0') => value.parse().ok(),
+        _ => None,
+    }
 }
 
 fn has_valid_uri_list(value: &str) -> bool {
