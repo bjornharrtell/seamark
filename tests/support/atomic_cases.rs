@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use axum::http::HeaderMap;
 use sea_orm::entity::prelude::*;
 use sea_orm::{
-    ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Schema, Set, Value,
+    ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryOrder, Schema, Set,
+    Value,
 };
 use seamark::atomic::{
     AtomicExecutionError, AtomicHrefResolver, AtomicOperationsDocument, AtomicOperationsGuard,
@@ -15,7 +16,7 @@ use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
-    SeaOrmResourceMutationHandler,
+    SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -196,12 +197,9 @@ impl AtomicHrefResolver for ParityHrefResolver {
 
 pub fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
-        ResourceDefinition::new("people", "person_id").attribute(
-            "name",
-            "display_name",
-            false,
-            false,
-        ),
+        ResourceDefinition::new("people", "person_id")
+            .attribute("name", "display_name", false, false)
+            .relationship("ports", "owned_ports", "ports"),
         ResourceDefinition::new("ports", "port_id")
             .attribute("name", "title", false, false)
             .relationship("owner", "owner_id", "people")
@@ -365,7 +363,16 @@ async fn execute_request(
         Arc::new(MutationCodec),
     )
     .unwrap();
+    let owned_ports = SeaOrmToManyForeignKeyMutationHandler::<port::Entity, _>::new(
+        &registry,
+        "people",
+        "ports",
+        "owner_id",
+        Arc::new(MutationCodec),
+    )
+    .unwrap();
     let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
+        Arc::new(owned_ports),
         Arc::new(join_table),
         Arc::new(people),
         Arc::new(ports),
@@ -677,6 +684,143 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+pub async fn execute_to_many_foreign_key_relationship_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let results = execute_request(
+        database,
+        json!({
+            "atomic:operations": [
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "people",
+                        "lid": "owner-one",
+                        "attributes": {"name": "Owner One"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "people",
+                        "lid": "owner-two",
+                        "attributes": {"name": "Owner Two"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "port-one",
+                        "attributes": {"name": "One"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "port-two",
+                        "attributes": {"name": "Two"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "ref": {
+                        "type": "people",
+                        "lid": "owner-one",
+                        "relationship": "ports"
+                    },
+                    "data": [
+                        {"type": "ports", "lid": "port-one"},
+                        {"type": "ports", "lid": "port-two"}
+                    ]
+                },
+                {
+                    "op": "remove",
+                    "ref": {
+                        "type": "people",
+                        "lid": "owner-one",
+                        "relationship": "ports"
+                    },
+                    "data": [{"type": "ports", "lid": "port-one"}]
+                }
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(results).unwrap(),
+        json!([
+            {"data": {"type": "people", "id": "1"}},
+            {"data": {"type": "people", "id": "2"}},
+            {"data": {"type": "ports", "id": "1"}},
+            {"data": {"type": "ports", "id": "2"}},
+            {},
+            {}
+        ])
+    );
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, None), (2, Some(1))]
+    );
+
+    let error = execute_request(
+        database,
+        json!({
+            "atomic:operations": [
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "rolled-back-port",
+                        "attributes": {"name": "Must Roll Back"}
+                    }
+                },
+                {
+                    "op": "add",
+                    "ref": {
+                        "type": "people",
+                        "id": "2",
+                        "relationship": "ports"
+                    },
+                    "data": [
+                        {"type": "ports", "id": "1"},
+                        {"type": "ports", "id": "2"}
+                    ]
+                }
+            ]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::Operation { index: 1, .. }
+    ));
+    let people = person::Entity::find().all(database).await.unwrap();
+    assert_eq!(people.len(), 2);
+    let ports = port::Entity::find()
+        .order_by_asc(port::Column::PortId)
+        .all(database)
+        .await
+        .unwrap();
+    assert_eq!(
+        ports
+            .iter()
+            .map(|port| (port.port_id, port.owner_id))
+            .collect::<Vec<_>>(),
+        vec![(1, None), (2, Some(1))]
     );
 }
 

@@ -2,10 +2,11 @@
 
 **Status: partial implementation.** An Atomic Operations planner, mapped
 changesets, a standalone Axum route, extension negotiation, typed SeaORM
-resource CRUD, to-one foreign-key writes, explicitly configured two-column
-join-table membership writes, and transaction orchestration are implemented.
-Other to-many association shapes and full normative conformance remain
-application-specific or incomplete.
+resource CRUD, to-one foreign-key writes, nullable direct-FK to-many
+add/remove, explicitly configured two-column join-table membership writes,
+and transaction orchestration are implemented. Other to-many association
+shapes and full normative conformance remain application-specific or
+incomplete.
 
 ## Mutations and concurrency
 
@@ -51,8 +52,9 @@ updates. Applications supply explicit value and identifier codecs. A
 executors. The typed handler supports route-resolved resource `href` updates
 and deletes and collection `href` adds after the planner normalizes or
 validates them. Relationship `href` targets are normalized to
-registry-checked references. Unsupported to-many relationships and unresolved
-`href` targets remain available for custom handlers.
+registry-checked references. To-many resource changesets and unsupported
+relationship association shapes remain available for custom handlers or the
+dedicated typed relationship executors.
 
 `SeaOrmJoinTableMutationHandler<E, C>` handles to-many add/remove operations
 and full membership replacement through Atomic `update` for a configured
@@ -61,9 +63,17 @@ The application explicitly supplies the source resource, public relationship,
 join entity columns, and mutation codec; the helper resolves persistent and
 request-local identifiers and uses the operation's shared transaction. It does
 not infer cardinality or join-table structure from the registry's opaque
-relationship field. Direct foreign-key to-many associations, join tables with
-additional required columns, and other custom persistence rules continue to
-use application-provided `SeaOrmAtomicOperationExecutor` implementations.
+relationship field. `SeaOrmToManyForeignKeyMutationHandler<E, C>` supports
+to-many add/remove for a relationship represented by a nullable FK column on
+the related entity. It takes the source resource and relationship from the
+registry plus the target FK column explicitly. Add assigns an unowned target
+or accepts one already owned by the source; it rejects implicit reassignment
+from another source. Remove clears the FK only for targets currently owned by
+that source. It does not implement replacement, infer FK nullability, or
+preserve member ordering. Join tables with additional required columns,
+ordered relationships, non-nullable direct FKs, and other custom persistence
+rules continue to use application-provided
+`SeaOrmAtomicOperationExecutor` implementations.
 The two-column mapping has no position column and does not preserve linkage
 order; applications that define ordered relationships must provide a custom
 executor.
@@ -79,5 +89,6 @@ operation fails. HTTP tests cover negotiation, success, and error paths.
 This is a partial persistence integration, not complete extension support.
 Applications still define each resource's entity, value/identifier codecs,
 route mappings, resource-level authorization, and persistence for association
-shapes outside the configured two-column join-table helper. It does not implement every normative
-operation/result/error case. Exact changeset and hook APIs remain provisional.
+shapes outside the configured join-table and nullable direct-FK helpers. It
+does not implement every normative operation/result/error case. Exact
+changeset and hook APIs remain provisional.

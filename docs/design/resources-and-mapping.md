@@ -55,23 +55,30 @@ relationship names to internal model-field names in request-scoped changesets.
 Typed SeaORM handlers use these changesets for CRUD and to-one foreign-key
 writes. `SeaOrmJoinTableMutationHandler` supports to-many add/remove and
 Atomic `update` replacement for an explicitly configured two-column
-join-table entity, using the mutation codec and shared transaction; the
-registry does not contain enough cardinality or join-table metadata to infer
-that configuration. Other association shapes still require an application
-executor. Derive and configuration syntax,
-generalized identifier conversion, relation metadata, hook ordering, and
-transaction details remain open. Shared query and mutation codec traits now
-provide typed boundaries for their respective executor paths, while mapping
-rules and concrete conversions remain application-defined. SQLite fixtures
+join-table entity, using the mutation codec and shared transaction.
+`SeaOrmToManyForeignKeyMutationHandler` supports add/remove for a relationship
+stored as a nullable FK on the related entity; add does not implicitly
+reassign a member from a different source, and remove only clears a matching
+FK. Both mappings are explicit because the registry does not encode
+association cardinality, join-table structure, or target FK columns. Other
+association shapes still require an application executor. Derive and
+configuration syntax, generalized identifier conversion, relation metadata,
+hook ordering, and transaction details remain open. Shared query and mutation
+codec traits now provide typed boundaries for their respective executor
+paths, while mapping rules and concrete conversions remain
+application-defined. SQLite fixtures
 exercise supported query behavior, enforced foreign-key linkage, typed Atomic
 CRUD/relationship updates, and rollback using isolated in-memory databases.
 PostgreSQL and SQLite consume the same core port/person fixtures and string,
 typed numeric/boolean, and null filter expectations from
 `tests/support/query_cases.rs`. CI already runs `--all-features`, so the opt-in
-SQLite fixture participates in the existing test job. The shared Atomic fixture
-declares a to-one owner foreign-key relation and exercises valid linkage on both
-backends; rejection of an orphan foreign key is not separately asserted. The
-core query and mutation adapters contain no backend-specific execution branch;
+SQLite fixture participates in the existing test job. The shared Atomic fixture declares a to-one owner foreign-key relation and
+exercises valid linkage on both backends; the same fixture confirms that an
+orphan owner foreign key is rejected on both without changing connection
+defaults. Shared Atomic coverage now also exercises direct-FK to-many
+add/remove, guarded non-reassignment, and transaction rollback on both
+backends. The core query and mutation adapters contain no backend-specific
+execution branch;
 application codecs and relationship hooks remain responsible for type and
 relation mapping. No intentional protocol capability difference has been
 verified. Full response and Atomic result comparisons, broader

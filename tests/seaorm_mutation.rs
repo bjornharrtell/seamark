@@ -23,7 +23,7 @@ use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
-    SeaOrmResourceMutationHandler,
+    SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -152,7 +152,9 @@ impl AtomicOperationsGuard for TestGuard {
 
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
-        ResourceDefinition::new("authors", "author_id").attribute("name", "name", false, false),
+        ResourceDefinition::new("authors", "author_id")
+            .attribute("name", "name", false, false)
+            .relationship("articles", "article_links", "articles"),
         ResourceDefinition::new("articles", "article_id")
             .attribute("title", "title", false, false)
             .relationship("author", "author_id", "authors")
@@ -694,6 +696,46 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
 }
 
 #[test]
+fn nullable_foreign_key_executor_supports_only_add_and_remove() {
+    let registry = registry();
+    let handler = SeaOrmToManyForeignKeyMutationHandler::<article::Entity, _>::new(
+        &registry,
+        "authors",
+        "articles",
+        "author_id",
+        MutationCodec,
+    )
+    .unwrap();
+    let operations = plan_atomic_operations(
+        &registry,
+        &document(json!({
+            "atomic:operations": [
+                {
+                    "op": "add",
+                    "ref": {"type": "authors", "id": "1", "relationship": "articles"},
+                    "data": [{"type": "articles", "id": "1"}]
+                },
+                {
+                    "op": "remove",
+                    "ref": {"type": "authors", "id": "1", "relationship": "articles"},
+                    "data": [{"type": "articles", "id": "1"}]
+                },
+                {
+                    "op": "update",
+                    "ref": {"type": "authors", "id": "1", "relationship": "articles"},
+                    "data": [{"type": "articles", "id": "1"}]
+                }
+            ]
+        })),
+    )
+    .unwrap();
+
+    assert!(handler.supports(&operations[0].operation));
+    assert!(handler.supports(&operations[1].operation));
+    assert!(!handler.supports(&operations[2].operation));
+}
+
+#[test]
 fn join_table_handler_rejects_reused_source_and_target_columns() {
     let registry = registry();
     let error = match SeaOrmJoinTableMutationHandler::<article_tag::Entity, _>::new(
@@ -728,6 +770,7 @@ async fn postgres_atomic_result_document_matches_shared_backend_case() {
     atomic_cases::execute_local_id_to_one_relationship_case(&database).await;
     atomic_cases::execute_to_one_relationship_lifecycle_case(&database).await;
     atomic_cases::execute_to_many_relationship_replacement_case(&database).await;
+    atomic_cases::execute_to_many_foreign_key_relationship_case(&database).await;
 
     database.close().await.unwrap();
 }
