@@ -579,6 +579,58 @@ fn ignores_unrecognized_members_in_atomic_documents_and_operation_objects() {
 }
 
 #[test]
+fn ignores_at_members_when_planning_atomic_resource_data() {
+    let operations = plan(json!({
+        "@documentAnnotation": false,
+        "meta": {"@documentMeta": false},
+        "atomic:operations": [{
+            "@operationAnnotation": false,
+            "op": "add",
+            "data": {
+                "@resourceAnnotation": false,
+                "type": "authors",
+                "attributes": {"@attributeAnnotation": false, "name": "Ada"},
+                "relationships": {"@relationshipAnnotation": false},
+                "links": {"@resourceLink": false, "self": "/authors/1"},
+                "meta": {"@resourceMeta": false}
+            }
+        }, {
+            "@operationAnnotation": false,
+            "op": "remove",
+            "ref": {
+                "type": "authors",
+                "id": "1",
+                "@referenceAnnotation": false
+            }
+        }]
+    }))
+    .unwrap();
+    assert_eq!(operations.len(), 2);
+    let PlannedOperation::AddResource { changeset, .. } = &operations[0].operation else {
+        panic!("expected an add-resource operation");
+    };
+    let attributes = changeset.attributes.as_ref().unwrap();
+    assert_eq!(attributes.len(), 1);
+    assert_eq!(attributes.get("name"), Some(&json!("Ada")));
+    assert!(changeset.relationships.is_none());
+
+    assert!(
+        plan(json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {"type": "authors", "attributes": {"unknown": "not ignored"}}
+            }]
+        }))
+        .is_err()
+    );
+
+    let response = document(json!({
+        "atomic:results": [{"@resultAnnotation": false}]
+    }));
+    assert_eq!(response.validate_response(1).unwrap().len(), 1);
+}
+
+#[test]
 fn rejects_malformed_operation_shapes_and_unknown_registry_fields() {
     let cases = [
         json!({"atomic:operations": [{"op": "copy"}]}),

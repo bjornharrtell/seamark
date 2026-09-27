@@ -11,7 +11,8 @@ use serde_json::{Map, Value};
 
 use crate::document::{
     ErrorObject, JsonApiDocument, JsonApiObject, ObjectOnly, PrimaryData, RelationshipData,
-    ResourceIdentifier, ResourceObject, validate_links,
+    ResourceIdentifier, ResourceObject, deserialize_attributes, deserialize_relationships,
+    is_at_member, validate_links,
 };
 use crate::registry::ResourceRegistry;
 
@@ -466,9 +467,9 @@ struct AtomicResourceDataRepr {
     id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     lid: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_attributes")]
     attributes: Option<Map<String, Value>>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_relationships")]
     relationships: Option<BTreeMap<String, crate::document::Relationship>>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     links: Option<Map<String, Value>>,
@@ -1190,6 +1191,9 @@ fn validate_resource_data(
     if let Some(attributes) = &data.attributes {
         let mut mapped = BTreeMap::new();
         for (name, value) in attributes {
+            if is_at_member(name) {
+                continue;
+            }
             let mapping = definition.attribute_by_name(name).ok_or_else(|| {
                 fail(format!(
                     "attribute `{name}` is not registered on `{}`",
@@ -1204,6 +1208,9 @@ fn validate_resource_data(
     if let Some(relationships) = &data.relationships {
         let mut mapped = BTreeMap::new();
         for (name, relationship) in relationships {
+            if is_at_member(name) {
+                continue;
+            }
             relationship
                 .validate()
                 .map_err(|error| fail(format!("relationship `{name}` is invalid: {error}")))?;
