@@ -65,6 +65,14 @@ a denying read guard, so the deterministic validation error proves malformed
 sort mappings are rejected before authorization; existing `first_page_with_owner`
 coverage retains a valid `-depth` sort control on each backend.
 
+Filter ASTs, including nested `and`/`not` expressions, are revalidated at the
+SeaORM boundary in those same PostgreSQL and SQLite tests: relationship column
+`owner_id` and mapper-only `private` both fail with deterministic
+`InvalidFilterField` errors before authorization. A manually constructed
+typed `depth_m = "2"` filter returns only port `1` on both backends through
+the configured codec, while an invalid typed `berth_count` literal returns
+`InvalidFilterValue` before SQL.
+
 M4 unknown filter fields are covered by
 `tests/http.rs::query_router_rejects_unknown_filter_field_before_authorization_or_execution`.
 Its valid `equals(name,'Harbor')` control reaches the adapter plan as the

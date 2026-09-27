@@ -38,13 +38,13 @@ use seamark::http::{
     QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
 use seamark::query::{
-    IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadQuery, SortDirection, SortField,
-    plan_read,
+    FilterExpression, FilterValue, IncludeNode, PaginationConfig, PlannedField, ReadPlan,
+    ReadQuery, SortDirection, SortField, plan_read,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
-    IncludedResource, SeaOrmFilterValueCodec, SeaOrmIncludeLoader, SeaOrmMutationValueCodec,
-    SeaOrmQueryExecutor, SeaOrmReadGuard,
+    IncludedResource, SeaOrmExecutionError, SeaOrmFilterValueCodec, SeaOrmIncludeLoader,
+    SeaOrmMutationValueCodec, SeaOrmQueryExecutor, SeaOrmReadGuard,
 };
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
@@ -616,6 +616,69 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         error.to_string(),
         "sort field `depth` is not enabled for resource `ports`"
     );
+    for model_field in ["owner_id", "private"] {
+        let mut unregistered_filter = plan(&ReadQuery::default());
+        unregistered_filter.filter = Some(FilterExpression::Equals {
+            model_field: model_field.to_owned(),
+            value: FilterValue::String("11".to_owned()),
+        });
+        let error = executor
+            .collection(&database, &unregistered_filter, &DenyGuard, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("filter field `{model_field}` is not enabled for resource `ports`")
+        );
+    }
+    let mut nested_unregistered_filter = plan(&ReadQuery::default());
+    nested_unregistered_filter.filter = Some(FilterExpression::And(vec![
+        FilterExpression::Equals {
+            model_field: "title".to_owned(),
+            value: FilterValue::String("Alpha".to_owned()),
+        },
+        FilterExpression::Not(Box::new(FilterExpression::Equals {
+            model_field: "owner_id".to_owned(),
+            value: FilterValue::String("11".to_owned()),
+        })),
+    ]));
+    let error = executor
+        .collection(&database, &nested_unregistered_filter, &DenyGuard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "filter field `owner_id` is not enabled for resource `ports`"
+    );
+    let mut typed_filter = plan(&ReadQuery::default());
+    typed_filter.filter = Some(FilterExpression::Equals {
+        model_field: "depth_m".to_owned(),
+        value: FilterValue::String("2".to_owned()),
+    });
+    let typed_result = executor
+        .collection(&database, &typed_filter, &AllowGuard, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        typed_result
+            .resources
+            .iter()
+            .map(|resource| resource.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1"]
+    );
+    let mut invalid_typed_filter = plan(&ReadQuery::default());
+    invalid_typed_filter.filter = Some(FilterExpression::Equals {
+        model_field: "berth_count".to_owned(),
+        value: FilterValue::String("not-a-number".to_owned()),
+    });
+    assert!(matches!(
+        executor
+            .collection(&database, &invalid_typed_filter, &AllowGuard, None)
+            .await,
+        Err(SeaOrmExecutionError::InvalidFilterValue { model_field, .. })
+            if model_field == "berth_count"
+    ));
 
     let query = query_cases::first_page_with_owner();
     let result = executor

@@ -40,6 +40,12 @@ database execution. Mapper output is independently intersected with registered
 fields before fieldset projection, preserving the registry allowlist even for
 direct executor callers.
 
+Filter AST fields are also revalidated against registered filterable
+attributes before authorization. A manually constructed plan cannot filter on
+a relationship or mapper-only field; valid string literals still pass through
+the configured value codec and become SeaORM-bound column comparisons, with no
+in-memory filtering fallback.
+
 Sort terms are likewise revalidated against the registered public name,
 internal model field, and explicit sortable opt-in before authorization. This
 prevents direct callers from using a mapped relationship column or an
