@@ -144,8 +144,10 @@ IDs for response resource objects and relationship identifiers, requires
 relationship `lid` references to resolve to a resource object with the same
 type and local ID, checks
 conflicting or invalid resource type/field names, rejects unreachable included
-resources, empty relationship objects, and error objects without any defined
-member. It validates link `href` URI references, registered-token or
+resources, relationship objects without linkage, non-empty links, or metadata
+(including an empty links object by itself), and error objects without any
+defined member. An empty links object remains allowed when linkage supplies
+relationship content. It validates link `href` URI references, registered-token or
 absolute-URI relation types, BCP 47 `hreflang` syntax, JSON Pointer syntax for
 error sources, HTTP status strings in the 100-599 range, and absolute URIs in
 `jsonapi.ext` and `jsonapi.profile`. Generated base and Atomic HTTP error tests
@@ -156,7 +158,10 @@ invalid operations and confirms that the single returned error points to the
 first operation. Base GET and Atomic HTTP tests also verify the
 permitted stop-at-first-problem strategy when a request has multiple faults,
 so multi-error HTTP status selection is not used by these routes. The matrix
-remains partial: remaining top-level JSON:API rules, normative Atomic
+remains partial: a focused base-spec regression now rejects a relationship
+object whose only member is an empty `links` object, while retaining valid
+link-only, metadata-only, and linkage-bearing relationships. Remaining
+top-level JSON:API rules, normative Atomic
 Operations edge cases, complete endpoint status mappings, and context-sensitive
 request/response rules still require coverage before M6 can be complete.
 Atomic operation-execution failure coverage now explicitly verifies the

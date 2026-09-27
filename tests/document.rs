@@ -694,22 +694,25 @@ fn validates_jsonapi_member_name_rules_for_types_and_fields() {
 
 #[test]
 fn relationship_objects_require_linkage_links_or_metadata() {
-    let empty: JsonApiDocument = serde_json::from_value(json!({
-        "data": {
-            "type": "ports",
-            "id": "1",
-            "relationships": {"owner": {}}
-        }
-    }))
-    .unwrap();
-    assert_eq!(
-        empty.validate(),
-        Err(DocumentValidationError::EmptyRelationship)
-    );
+    for relationship in [json!({}), json!({"links": {}})] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": relationship}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::EmptyRelationship)
+        );
+    }
 
     for relationship in [
         json!({"links": {"related": "/ports/1/owner"}}),
         json!({"meta": {}}),
+        json!({"data": null, "links": {}}),
     ] {
         let document: JsonApiDocument = serde_json::from_value(json!({
             "data": {

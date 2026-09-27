@@ -442,7 +442,8 @@ impl From<ObjectOnly<RelationshipRepr>> for Relationship {
 
 impl Relationship {
     pub(crate) fn validate(&self) -> Result<(), DocumentValidationError> {
-        if self.data.is_none() && self.links.is_none() && self.meta.is_none() {
+        let has_links = self.links.as_ref().is_some_and(|links| !links.is_empty());
+        if self.data.is_none() && !has_links && self.meta.is_none() {
             return Err(DocumentValidationError::EmptyRelationship);
         }
         validate_links(self.links.as_ref())?;
@@ -814,7 +815,7 @@ pub enum DocumentValidationError {
     InvalidMemberName,
     /// A resource has fields that conflict with its `type` or `id`, or each other.
     ConflictingFieldName,
-    /// A relationship object has no linkage, links, or metadata.
+    /// A relationship object has no linkage, a non-empty links object, or metadata.
     EmptyRelationship,
     /// An included resource cannot be reached through primary resource linkage.
     UnreachableIncludedResource,
@@ -859,7 +860,9 @@ impl fmt::Display for DocumentValidationError {
             Self::ConflictingFieldName => {
                 "resource field names must not conflict with type, id, or each other"
             }
-            Self::EmptyRelationship => "a relationship object must contain data, links, or meta",
+            Self::EmptyRelationship => {
+                "a relationship object must contain data, non-empty links, or meta"
+            }
             Self::UnreachableIncludedResource => {
                 "every included resource must be reachable from primary data through relationship linkage"
             }
