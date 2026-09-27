@@ -20,6 +20,7 @@ use crate::atomic::{
 use crate::document::is_valid_absolute_uri;
 use crate::document::{ErrorObject, ErrorSource, JsonApiDocument};
 use crate::json::parse_unique_members;
+use crate::media::{is_http_token, is_valid_quoted_string};
 use crate::registry::ResourceRegistry;
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -470,12 +471,7 @@ fn parse_parameters(value: &str) -> Option<(String, Vec<MediaParameter>)> {
         }
         let (value, quoted) = match raw_value {
             None => (None, false),
-            Some("") => return None,
-            Some(raw_value)
-                if raw_value.starts_with('"')
-                    && raw_value.ends_with('"')
-                    && raw_value.len() >= 2 =>
-            {
+            Some(raw_value) if is_valid_quoted_string(raw_value) => {
                 (Some(raw_value[1..raw_value.len() - 1].to_owned()), true)
             }
             Some(raw_value) if is_http_token(raw_value) => (Some(raw_value.to_owned()), false),
@@ -488,13 +484,6 @@ fn parse_parameters(value: &str) -> Option<(String, Vec<MediaParameter>)> {
         });
     }
     Some((media_type.to_owned(), parameters))
-}
-
-fn is_http_token(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
 }
 
 fn split_quoted(value: &str, delimiter: char) -> Vec<&str> {

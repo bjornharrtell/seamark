@@ -18,6 +18,7 @@ use crate::document::{
     ResourceObject, is_valid_absolute_uri,
 };
 use crate::json::parse_unique_members;
+use crate::media::is_valid_accept_extension;
 use crate::query::{
     IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
     plan_resource_read,
@@ -1907,6 +1908,9 @@ fn parse_media_range(range: &str) -> Option<(u8, f32)> {
         if has_quality {
             // Parameters after q are Accept extensions, not media-type
             // parameters, and do not affect this representation.
+            if !is_valid_accept_extension(parameter) {
+                return None;
+            }
             continue;
         }
         let (name, value) = parameter.trim().split_once('=')?;

@@ -1600,6 +1600,7 @@ async fn accepts_only_spec_conformant_accept_quality_values_on_both_routes() {
             "application/vnd.api+json;q=0.125",
             "application/vnd.api+json;q=1.",
             "application/vnd.api+json;q=1;foo",
+            "application/vnd.api+json;q=1;foo=\"\"",
             r#"application/vnd.api+json;q=1;foo="x\"y""#,
         ] {
             let adapter = Arc::new(TestAdapter::default());
@@ -1614,7 +1615,9 @@ async fn accepts_only_spec_conformant_accept_quality_values_on_both_routes() {
     for path in ["/ports", "/ports/1"] {
         for accept in [
             "application/vnd.api+json;q=0.1234",
+            "application/vnd.api+json;q=1;foo=",
             r#"application/vnd.api+json;q=1;foo="x\""#,
+            r#"application/vnd.api+json;q=1;foo="x"y"z""#,
         ] {
             let adapter = Arc::new(TestAdapter::default());
             let (app, authorizer) = test_app(adapter.clone(), true);

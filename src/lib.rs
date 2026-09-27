@@ -11,6 +11,7 @@ pub mod atomic_http;
 pub mod document;
 pub mod http;
 mod json;
+mod media;
 pub mod query;
 pub mod registry;
 pub mod seaorm;
