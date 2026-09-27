@@ -531,6 +531,8 @@ rejected parameters do not invoke authorization or the operation handler. The
 base mutation route also accepts a quoted space-separated list of absolute
 profile URIs, while empty, relative, multiply-spaced, duplicate, or unsupported
 Content-Type parameters are rejected before authorization or adapter execution.
+Base mutation requests specifically reject a valid-but-unsupported Atomic
+`ext` URI with 415 before authorization or adapter execution.
 Atomic Content-Type likewise rejects empty or multiply-spaced extension/profile
 URI lists before its guard or handler. The broader media-negotiation matrix
 remains partial.
