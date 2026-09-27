@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
@@ -79,6 +79,27 @@ impl AtomicOperationsGuard for LimitedGuard {
 struct TestHandler {
     fail: bool,
     require_resolved_targets: bool,
+}
+
+struct RelativeHrefResolver {
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl AtomicHrefResolver for RelativeHrefResolver {
+    fn resolve_relationship(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        self.calls.lock().unwrap().push(href.to_owned());
+        Ok(None)
+    }
+
+    fn resolve_resource(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        self.calls.lock().unwrap().push(href.to_owned());
+        Ok((href == "articles/1").then(|| AtomicResourceReference {
+            type_name: "articles".to_owned(),
+            id: Some("1".to_owned()),
+            lid: None,
+            relationship: None,
+        }))
+    }
 }
 
 struct AtMemberHandler {
@@ -668,6 +689,54 @@ async fn atomic_http_accepts_empty_operations_as_a_successful_no_op() {
     assert_eq!(document(response).await, json!({"atomic:results": []}));
     assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_passes_relative_href_unchanged_to_application_resolver() {
+    let database = database().await;
+    let resolver_calls = Arc::new(Mutex::new(Vec::new()));
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router_with_href_resolver(
+        registry(),
+        database.clone(),
+        guard.clone(),
+        handler.clone(),
+        Arc::new(RelativeHrefResolver {
+            calls: resolver_calls.clone(),
+        }),
+    );
+    let body = r#"{"atomic:operations":[{"op":"update","href":"articles/1","data":{"type":"articles","attributes":{"title":"Updated"}}}]}"#;
+
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let content_type = response.headers()[CONTENT_TYPE].clone();
+    let vary = response.headers()[VARY].clone();
+    let response_document = document(response).await;
+    assert_eq!(status, StatusCode::OK, "{response_document}");
+    assert_eq!(content_type, ATOMIC_MEDIA_TYPE);
+    assert_eq!(vary, "Accept");
+    assert_eq!(response_document, json!({"atomic:results": [{}]}));
+    assert_eq!(
+        *resolver_calls.lock().unwrap(),
+        vec!["articles/1", "articles/1"]
+    );
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     database.close().await.unwrap();
 }
 
