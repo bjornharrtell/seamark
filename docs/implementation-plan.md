@@ -151,7 +151,9 @@ error sources, HTTP status strings in the 100-599 range, and absolute URIs in
 `jsonapi.ext` and `jsonapi.profile`. Generated base and Atomic HTTP error tests
 assert that each error object's `status` matches the HTTP response status;
 Atomic HTTP tests also verify that every emitted source pointer resolves in the
-original request document. Base GET and Atomic HTTP tests also verify the
+original request document. The Atomic malformed-request test submits two
+invalid operations and confirms that the single returned error points to the
+first operation. Base GET and Atomic HTTP tests also verify the
 permitted stop-at-first-problem strategy when a request has multiple faults,
 so multi-error HTTP status selection is not used by these routes. The matrix
 remains partial: remaining top-level JSON:API rules, normative Atomic
