@@ -286,7 +286,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 189 integration
+implementations. The complete all-features suite passes with 190 integration
 tests and 5 unit tests, including 11 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -491,12 +491,13 @@ The document decoder rejects non-object roots and array-shaped resource,
 relationship, identifier, error, error-source, and JSON:API objects.
 Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
-`included` members. Atomic HTTP body parsing now rejects duplicate JSON object
-member names recursively before typed decoding, with nested-duplicate and
-trailing-value regression tests. The Atomic document, operation, reference,
-and result types also reject Serde's sequence-form representations where
-JSON:API requires objects; the Atomic HTTP regression verifies malformed
-document, operation, reference, and resource-add shapes produce 400 errors.
+`included` members. Base mutation and Atomic HTTP body parsing reject duplicate
+JSON object member names recursively before typed decoding, with top-level,
+nested-duplicate, and trailing-value regression tests. The Atomic document,
+operation, reference, and result types also reject Serde's sequence-form
+representations where JSON:API requires objects. The Atomic HTTP regression
+verifies malformed document, operation, reference, and resource-add shapes
+produce 400 errors.
 Base GET media negotiation now validates quoted
 absolute profile URI lists, rejects malformed or duplicate profile
 parameters, accepts only HTTP qvalue syntax with at most three fractional
