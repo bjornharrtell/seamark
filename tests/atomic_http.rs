@@ -1085,6 +1085,43 @@ async fn atomic_http_rejects_missing_operation_data_before_authorization_or_hand
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_resource_remove_with_data_before_authorization_or_handler() {
+    let database = database().await;
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+    let body =
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"},"data":null}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = error_document(response, body).await;
+    assert_eq!(
+        error["errors"][0]["detail"],
+        "invalid operation 0 at `/atomic:operations/0`: removing a resource must not include `data`"
+    );
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_passes_relative_href_unchanged_to_application_resolver() {
     let database = database().await;
     let resolver_calls = Arc::new(Mutex::new(Vec::new()));
