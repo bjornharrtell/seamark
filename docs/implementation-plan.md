@@ -234,7 +234,8 @@ out-of-grammar `q=0.1234` rejection on both GET routes and checks response
 status and JSON:API media type.
 The Atomic POST route now has an end-to-end Content-Type regression: it accepts
 the required Atomic extension with an unknown valid profile, and returns 415
-with a JSON:API error document for an unsupported `charset` parameter or an
-unsupported extension URI. The broader media-negotiation matrix remains
-partial.
+with a JSON:API error document for unpermitted `charset` and `version`
+parameters or an unsupported extension URI. The regression also verifies
+rejected parameters do not invoke authorization or the operation handler. The
+broader media-negotiation matrix remains partial.
 The conformance matrix cites these cases but remains partial.

@@ -24,6 +24,10 @@ struct TestGuard {
     allowed: bool,
 }
 
+struct CountingGuard {
+    calls: AtomicUsize,
+}
+
 #[async_trait]
 impl AtomicOperationsGuard for TestGuard {
     async fn authorize(
@@ -32,6 +36,22 @@ impl AtomicOperationsGuard for TestGuard {
         _operations: &[PlannedAtomicOperation],
     ) -> bool {
         self.allowed
+    }
+
+    fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationsGuard for CountingGuard {
+    async fn authorize(
+        &self,
+        _headers: &axum::http::HeaderMap,
+        _operations: &[PlannedAtomicOperation],
+    ) -> bool {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        true
     }
 
     fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
@@ -922,16 +942,14 @@ async fn atomic_http_ignores_at_members_and_rejects_unknown_attributes() {
 #[tokio::test]
 async fn atomic_http_enforces_content_type_parameter_rules() {
     let database = database().await;
-    let app = atomic_http::router(
-        registry(),
-        database,
-        Arc::new(TestGuard { allowed: true }),
-        Arc::new(TestHandler {
-            fail: false,
-            require_resolved_targets: false,
-        }),
-    );
-    let body = r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada"}}}]}"#;
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database, guard.clone(), handler.clone());
+    let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
     let content_type = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\"";
     let response = app
         .clone()
@@ -947,9 +965,12 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     document(response).await;
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 
     for content_type in [
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\";charset=utf-8",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";version=1",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic https://example.test/unsupported\"",
     ] {
         let response = app
@@ -965,6 +986,11 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
         assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert_eq!(response.headers()[CONTENT_TYPE], "application/vnd.api+json");
         assert_eq!(response.headers()[VARY], "Accept");
-        error_document(response, body).await;
+        assert_eq!(
+            error_document(response, body).await["errors"][0]["code"],
+            "unsupported_media_type"
+        );
+        assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }
 }
