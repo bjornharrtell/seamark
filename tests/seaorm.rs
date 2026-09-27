@@ -91,6 +91,45 @@ fn plan(query: &ReadQuery) -> ReadPlan {
     plan_read(&registry(), "ports", query, &pagination()).unwrap()
 }
 
+#[test]
+fn query_executor_validates_identifier_and_queryable_columns_at_construction() {
+    let people = ResourceDefinition::new("people", "person_id");
+    let missing_identifier = ResourceRegistry::new([
+        ResourceDefinition::new("ports", "missing_id").attribute("name", "title", true, false),
+        people.clone(),
+    ])
+    .unwrap();
+    assert!(matches!(
+        SeaOrmQueryExecutor::<port::Entity, _, _>::new(
+            missing_identifier,
+            "ports",
+            port_resource,
+            encode_filter_value,
+        ),
+        Err(SeaOrmExecutionError::UnknownModelField(field)) if field == "missing_id"
+    ));
+
+    let missing_query_field = ResourceRegistry::new([
+        ResourceDefinition::new("ports", "port_id").attribute(
+            "name",
+            "missing_column",
+            false,
+            true,
+        ),
+        people,
+    ])
+    .unwrap();
+    assert!(matches!(
+        SeaOrmQueryExecutor::<port::Entity, _, _>::new(
+            missing_query_field,
+            "ports",
+            port_resource,
+            encode_filter_value,
+        ),
+        Err(SeaOrmExecutionError::UnknownModelField(field)) if field == "missing_column"
+    ));
+}
+
 fn port_resource(model: &port::Model) -> AdapterResource {
     AdapterResource {
         id: model.port_id.to_string(),
@@ -344,7 +383,8 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         "ports",
         port_resource,
         encode_filter_value,
-    );
+    )
+    .unwrap();
     let query = ReadQuery {
         filters: vec![
             "equals(name,'Alpha')".to_owned(),
@@ -484,7 +524,8 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             "ports",
             port_resource as fn(&port::Model) -> AdapterResource,
             encode_filter_value as fn(&str, &str) -> Result<Value, String>,
-        ),
+        )
+        .unwrap(),
         guard: AllowGuard {
             authorized: true,
             maximum_page_size: 10,
@@ -531,7 +572,8 @@ async fn authorization_limits_and_missing_include_loader_fail_before_querying() 
         "ports",
         port_resource,
         encode_filter_value,
-    );
+    )
+    .unwrap();
     let guard = AllowGuard {
         authorized: false,
         maximum_page_size: 1,

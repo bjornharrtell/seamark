@@ -20,6 +20,12 @@ SeaORM is the persistence foundation. PostgreSQL is the first validated backend;
 
 The mapping must keep public resource definitions independent of persistence details while making the mapping explicit enough to validate and execute supported queries. The current executor resolves internal field strings through a typed entity's SeaORM `Column` parser and requires an application-provided filter-value encoder and model-to-adapter mapper. Relationship loading is supplied through an explicit loader hook rather than inferred from opaque registry strings. It does not require a generic multi-ORM abstraction or promise alternative resource-definition patterns in the initial release.
 
+`SeaOrmQueryExecutor::new` is fallible and validates the registered
+identifier column and every filterable or sortable attribute against the
+bound SeaORM entity at construction. Non-queryable attributes may remain
+computed mapper outputs. Relationship mapping/loading remains explicit and
+application-defined.
+
 ## Relationships and application integration
 
 Registered relationship metadata should identify target resource types and support validating linkage, loading requested related data, and applying explicit relationship-update rules. Applications will need integration points for validation, authorization, business rules, and custom mapping; their exact lifecycle and ordering are not settled here.

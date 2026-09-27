@@ -183,20 +183,41 @@ where
     F: Fn(&str, &str) -> Result<Value, String> + Send + Sync,
 {
     /// Creates an executor for a registered public resource type.
-    #[must_use]
+    ///
+    /// Validates the identifier column and every explicitly filterable or
+    /// sortable attribute against the SeaORM entity before the executor can
+    /// be used. Attribute mappers may still expose computed, non-queryable
+    /// fields, and relationship mapping remains application-defined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resource is not registered or one of its
+    /// required entity-column mappings does not exist.
     pub fn new(
         registry: ResourceRegistry,
         resource_type: impl Into<String>,
         mapper: M,
         filter_value_encoder: F,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, SeaOrmExecutionError> {
+        let resource_type = resource_type.into();
+        let definition = registry
+            .resource(&resource_type)
+            .map_err(|_| SeaOrmExecutionError::UnknownResourceType(resource_type.clone()))?;
+        column::<E>(definition.identifier_field())?;
+        for attribute in definition
+            .attributes()
+            .iter()
+            .filter(|attribute| attribute.is_filterable() || attribute.is_sortable())
+        {
+            column::<E>(attribute.model_field())?;
+        }
+        Ok(Self {
             registry,
-            resource_type: resource_type.into(),
+            resource_type,
             mapper,
             filter_value_encoder,
             entity: PhantomData,
-        }
+        })
     }
 
     /// Executes the root query in PostgreSQL and projects its mapped results.
