@@ -957,6 +957,49 @@ async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
 }
 
 #[tokio::test]
+async fn required_mutation_data_error_pointers_resolve_in_the_request_document() {
+    let (app, adapter, authorizer) = mutation_test_app(false);
+    let cases = [
+        ("POST", "/ports", "{}", ""),
+        ("POST", "/ports", r#"{"errors":[]}"#, "/errors"),
+        ("POST", "/ports", r#"{"included":[]}"#, "/included"),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"type":"ports","id":"1","relationships":{"owner":{}}}}"#,
+            "/data/relationships/owner",
+        ),
+        ("PATCH", "/ports/1/relationships/owner", "{}", ""),
+        ("PATCH", "/ports/1/relationships/owner", "null", ""),
+    ];
+
+    for (method, uri, body, expected_pointer) in cases {
+        let request_document: Value = serde_json::from_str(body).unwrap();
+        let response = app
+            .clone()
+            .oneshot(mutation_request(method, uri, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method} {uri}");
+        let errors = error_document(response).await.errors.unwrap();
+        let pointer = errors[0]
+            .source
+            .as_ref()
+            .and_then(|source| source.pointer.as_deref())
+            .expect("request error source pointer");
+
+        assert_eq!(pointer, expected_pointer, "{method} {uri}");
+        assert!(
+            request_document.pointer(pointer).is_some(),
+            "{method} {uri} pointer {pointer:?} must resolve in the request document"
+        );
+    }
+
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn collection_projects_only_declared_fields_and_preserves_nulls() {
     let adapter = Arc::new(TestAdapter::default());
     *adapter.collection_result.lock().unwrap() = vec![port_record()];
