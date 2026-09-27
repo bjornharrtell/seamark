@@ -287,7 +287,7 @@ invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
 implementations. At this revision, the complete all-features suite passes with
-200 integration tests and 6 unit tests, including 11 isolated SQLite tests
+201 integration tests and 6 unit tests, including 11 isolated SQLite tests
 and PostgreSQL integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
 cases, expanded authorization/resource-limit, and unsupported-request
@@ -546,6 +546,9 @@ prohibits more than one resource object for each `(type,id)` pair.
 `rejects_duplicate_resource_identifiers_in_a_collection` rejects the same
 pair across primary and included data and accepts a reachable included object
 with the same ID under a different type.
+`rejects_duplicate_included_resources_with_same_type_and_id` rejects a
+repeated `(type,id)` pair wholly within included data, with a primary linkage
+control making both included entries reachable.
 The [published Atomic Operations extension](https://jsonapi.org/ext/atomic/)
 distinguishes relationship membership targets from resource references:
 `relationship_adds_require_relationship_refs_without_reclassifying_resource_updates`
