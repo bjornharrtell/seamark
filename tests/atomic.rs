@@ -476,21 +476,6 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
         Err(AtomicOperationsError::InvalidResult { index: 0, .. })
     ));
 
-    let client_assigned_id_add = plan(json!({
-        "atomic:operations": [{
-            "op": "add",
-            "data": {"type": "authors", "id": "requested", "attributes": {"name": "Ada"}}
-        }]
-    }))
-    .unwrap();
-    let mismatched_add_id = document(json!({
-        "atomic:results": [{"data": {"type": "authors", "id": "different"}}]
-    }));
-    assert!(matches!(
-        mismatched_add_id.validate_response_for(&client_assigned_id_add),
-        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
-    ));
-
     let relationship_update = plan(json!({
         "atomic:operations": [{
             "op": "update",
@@ -529,6 +514,33 @@ fn validates_atomic_result_data_against_operation_kind_and_resource_rules() {
     document(json!({"atomic:results": [{}]}))
         .validate_response_for(&remove)
         .unwrap();
+}
+
+#[test]
+fn validates_atomic_client_assigned_add_result_identity() {
+    let add = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {"type": "authors", "id": "requested", "attributes": {"name": "Ada"}}
+        }]
+    }))
+    .unwrap();
+
+    document(json!({
+        "atomic:results": [{
+            "data": {"type": "authors", "id": "requested", "attributes": {"name": "Ada"}}
+        }]
+    }))
+    .validate_response_for(&add)
+    .unwrap();
+
+    let mismatched_id = document(json!({
+        "atomic:results": [{"data": {"type": "authors", "id": "different"}}]
+    }));
+    assert!(matches!(
+        mismatched_id.validate_response_for(&add),
+        Err(AtomicOperationsError::InvalidResult { index: 0, .. })
+    ));
 }
 
 #[test]
