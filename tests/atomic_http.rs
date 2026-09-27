@@ -1770,20 +1770,20 @@ async fn atomic_http_combines_repeated_accept_header_fields() {
         calls: AtomicUsize::new(0),
     });
     let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
-    let mut request = request(
+    let mut repeated_exact_request = request(
         "/operations",
         ATOMIC_MEDIA_TYPE,
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
         r#"{"atomic:operations":[]}"#,
     );
-    request.headers_mut().append(
+    repeated_exact_request.headers_mut().append(
         ACCEPT,
         HeaderValue::from_static(
             "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
         ),
     );
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.oneshot(repeated_exact_request).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
@@ -1791,6 +1791,47 @@ async fn atomic_http_combines_repeated_accept_header_fields() {
     assert_eq!(document(response).await, json!({"atomic:results": []}));
     assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+
+    for (wildcard_quality, exact_quality, expected_status) in [
+        ("1", "0", StatusCode::NOT_ACCEPTABLE),
+        ("1", "0.4", StatusCode::OK),
+    ] {
+        let guard = Arc::new(CountingGuard {
+            calls: AtomicUsize::new(0),
+        });
+        let handler = Arc::new(CountingHandler {
+            calls: AtomicUsize::new(0),
+        });
+        let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+        let mut request = request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            &format!("application/*;ext=\"https://jsonapi.org/ext/atomic\";q={wildcard_quality}"),
+            r#"{"atomic:operations":[]}"#,
+        );
+        request.headers_mut().append(
+            ACCEPT,
+            HeaderValue::from_str(&format!(
+                "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q={exact_quality}"
+            ))
+            .unwrap(),
+        );
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), expected_status);
+        assert_eq!(response.headers()[VARY], "Accept");
+        if expected_status == StatusCode::OK {
+            assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+            assert_eq!(document(response).await, json!({"atomic:results": []}));
+            assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+        } else {
+            let error = error_document(response, r#"{"atomic:operations":[]}"#).await;
+            assert_eq!(error["errors"][0]["code"], "not_acceptable");
+            assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+        }
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    }
     database.close().await.unwrap();
 }
 
