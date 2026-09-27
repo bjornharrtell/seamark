@@ -137,6 +137,10 @@ string and integer identifier/type and relationship coverage now runs through
 both query and Atomic paths. Broader identifier/type/relationship-cardinality
 cases, a wider common Atomic matrix, and capability-difference documentation
 remain open. No release conformance claim is made.
+The shared `FILTER_CASES` fixture now also applies the nested
+`and(equals(name,'Beta'),not(equals(depth,'2')))` filter to both backends and
+asserts the same matching port ID (`2`); the former PostgreSQL-only assertion
+has been replaced by these paired shared-fixture checks.
 
 M6 conformance work has begun with a gap-tracking requirement-to-test matrix.
 Document validation now rejects simultaneous `id`/`lid`, requires persistent

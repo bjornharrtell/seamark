@@ -705,23 +705,6 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         );
     }
 
-    let nested_filter_query = ReadQuery {
-        filters: vec!["and(equals(name,'Beta'),not(equals(depth,'2')))".to_owned()],
-        ..ReadQuery::default()
-    };
-    let nested_filter_result = executor
-        .collection(&database, &plan(&nested_filter_query), &guard, None)
-        .await
-        .unwrap();
-    assert_eq!(
-        nested_filter_result
-            .resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["2"]
-    );
-
     let http_query_adapter = Arc::new(PortHttpQueryAdapter {
         database: database.clone(),
         executor: SeaOrmQueryExecutor::<port::Entity, _, _>::new(
