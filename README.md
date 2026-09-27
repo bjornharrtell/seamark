@@ -1,6 +1,6 @@
 # Seamark
 
-Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, a read-only Axum collection/single-resource GET slice, opt-in collection-query integration, and prototype SeaORM query and Atomic Operations persistence support. PostgreSQL is the first validated backend; the opt-in `sqlite` feature has partial M7 query and mutation test coverage, but full SQLite parity is not established. Full resource routing and normative specification conformance are not implemented.
+Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, a read-only Axum collection/single-resource GET slice, opt-in collection-query and single-resource include/fieldset integration, and prototype SeaORM query and Atomic Operations persistence support. PostgreSQL is the first validated backend; the opt-in `sqlite` feature has partial M7 query and mutation test coverage, but full SQLite parity is not established. Full resource routing and normative specification conformance are not implemented.
 
 ## Initial target
 

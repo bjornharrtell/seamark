@@ -14,7 +14,7 @@ use seamark::atomic::{
 };
 use seamark::document::{Relationship, RelationshipData, ResourceIdentifier};
 use seamark::http::AdapterResource;
-use seamark::query::{PaginationConfig, ReadQuery, plan_read};
+use seamark::query::{PaginationConfig, ReadQuery, plan_read, plan_resource_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     IncludedResource, SeaOrmFilterValueCodec, SeaOrmIncludeLoader, SeaOrmMutationValueCodec,
@@ -278,6 +278,39 @@ pub async fn run(database: &DatabaseConnection) {
     );
     assert_eq!(query_result.included.len(), 1);
     assert_eq!(query_result.included[0].resource.id, "captain-1");
+
+    let resource_query = ReadQuery {
+        includes: vec!["owner".to_owned()],
+        fieldsets: BTreeMap::from([
+            ("vessels".to_owned(), "name,owner".to_owned()),
+            ("people".to_owned(), "name".to_owned()),
+        ]),
+        ..ReadQuery::default()
+    };
+    let resource_plan =
+        plan_resource_read(&registry, "vessels", &resource_query, &pagination).unwrap();
+    let resource_result = query_executor
+        .resource(
+            database,
+            "harbor-east",
+            &resource_plan,
+            &AllowReads,
+            Some(&OwnerLoader),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resource_result.resource.id, "harbor-east");
+    assert_eq!(
+        resource_result.resource.attributes,
+        BTreeMap::from([("title".to_owned(), json!("East Harbor"))])
+    );
+    assert_eq!(resource_result.included.len(), 1);
+    assert_eq!(resource_result.included[0].resource.id, "captain-1");
+    assert_eq!(
+        resource_result.included[0].resource.attributes,
+        BTreeMap::from([("display_name".to_owned(), json!("Avery"))])
+    );
 
     let document: AtomicOperationsDocument = serde_json::from_value(json!({
         "atomic:operations": [

@@ -537,6 +537,60 @@ pub fn plan_read(
     })
 }
 
+/// Plans a single-resource read, supporting includes and sparse fieldsets.
+///
+/// Collection filters, sorting, and pagination do not apply to a resource
+/// addressed by identifier and are rejected alongside unknown parameters.
+/// Fieldsets for any registered resource type are supported so included
+/// resources can be projected independently.
+///
+/// # Errors
+///
+/// Returns an error for collection-only or unsupported parameters, invalid
+/// fieldsets/includes, or a resource type absent from the registry.
+pub fn plan_resource_read(
+    registry: &ResourceRegistry,
+    resource_type: &str,
+    query: &ReadQuery,
+    pagination: &PaginationConfig,
+) -> Result<ReadPlan, ReadPlanError> {
+    registry
+        .resource(resource_type)
+        .map_err(|_| ReadPlanError::UnknownResourceType(resource_type.to_owned()))?;
+
+    let mut unsupported = query
+        .unsupported_parameters
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !query.filters.is_empty() {
+        unsupported.insert("filter".to_owned());
+    }
+    if query.sort.is_some() {
+        unsupported.insert("sort".to_owned());
+    }
+    if query.page_number.is_some() {
+        unsupported.insert("page[number]".to_owned());
+    }
+    if query.page_size.is_some() {
+        unsupported.insert("page[size]".to_owned());
+    }
+    if !unsupported.is_empty() {
+        return Err(ReadPlanError::UnsupportedQueryParameters(
+            unsupported.into_iter().collect(),
+        ));
+    }
+
+    let mut plan = plan_read(registry, resource_type, query, pagination)?;
+    plan.page = Page {
+        number: 1,
+        size: 1,
+        offset: 0,
+        limit: 1,
+    };
+    Ok(plan)
+}
+
 fn plan_sort(
     registry: &ResourceRegistry,
     resource_type: &str,

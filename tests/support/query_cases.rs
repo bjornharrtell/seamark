@@ -88,6 +88,35 @@ pub const NEIGHBOR_PORT_IDS: [&str; 2] = ["2", "3"];
 pub const SORTED_FIRST_PAGE: [(&str, &str); 2] = [("2", "Beta"), ("3", "Gamma")];
 pub const SORTED_SECOND_PAGE: [(&str, &str); 1] = [("1", "Alpha")];
 
+pub fn single_resource_with_owner() -> ReadQuery {
+    ReadQuery {
+        fieldsets: BTreeMap::from([
+            ("ports".to_owned(), "name,owner".to_owned()),
+            ("people".to_owned(), "name".to_owned()),
+        ]),
+        includes: vec!["owner".to_owned()],
+        ..ReadQuery::default()
+    }
+}
+
+pub fn single_resource_owner_document() -> Value {
+    json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "attributes": {"name": "Alpha"},
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": "11"}}
+            }
+        },
+        "included": [{
+            "type": "people",
+            "id": "11",
+            "attributes": {"name": "Mara"}
+        }]
+    })
+}
+
 // Application-defined self-referential to-many mapping shared by both backends.
 pub fn neighbor_ids(port_id: i32) -> &'static [i32] {
     match port_id {

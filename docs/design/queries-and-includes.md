@@ -3,10 +3,13 @@
 **Status: partial implementation.** The adapter-independent parser/read
 planner and a focused SeaORM/PostgreSQL collection executor are implemented.
 The default Axum router continues to reject query strings. The opt-in
-`router_with_query` route parses collection-query parameters and passes a
-validated plan to an application-provided query adapter after authorization.
-A PostgreSQL-backed integration test connects that adapter to the SeaORM
-executor and verifies root and included-resource output.
+`router_with_query` routes parse collection and single-resource query
+parameters and pass validated plans to an application-provided query adapter
+after authorization. Collections support filters, sorting, pagination,
+includes, and sparse fieldsets; single-resource reads support includes and
+sparse fieldsets, while filters, sorting, and pagination remain unsupported.
+PostgreSQL and SQLite integrations connect both routes to the SeaORM executor
+and verify root and included-resource output.
 
 ## Filters, sorting, and pagination
 
@@ -68,13 +71,12 @@ otherwise non-sortable entity column to bypass `plan_read`.
 
 The SeaORM executor maps internal field names to the entity's `Column` type and executes filter predicates, ordering, offset, and limit in the configured database backend; it has no in-memory fallback. Its fallible constructor validates the identifier and filterable/sortable attribute columns against the entity before serving requests. The `SeaOrmFilterValueCodec` converts string literals to entity value types and reports conversion failures before querying. A model mapper converts typed rows into internal-field-keyed adapter records, after which the executor enforces sparse-field projections. PostgreSQL integration coverage exercises string equality/OR, null predicates, typed numeric equality, sort, pagination, fieldsets, include loading, and pre-query authorization/limit rejection; the fixture also verifies application-encoded boolean equality alongside typed numeric filters. HTTP integration confirms planned parameters reach this executor and serialized fieldsets/included resources are returned. Relationship loaders and value codecs remain explicit application hooks; broader relation and authorization/resource-limit cases remain incomplete. The opt-in SQLite M7 fixture covers the same supported query categories, including typed numeric/boolean and null filters, ordering, pagination, fieldsets, and application-loaded includes. Both backends construct the same first/second-page queries from `tests/support/query_cases.rs` and assert the same resource/included identities and visible attributes. Full document serialization equivalence, Atomic result equivalence, and broader type coverage remain incomplete.
 
-Query planning and SeaORM execution currently apply to collection reads only;
-there is no SeaORM single-resource `ReadPlan` path. A router-level probe in the
-PostgreSQL integration target and a SQLite fixture both verify that
-`router_with_query` rejects a single-resource request such as
-`GET /ports/1?include=owner` with JSON:API 400 `unsupported_query`, sourced to
-`include`, before authorization, the resource adapter, or the collection
-query adapter. The PostgreSQL-targeted probe needs no database connection
-because any adapter call is itself a failure; the SQLite fixture uses the
-actual SeaORM query adapter and asserts it is not called. This route boundary
-is deliberate and does not imply that single-resource queries are implemented.
+Single-resource `GET` uses the same adapter-independent `ReadPlan` for
+registered includes and sparse fieldsets, then invokes the query adapter's
+single-resource operation. The SeaORM executor validates those mappings
+before guards or SQL, looks up the typed persistent ID, calls the explicit
+include loader, and applies per-resource fieldsets. Filters, sorting, page
+number, and page size are collection-only; `plan_resource_read` rejects them
+deterministically along with unknown fields/relationships before
+authorization or adapter execution. The base `router` without a query adapter
+continues to reject all non-empty query strings.

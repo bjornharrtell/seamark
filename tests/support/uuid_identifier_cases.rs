@@ -12,7 +12,7 @@ use seamark::atomic::{
     execute_atomic_operations, plan_atomic_operations,
 };
 use seamark::http::AdapterResource;
-use seamark::query::{PaginationConfig, ReadQuery, plan_read};
+use seamark::query::{PaginationConfig, ReadQuery, plan_read, plan_resource_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     SeaOrmFilterValueCodec, SeaOrmMutationValueCodec, SeaOrmQueryExecutor, SeaOrmReadGuard,
@@ -60,6 +60,15 @@ impl SeaOrmFilterValueCodec for UuidCodec {
             "lookup_key" => parse_uuid(value).map(|value| Value::Uuid(Some(Box::new(value)))),
             _ => Err(format!(
                 "unsupported filter value `{value}` for `{model_field}`"
+            )),
+        }
+    }
+
+    fn encode_resource_identifier(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        match model_field {
+            "record_id" => parse_uuid(value).map(|value| Value::Uuid(Some(Box::new(value)))),
+            _ => Err(format!(
+                "unsupported resource identifier `{value}` for `{model_field}`"
             )),
         }
     }
@@ -210,6 +219,21 @@ pub async fn run(database: &DatabaseConnection) {
     assert_eq!(result.resources[0].id, EXISTING_ID);
     assert_eq!(
         result.resources[0].attributes,
+        BTreeMap::from([
+            ("label".to_owned(), json!("Existing")),
+            ("lookup_key".to_owned(), json!(EXISTING_LOOKUP_KEY)),
+        ])
+    );
+    let resource_plan =
+        plan_resource_read(&registry, "records", &ReadQuery::default(), &pagination).unwrap();
+    let resource = executor
+        .resource(database, EXISTING_ID, &resource_plan, &AllowReads, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resource.resource.id, EXISTING_ID);
+    assert_eq!(
+        resource.resource.attributes,
         BTreeMap::from([
             ("label".to_owned(), json!("Existing")),
             ("lookup_key".to_owned(), json!(EXISTING_LOOKUP_KEY)),
