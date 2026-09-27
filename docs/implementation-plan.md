@@ -163,6 +163,9 @@ values and excluding adapter-only fields.
 The document layer now directly verifies that a resource object's `id` is a
 string: `resource_object_ids_must_be_strings` accepts a string ID and rejects
 a numeric ID during document decoding.
+`resource_fields_must_not_conflict_with_type_id_or_each_other` pairs the
+document-layer rejection of a same-name `owner` attribute/relationship with a
+valid distinct `name`/`owner` field control.
 Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
 two pages (`2,3` then `1`), projected root attributes, and matching owner
 includes against both database engines.

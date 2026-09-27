@@ -804,6 +804,17 @@ fn resource_objects_and_identifiers_must_not_contain_both_id_and_lid() {
 
 #[test]
 fn resource_fields_must_not_conflict_with_type_id_or_each_other() {
+    let separate_names: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "attributes": {"name": "Harbor"},
+            "relationships": {"owner": {"data": null}}
+        }
+    }))
+    .unwrap();
+    separate_names.validate().unwrap();
+
     for data in [
         json!({"type": "ports", "id": "1", "attributes": {"type": "nested"}}),
         json!({"type": "ports", "id": "1", "attributes": {"id": "nested"}}),
