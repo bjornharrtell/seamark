@@ -1,6 +1,6 @@
 //! JSON:API document types and validation.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -60,16 +60,17 @@ pub struct JsonApiDocument {
 impl JsonApiDocument {
     /// Validates the document's top-level structure and resource identifiers.
     ///
-    /// This is an initial structural check, not a complete conformance
-    /// validator. In particular, compound-document linkage and link semantics
-    /// are not checked yet.
+    /// This is a structural check, not a complete conformance validator.
+    /// Included-resource reachability is checked, but link semantics and
+    /// several context-dependent protocol rules are not.
     ///
     /// # Errors
     ///
     /// Returns an error when required top-level content is absent, `data` and
     /// `errors` coexist, the errors array is empty, included resources have no
-    /// primary data, a resource identity is duplicated, or a resource/identifier
-    /// has an invalid type or identity.
+    /// primary data, included resources are unreachable from primary data, a
+    /// resource identity is duplicated, or a resource/identifier has an invalid
+    /// type or identity.
     pub fn validate(&self) -> Result<(), DocumentValidationError> {
         if self.data.is_some() && self.errors.is_some() {
             return Err(DocumentValidationError::DataAndErrors);
@@ -104,6 +105,7 @@ impl JsonApiDocument {
                 resource.validate()?;
                 track_resource_identity(resource, &mut identities)?;
             }
+            validate_included_reachability(self.data.as_ref(), included)?;
         }
 
         Ok(())
@@ -203,8 +205,10 @@ pub struct ResourceObject {
 impl ResourceObject {
     fn validate(&self) -> Result<(), DocumentValidationError> {
         validate_type(&self.type_name)?;
-        if self.id.is_none() && self.lid.is_none() {
-            return Err(DocumentValidationError::MissingIdentifier);
+        match (&self.id, &self.lid) {
+            (None, None) => return Err(DocumentValidationError::MissingIdentifier),
+            (Some(_), Some(_)) => return Err(DocumentValidationError::BothIdentifiers),
+            _ => {}
         }
         if let Some(relationships) = &self.relationships {
             for relationship in relationships.values() {
@@ -295,8 +299,10 @@ pub struct ResourceIdentifier {
 impl ResourceIdentifier {
     fn validate(&self) -> Result<(), DocumentValidationError> {
         validate_type(&self.type_name)?;
-        if self.id.is_none() && self.lid.is_none() {
-            return Err(DocumentValidationError::MissingIdentifier);
+        match (&self.id, &self.lid) {
+            (None, None) => return Err(DocumentValidationError::MissingIdentifier),
+            (Some(_), Some(_)) => return Err(DocumentValidationError::BothIdentifiers),
+            _ => {}
         }
         Ok(())
     }
@@ -437,6 +443,10 @@ pub enum DocumentValidationError {
     EmptyType,
     /// A resource object or identifier has neither an `id` nor a `lid`.
     MissingIdentifier,
+    /// A resource object or identifier has both an `id` and a `lid`.
+    BothIdentifiers,
+    /// An included resource cannot be reached through primary resource linkage.
+    UnreachableIncludedResource,
     /// A response resource object has no persistent `id`.
     MissingResourceId,
     /// A resource object is repeated in primary or included resource data.
@@ -454,6 +464,12 @@ impl fmt::Display for DocumentValidationError {
             }
             Self::EmptyType => "a resource type must not be empty",
             Self::MissingIdentifier => "a resource object or identifier must contain an id or lid",
+            Self::BothIdentifiers => {
+                "a resource object or identifier must not contain both id and lid"
+            }
+            Self::UnreachableIncludedResource => {
+                "every included resource must be reachable from primary data through relationship linkage"
+            }
             Self::MissingResourceId => "a response resource object must contain an id",
             Self::DuplicateResourceIdentifier => {
                 "a JSON:API document must not repeat a resource identifier"
@@ -483,6 +499,76 @@ fn track_resource_identity(
                 return Err(DocumentValidationError::DuplicateResourceIdentifier);
             }
         }
+    }
+    Ok(())
+}
+
+fn resource_identity(
+    resource: &ResourceObject,
+) -> Result<(String, String, String), DocumentValidationError> {
+    match (&resource.id, &resource.lid) {
+        (Some(id), None) => Ok((resource.type_name.clone(), "id".to_owned(), id.clone())),
+        (None, Some(lid)) => Ok((resource.type_name.clone(), "lid".to_owned(), lid.clone())),
+        (None, None) => Err(DocumentValidationError::MissingIdentifier),
+        (Some(_), Some(_)) => Err(DocumentValidationError::BothIdentifiers),
+    }
+}
+
+fn identifier_identity(
+    identifier: &ResourceIdentifier,
+) -> Result<(String, String, String), DocumentValidationError> {
+    match (&identifier.id, &identifier.lid) {
+        (Some(id), None) => Ok((identifier.type_name.clone(), "id".to_owned(), id.clone())),
+        (None, Some(lid)) => Ok((identifier.type_name.clone(), "lid".to_owned(), lid.clone())),
+        (None, None) => Err(DocumentValidationError::MissingIdentifier),
+        (Some(_), Some(_)) => Err(DocumentValidationError::BothIdentifiers),
+    }
+}
+
+fn validate_included_reachability(
+    primary: Option<&PrimaryData>,
+    included: &[ResourceObject],
+) -> Result<(), DocumentValidationError> {
+    let included_by_identity = included
+        .iter()
+        .map(|resource| Ok((resource_identity(resource)?, resource)))
+        .collect::<Result<HashMap<_, _>, DocumentValidationError>>()?;
+    let mut pending = match primary {
+        Some(PrimaryData::One(resource)) => vec![resource],
+        Some(PrimaryData::Many(resources)) => resources.iter().collect(),
+        Some(PrimaryData::Null) | None => Vec::new(),
+    };
+    let mut visited = HashSet::new();
+    let mut reachable_included = HashSet::new();
+
+    while let Some(resource) = pending.pop() {
+        let identity = resource_identity(resource)?;
+        if !visited.insert(identity.clone()) {
+            continue;
+        }
+        if included_by_identity.contains_key(&identity) {
+            reachable_included.insert(identity);
+        }
+        if let Some(relationships) = &resource.relationships {
+            for relationship in relationships.values() {
+                let identifiers = match relationship.data.as_ref() {
+                    Some(RelationshipData::One(identifier)) => std::slice::from_ref(identifier),
+                    Some(RelationshipData::Many(identifiers)) => identifiers,
+                    Some(RelationshipData::Null) | None => continue,
+                };
+                for identifier in identifiers {
+                    if let Some(target) =
+                        included_by_identity.get(&identifier_identity(identifier)?)
+                    {
+                        pending.push(*target);
+                    }
+                }
+            }
+        }
+    }
+
+    if reachable_included.len() != included.len() {
+        return Err(DocumentValidationError::UnreachableIncludedResource);
     }
     Ok(())
 }

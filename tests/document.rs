@@ -31,6 +31,17 @@ fn local_resource(type_name: &str, lid: &str) -> ResourceObject {
     }
 }
 
+fn relationship_to(type_name: &str, id: &str) -> Relationship {
+    Relationship {
+        data: Some(RelationshipData::One(ResourceIdentifier {
+            type_name: type_name.to_owned(),
+            id: Some(id.to_owned()),
+            ..ResourceIdentifier::default()
+        })),
+        ..Relationship::default()
+    }
+}
+
 #[test]
 fn serializes_a_resource_document_with_json_api_member_names() {
     let mut attributes = serde_json::Map::new();
@@ -245,6 +256,63 @@ fn rejects_included_resources_without_primary_data() {
     assert_eq!(
         document.validate(),
         Err(DocumentValidationError::IncludedWithoutData)
+    );
+}
+
+#[test]
+fn validates_included_resource_reachability_through_relationship_linkage() {
+    let mut primary = resource("ports", "1");
+    primary.relationships = Some(BTreeMap::from([(
+        "owner".to_owned(),
+        relationship_to("people", "2"),
+    )]));
+    let mut owner = resource("people", "2");
+    owner.relationships = Some(BTreeMap::from([(
+        "team".to_owned(),
+        relationship_to("teams", "3"),
+    )]));
+    let document = JsonApiDocument {
+        data: Some(PrimaryData::One(primary)),
+        included: Some(vec![owner, resource("teams", "3")]),
+        ..JsonApiDocument::default()
+    };
+    document.validate_response().unwrap();
+
+    let unreachable = JsonApiDocument {
+        data: Some(PrimaryData::One(resource("ports", "1"))),
+        included: Some(vec![resource("people", "2")]),
+        ..JsonApiDocument::default()
+    };
+    assert_eq!(
+        unreachable.validate(),
+        Err(DocumentValidationError::UnreachableIncludedResource)
+    );
+}
+
+#[test]
+fn resource_objects_and_identifiers_must_not_contain_both_id_and_lid() {
+    let resource_with_both: JsonApiDocument = serde_json::from_value(json!({
+        "data": {"type": "ports", "id": "1", "lid": "local"}
+    }))
+    .unwrap();
+    assert_eq!(
+        resource_with_both.validate(),
+        Err(DocumentValidationError::BothIdentifiers)
+    );
+
+    let identifier_with_both: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "relationships": {
+                "owner": {"data": {"type": "people", "id": "2", "lid": "local"}}
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        identifier_with_both.validate(),
+        Err(DocumentValidationError::BothIdentifiers)
     );
 }
 
