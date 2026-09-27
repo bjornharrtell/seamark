@@ -888,7 +888,7 @@ async fn atomic_http_accepts_empty_operations_as_a_successful_no_op() {
 }
 
 #[tokio::test]
-async fn atomic_http_rejects_response_members_in_operations_request() {
+async fn atomic_http_rejects_non_request_members_in_operations_request() {
     let database = database().await;
     let guard = Arc::new(CountingGuard {
         calls: AtomicUsize::new(0),
@@ -900,6 +900,8 @@ async fn atomic_http_rejects_response_members_in_operations_request() {
     for body in [
         r#"{"atomic:operations":[],"errors":[{"title":"bad"}]}"#,
         r#"{"atomic:operations":[],"atomic:results":[]}"#,
+        r#"{"atomic:operations":[],"data":null}"#,
+        r#"{"atomic:operations":[],"included":[]}"#,
     ] {
         let response = app
             .clone()
