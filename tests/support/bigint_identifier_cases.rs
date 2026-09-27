@@ -12,7 +12,7 @@ use seamark::atomic::{
     execute_atomic_operations, plan_atomic_operations,
 };
 use seamark::http::AdapterResource;
-use seamark::query::{PaginationConfig, ReadQuery, plan_read};
+use seamark::query::{PaginationConfig, ReadQuery, plan_read, plan_resource_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     SeaOrmFilterValueCodec, SeaOrmMutationValueCodec, SeaOrmQueryExecutor, SeaOrmReadGuard,
@@ -55,6 +55,18 @@ impl SeaOrmFilterValueCodec for BigIntCodec {
                 .map_err(|error| error.to_string()),
             _ => Err(format!(
                 "unsupported filter value `{value}` for `{model_field}`"
+            )),
+        }
+    }
+
+    fn encode_resource_identifier(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        match model_field {
+            "record_id" => value
+                .parse::<i64>()
+                .map(|value| Value::BigInt(Some(value)))
+                .map_err(|error| error.to_string()),
+            _ => Err(format!(
+                "unsupported resource identifier `{value}` for `{model_field}`"
             )),
         }
     }
@@ -213,6 +225,27 @@ pub async fn run(database: &DatabaseConnection) {
     assert_eq!(result.resources[0].id, EXISTING_ID.to_string());
     assert_eq!(
         result.resources[0].attributes,
+        BTreeMap::from([
+            ("label".to_owned(), json!("Existing")),
+            ("score".to_owned(), json!(SEARCH_SCORE)),
+        ])
+    );
+    let resource_plan =
+        plan_resource_read(&registry, "records", &ReadQuery::default(), &pagination).unwrap();
+    let resource = executor
+        .resource(
+            database,
+            &EXISTING_ID.to_string(),
+            &resource_plan,
+            &AllowReads,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resource.resource.id, EXISTING_ID.to_string());
+    assert_eq!(
+        resource.resource.attributes,
         BTreeMap::from([
             ("label".to_owned(), json!("Existing")),
             ("score".to_owned(), json!(SEARCH_SCORE)),

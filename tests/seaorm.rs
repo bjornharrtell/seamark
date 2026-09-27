@@ -28,11 +28,12 @@ use sea_orm::{
 use seamark::document::{Relationship, RelationshipData, ResourceIdentifier};
 use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
-    QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+    QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RequestAuthorizer,
+    ResourceAdapter,
 };
 use seamark::query::{
     FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField, ReadPlan,
-    ReadQuery, SortDirection, SortField, plan_read,
+    ReadQuery, SortDirection, SortField, plan_read, plan_resource_read,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
@@ -215,7 +216,7 @@ struct PortFilterCodec;
 impl SeaOrmFilterValueCodec for PortFilterCodec {
     fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
         match model_field {
-            "berth_count" | "depth_m" => value
+            "port_id" | "berth_count" | "depth_m" => value
                 .parse::<i32>()
                 .map(Value::from)
                 .map_err(|error| error.to_string()),
@@ -413,6 +414,7 @@ struct PortHttpQueryAdapter {
     database: DatabaseConnection,
     executor: PortQueryExecutor,
     guard: AllowGuard,
+    calls: Arc<AtomicUsize>,
 }
 
 struct UnbackedQueryGuard {
@@ -500,6 +502,7 @@ impl QueryResourceAdapter for PortHttpQueryAdapter {
         _resource: &ResourceDefinition,
         plan: &ReadPlan,
     ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let result = self
             .executor
             .collection(&self.database, plan, &self.guard, Some(&PortOwnerLoader))
@@ -520,6 +523,41 @@ impl QueryResourceAdapter for PortHttpQueryAdapter {
                 })
                 .collect(),
         })
+    }
+
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        id: &str,
+        plan: &ReadPlan,
+    ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let result = self
+            .executor
+            .resource(
+                &self.database,
+                id,
+                plan,
+                &self.guard,
+                Some(&PortOwnerLoader),
+            )
+            .await
+            .map_err(|error| match error {
+                SeaOrmExecutionError::NotAuthorized => QueryAdapterError::NotAuthorized,
+                SeaOrmExecutionError::LimitExceeded(_) => QueryAdapterError::LimitExceeded,
+                _ => QueryAdapterError::ReadFailed,
+            })?;
+        Ok(result.map(|result| QueryResourceResult {
+            resource: result.resource,
+            included: result
+                .included
+                .into_iter()
+                .map(|included| AdapterIncludedResource {
+                    resource_type: included.resource_type,
+                    resource: included.resource,
+                })
+                .collect(),
+        }))
     }
 }
 
@@ -1072,6 +1110,45 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
     included_neighbor_ids.sort_unstable();
     assert_eq!(included_neighbor_ids, query_cases::NEIGHBOR_PORT_IDS);
 
+    let single_resource_plan = plan_resource_read(
+        &registry(),
+        "ports",
+        &query_cases::single_resource_with_owner(),
+        &pagination(),
+    )
+    .unwrap();
+    let single_resource_result = executor
+        .resource(
+            &database,
+            "1",
+            &single_resource_plan,
+            &guard,
+            Some(&PortOwnerLoader),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(single_resource_result.resource.id, "1");
+    assert_eq!(
+        single_resource_result.resource.attributes,
+        BTreeMap::from([("title".to_owned(), json!("Alpha"))])
+    );
+    assert_eq!(
+        single_resource_result.resource.relationships["owner_id"].data,
+        Some(RelationshipData::One(ResourceIdentifier {
+            type_name: "people".to_owned(),
+            id: Some("11".to_owned()),
+            ..ResourceIdentifier::default()
+        }))
+    );
+    assert_eq!(single_resource_result.included.len(), 1);
+    assert_eq!(single_resource_result.included[0].resource_type, "people");
+    assert_eq!(single_resource_result.included[0].resource.id, "11");
+    assert_eq!(
+        single_resource_result.included[0].resource.attributes,
+        BTreeMap::from([("display_name".to_owned(), json!("Mara"))])
+    );
+
     for (filter, expected_ids) in query_cases::FILTER_CASES {
         let query = ReadQuery {
             filters: vec![filter.to_owned()],
@@ -1092,6 +1169,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         );
     }
 
+    let query_calls = Arc::new(AtomicUsize::new(0));
     let http_query_adapter = Arc::new(PortHttpQueryAdapter {
         database: database.clone(),
         executor: SeaOrmQueryExecutor::<port::Entity, _, _>::new(
@@ -1106,11 +1184,18 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             maximum_page_size: 10,
             maximum_offset: 100,
         },
+        calls: query_calls.clone(),
     });
+    let authorization_calls = Arc::new(AtomicUsize::new(0));
+    let resource_calls = Arc::new(AtomicUsize::new(0));
     let app = http::router_with_query(
         Arc::new(registry()),
-        Arc::new(EmptyAdapter),
-        Arc::new(AllowHttpRequest),
+        Arc::new(SingleResourceProbeAdapter {
+            calls: resource_calls.clone(),
+        }),
+        Arc::new(SingleResourceProbeAuthorizer {
+            calls: authorization_calls.clone(),
+        }),
         http_query_adapter,
         pagination(),
     );
@@ -1153,6 +1238,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
     );
 
     let neighbors_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/ports?filter=equals%28name%2C%27Alpha%27%29&include=neighbors&fields%5Bports%5D=name,neighbors")
@@ -1193,6 +1279,58 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         assert_eq!(resource["attributes"]["name"], expected_name);
     }
 
+    let resource_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1?include=owner&fields%5Bports%5D=name,owner&fields%5Bpeople%5D=name")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resource_response.status(), StatusCode::OK);
+    assert_query_jsonapi_headers(&resource_response);
+    let resource_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(resource_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        resource_document,
+        query_cases::single_resource_owner_document()
+    );
+
+    let invalid_resource_query = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1?filter=equals%28name%2C%27Alpha%27%29")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_resource_query.status(), StatusCode::BAD_REQUEST);
+    assert_query_jsonapi_headers(&invalid_resource_query);
+    let invalid_resource_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(invalid_resource_query.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        invalid_resource_document["errors"][0]["code"],
+        "invalid_query"
+    );
+    assert_eq!(
+        invalid_resource_document["errors"][0]["source"]["parameter"],
+        "filter"
+    );
+    assert_eq!(authorization_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 4);
+
     database
         .execute_unprepared("DROP TABLE seamark_m4_ports; DROP TABLE seamark_m4_people;")
         .await
@@ -1200,7 +1338,7 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
 }
 
 #[tokio::test]
-async fn postgres_single_resource_queries_reject_before_authorization_or_adapters() {
+async fn postgres_single_resource_collection_queries_reject_before_authorization_or_adapters() {
     let resource_calls = Arc::new(AtomicUsize::new(0));
     let authorization_calls = Arc::new(AtomicUsize::new(0));
     let query_calls = Arc::new(AtomicUsize::new(0));
@@ -1222,7 +1360,7 @@ async fn postgres_single_resource_queries_reject_before_authorization_or_adapter
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/ports/1?include=owner")
+                .uri("/ports/1?filter=equals%28name%2C%27Alpha%27%29")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1232,8 +1370,8 @@ async fn postgres_single_resource_queries_reject_before_authorization_or_adapter
     assert_query_jsonapi_headers(&response);
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["errors"][0]["code"], "unsupported_query");
-    assert_eq!(body["errors"][0]["source"]["parameter"], "include");
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "filter");
     assert_eq!(authorization_calls.load(Ordering::SeqCst), 0);
     assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
     assert_eq!(query_calls.load(Ordering::SeqCst), 0);
@@ -1474,6 +1612,23 @@ async fn authorization_limits_and_validation_failures_precede_queries() {
                 if detail == expected_detail
         ));
     }
+    assert_eq!(page_validation_calls.load(Ordering::SeqCst), 0);
+
+    let resource_plan =
+        plan_resource_read(&registry(), "ports", &ReadQuery::default(), &pagination()).unwrap();
+    let mut paginated_resource_plan = resource_plan;
+    paginated_resource_plan.page = Page {
+        number: 2,
+        size: 10,
+        offset: 10,
+        limit: 10,
+    };
+    assert!(matches!(
+        executor
+            .resource(&database, "1", &paginated_resource_plan, &page_guard, None)
+            .await,
+        Err(SeaOrmExecutionError::CollectionQueryInResourcePlan)
+    ));
     assert_eq!(page_validation_calls.load(Ordering::SeqCst), 0);
 
     for (page, expected_detail) in [

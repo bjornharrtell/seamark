@@ -19,6 +19,7 @@ use crate::document::{
 };
 use crate::query::{
     IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
+    plan_resource_read,
 };
 use crate::registry::{ResourceDefinition, ResourceRegistry};
 
@@ -58,6 +59,8 @@ pub enum QueryAdapterError {
     NotAuthorized,
     /// The planned query exceeded an application-configured execution limit.
     LimitExceeded,
+    /// The adapter does not implement single-resource query execution.
+    ResourceReadUnsupported,
 }
 
 /// A resource from the `included` member of a planned collection read.
@@ -74,6 +77,15 @@ pub struct AdapterIncludedResource {
 pub struct QueryCollectionResult {
     /// Root collection resources.
     pub resources: Vec<AdapterResource>,
+    /// Compound resources requested by the validated include plan.
+    pub included: Vec<AdapterIncludedResource>,
+}
+
+/// Results returned by an adapter for a planned single-resource read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryResourceResult {
+    /// The root resource.
+    pub resource: AdapterResource,
     /// Compound resources requested by the validated include plan.
     pub included: Vec<AdapterIncludedResource>,
 }
@@ -95,7 +107,8 @@ pub trait ResourceAdapter: Send + Sync + 'static {
     ) -> Result<Option<AdapterResource>, AdapterError>;
 }
 
-/// Executes validated collection plans produced by [`router_with_query`].
+/// Executes validated collection and single-resource plans produced by
+/// [`router_with_query`].
 ///
 /// Authorization and execution-limit failures should use their corresponding
 /// [`QueryAdapterError`] variants so the router can return client-appropriate
@@ -109,6 +122,20 @@ pub trait QueryResourceAdapter: Send + Sync + 'static {
         resource: &ResourceDefinition,
         plan: &ReadPlan,
     ) -> Result<QueryCollectionResult, QueryAdapterError>;
+
+    /// Executes the plan for one resource addressed by its persistent ID.
+    ///
+    /// The default reports the unsupported operation explicitly so existing
+    /// adapters remain source-compatible while opting into single-resource
+    /// query execution requires an explicit implementation.
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+        _plan: &ReadPlan,
+    ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
+        Err(QueryAdapterError::ResourceReadUnsupported)
+    }
 }
 
 /// Authorizes access before a persistence adapter is called.
@@ -147,11 +174,11 @@ struct ApiState {
     pagination: Option<PaginationConfig>,
 }
 
-/// Builds the collection and single-resource GET routes.
+/// Builds the collection and single-resource GET routes without query support.
 ///
 /// The routes reject all non-empty query strings. Filtering, sorting,
-/// pagination, includes, writes, and persistence implementations are outside
-/// this adapter boundary.
+/// pagination, includes, and persistence implementations are outside this
+/// adapter boundary.
 pub fn router(
     registry: Arc<ResourceRegistry>,
     adapter: Arc<dyn ResourceAdapter>,
@@ -166,12 +193,13 @@ pub fn router(
     })
 }
 
-/// Builds collection and single-resource GET routes with planned collection queries.
+/// Builds collection and single-resource GET routes with planned queries.
 ///
 /// Query support is opt-in. The supplied pagination policy is explicit, and
 /// the query adapter is called only after parsing, planning, resource lookup,
-/// and request authorization. The single-resource route continues to reject
-/// all query parameters.
+/// and request authorization. Collection filters, sorting, and pagination are
+/// supported only on collections; single-resource reads support includes and
+/// sparse fieldsets.
 pub fn router_with_query(
     registry: Arc<ResourceRegistry>,
     adapter: Arc<dyn ResourceAdapter>,
@@ -326,8 +354,14 @@ async fn get_resource(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = validate_request(&headers, query.as_deref()) {
+    if let Err(error) = validate_request(&headers, None) {
         return request_error_response(error);
+    }
+    let has_query = query.as_deref().is_some_and(|query| !query.is_empty());
+    if has_query && state.query_adapter.is_none() {
+        return request_error_response(RequestValidationError::UnsupportedQuery(
+            query.as_deref().and_then(first_query_parameter),
+        ));
     }
     let definition = match state.registry.resource(&resource_type) {
         Ok(definition) => definition,
@@ -343,6 +377,23 @@ async fn get_resource(
             );
         }
     };
+    let plan = if has_query {
+        let Some(pagination) = state.pagination.as_ref() else {
+            return request_error_response(RequestValidationError::UnsupportedQuery(
+                query.as_deref().and_then(first_query_parameter),
+            ));
+        };
+        let query = match parse_read_query(query.as_deref().unwrap_or_default()) {
+            Ok(query) => query,
+            Err(error) => return query_parse_error(error),
+        };
+        match plan_resource_read(&state.registry, &resource_type, &query, pagination) {
+            Ok(plan) => Some(plan),
+            Err(error) => return read_plan_error(error),
+        }
+    } else {
+        None
+    };
     if !state
         .authorizer
         .authorize(&resource_type, Some(&id), &headers)
@@ -351,30 +402,87 @@ async fn get_resource(
         return forbidden_error();
     }
 
-    let record = match state.adapter.resource(definition, &id).await {
-        Ok(Some(record)) => record,
-        Ok(None) => {
-            return protocol_error(
-                StatusCode::NOT_FOUND,
-                "resource_not_found",
-                "Resource not found",
-                Some(format!("No `{resource_type}` resource has id `{id}`.")),
-                None,
-            );
-        }
-        Err(_) => return adapter_error(),
-    };
+    let (record, included) =
+        if let (Some(query_adapter), Some(plan)) = (state.query_adapter.as_ref(), plan.as_ref()) {
+            match query_adapter.resource(definition, &id, plan).await {
+                Ok(Some(result)) => (result.resource, result.included),
+                Ok(None) => {
+                    return protocol_error(
+                        StatusCode::NOT_FOUND,
+                        "resource_not_found",
+                        "Resource not found",
+                        Some(format!("No `{resource_type}` resource has id `{id}`.")),
+                        None,
+                    );
+                }
+                Err(error) => return query_adapter_error(error),
+            }
+        } else {
+            match state.adapter.resource(definition, &id).await {
+                Ok(Some(record)) => (record, Vec::new()),
+                Ok(None) => {
+                    return protocol_error(
+                        StatusCode::NOT_FOUND,
+                        "resource_not_found",
+                        "Resource not found",
+                        Some(format!("No `{resource_type}` resource has id `{id}`.")),
+                        None,
+                    );
+                }
+                Err(_) => return adapter_error(),
+            }
+        };
     let resource = match project_resource(definition, &record) {
         Ok(resource) => resource,
         Err(_) => return adapter_error(),
     };
-    respond_with_document(
-        StatusCode::OK,
-        JsonApiDocument {
-            data: Some(PrimaryData::One(resource)),
-            ..JsonApiDocument::default()
-        },
-    )
+    let included = match included
+        .iter()
+        .map(|included| {
+            let definition = state
+                .registry
+                .resource(&included.resource_type)
+                .map_err(|_| AdapterError)?;
+            project_resource(definition, &included.resource)
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(included) => included,
+        Err(_) => return adapter_error(),
+    };
+    let mut document = JsonApiDocument {
+        data: Some(PrimaryData::One(resource)),
+        included: (!included.is_empty()).then_some(included),
+        ..JsonApiDocument::default()
+    };
+    if document.validate_response().is_err() {
+        let sparse_fieldset_exception_applies = document.included.is_some()
+            && plan
+                .as_ref()
+                .is_some_and(has_sparse_fieldset_include_relationship)
+            && document
+                .validate_response_with_sparse_fieldset_exception()
+                .is_ok();
+        if !sparse_fieldset_exception_applies {
+            return adapter_error();
+        }
+    }
+    if let Some(plan) = plan.as_ref() {
+        if let (Some(PrimaryData::One(resource)), Some(fieldset)) = (
+            document.data.as_mut(),
+            plan.fieldsets.get(definition.type_name()),
+        ) {
+            apply_fieldset(resource, fieldset);
+        }
+        if let Some(included) = document.included.as_mut() {
+            for resource in included {
+                if let Some(fieldset) = plan.fieldsets.get(&resource.type_name) {
+                    apply_fieldset(resource, fieldset);
+                }
+            }
+        }
+    }
+    respond_with_validated_document(StatusCode::OK, document)
 }
 
 struct QueryParseError {
@@ -509,14 +617,16 @@ fn read_plan_error(error: ReadPlanError) -> Response {
         ReadPlanError::InvalidPageParameter { parameter, .. } => Some((*parameter).to_owned()),
         ReadPlanError::PageSizeExceedsMaximum { .. } => Some("page[size]".to_owned()),
         ReadPlanError::PageOffsetOverflow => Some("page[number]".to_owned()),
-        ReadPlanError::UnknownResourceType(_)
-        | ReadPlanError::InvalidPaginationConfig(_)
+        ReadPlanError::UnknownResourceType(resource_type) => {
+            Some(format!("fields[{resource_type}]"))
+        }
+        ReadPlanError::InvalidPaginationConfig(_)
         | ReadPlanError::PageOffsetExceedsMaximum { .. } => None,
     };
     protocol_error(
         StatusCode::BAD_REQUEST,
         "invalid_query",
-        "Invalid collection query",
+        "Invalid query",
         Some(error.to_string()),
         parameter,
     )
@@ -786,13 +896,6 @@ fn relationship_matches_target(relationship: &Relationship, target_type: &str) -
     }
 }
 
-fn respond_with_document(status: StatusCode, document: JsonApiDocument) -> Response {
-    match document.validate_response() {
-        Ok(()) => respond_with_validated_document(status, document),
-        Err(_) => adapter_error(),
-    }
-}
-
 fn respond_with_validated_document(status: StatusCode, document: JsonApiDocument) -> Response {
     let mut response = (status, Json(document)).into_response();
     set_jsonapi_headers(&mut response);
@@ -823,6 +926,13 @@ fn query_adapter_error(error: QueryAdapterError) -> Response {
     match error {
         QueryAdapterError::ReadFailed => adapter_error(),
         QueryAdapterError::NotAuthorized => forbidden_error(),
+        QueryAdapterError::ResourceReadUnsupported => protocol_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "resource_query_not_supported",
+            "Single-resource queries are not implemented",
+            Some("The configured query adapter cannot execute single-resource reads.".to_owned()),
+            None,
+        ),
         QueryAdapterError::LimitExceeded => protocol_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "resource_limit",

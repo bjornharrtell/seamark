@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use seamark::query::{
     FilterError, FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField,
     ReadPlanError, ReadQuery, SortDirection, SortField, parse_filter, plan_filters, plan_read,
+    plan_resource_read,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 
@@ -549,6 +550,65 @@ fn unknown_query_parameters_are_rejected_sorted_and_deduplicated() {
             "a".to_owned(),
             "cursor".to_owned(),
             "z".to_owned(),
+        ]))
+    );
+}
+
+#[test]
+fn single_resource_read_plans_includes_and_fieldsets() {
+    let query = ReadQuery {
+        fieldsets: BTreeMap::from([
+            ("ports".to_owned(), "name,owner".to_owned()),
+            ("people".to_owned(), "name".to_owned()),
+        ]),
+        includes: vec!["owner".to_owned()],
+        ..ReadQuery::default()
+    };
+    let plan = plan_resource_read(&registry(), "ports", &query, &pagination_config()).unwrap();
+
+    assert_eq!(plan.resource_type, "ports");
+    assert!(plan.filter.is_none());
+    assert!(plan.sort.is_empty());
+    assert_eq!(
+        plan.page,
+        Page {
+            number: 1,
+            size: 1,
+            offset: 0,
+            limit: 1,
+        }
+    );
+    assert_eq!(plan.fieldsets["ports"].len(), 2);
+    assert_eq!(plan.fieldsets["people"].len(), 1);
+    assert_eq!(
+        plan.includes,
+        vec![IncludeNode {
+            public_name: "owner".to_owned(),
+            model_field: "owner_id".to_owned(),
+            target_type: "people".to_owned(),
+            children: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn single_resource_read_rejects_collection_and_unknown_parameters_deterministically() {
+    let query = ReadQuery {
+        filters: vec!["equals(name,'A')".to_owned()],
+        sort: Some("name".to_owned()),
+        page_number: Some("2".to_owned()),
+        page_size: Some("5".to_owned()),
+        unsupported_parameters: vec!["cursor".to_owned()],
+        ..ReadQuery::default()
+    };
+    assert_eq!(
+        plan_resource_read(&registry(), "ports", &query, &pagination_config()),
+        Err(ReadPlanError::UnsupportedQueryParameters(vec![
+            "cursor".to_owned(),
+            "filter".to_owned(),
+            "page[number]".to_owned(),
+            "page[size]".to_owned(),
+            "sort".to_owned(),
         ]))
     );
 }

@@ -25,6 +25,14 @@ use crate::registry::{ResourceDefinition, ResourceRegistry};
 pub trait SeaOrmFilterValueCodec: Send + Sync {
     /// Converts a non-null query literal for a mapped model field.
     fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String>;
+
+    /// Converts a public resource identifier for its mapped model field.
+    ///
+    /// Implementations with typed identifiers should override this method.
+    /// The default preserves compatibility for string-backed identifiers.
+    fn encode_resource_identifier(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        self.encode_filter_value(model_field, value)
+    }
 }
 
 impl<C> SeaOrmFilterValueCodec for Arc<C>
@@ -33,6 +41,10 @@ where
 {
     fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
         self.as_ref().encode_filter_value(model_field, value)
+    }
+
+    fn encode_resource_identifier(&self, model_field: &str, value: &str) -> Result<Value, String> {
+        self.as_ref().encode_resource_identifier(model_field, value)
     }
 }
 
@@ -124,6 +136,15 @@ pub struct SeaOrmReadResult {
     pub included: Vec<IncludedResource>,
 }
 
+/// The projected result of a SeaORM single-resource read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeaOrmResourceReadResult {
+    /// The root resource after applying its sparse fieldset.
+    pub resource: AdapterResource,
+    /// Included resources after applying their sparse fieldsets.
+    pub included: Vec<IncludedResource>,
+}
+
 /// A failure while validating or executing a SeaORM read plan.
 #[derive(Debug)]
 pub enum SeaOrmExecutionError {
@@ -183,6 +204,17 @@ pub enum SeaOrmExecutionError {
         /// The mapper's concise conversion error.
         message: String,
     },
+    /// A resource identifier could not be converted to the mapped column type.
+    InvalidResourceIdentifier {
+        /// The internal identifier field.
+        model_field: String,
+        /// The identifier supplied by the client.
+        value: String,
+        /// The codec's concise conversion error.
+        message: String,
+    },
+    /// A single-resource plan contains collection-only filtering or sorting.
+    CollectionQueryInResourcePlan,
     /// The include loader rejected or failed the request.
     IncludeLoader(String),
     /// The database operation failed.
@@ -249,6 +281,16 @@ impl fmt::Display for SeaOrmExecutionError {
                 formatter,
                 "filter value `{value}` is invalid for model field `{model_field}`: {message}"
             ),
+            Self::InvalidResourceIdentifier {
+                model_field,
+                value,
+                message,
+            } => write!(
+                formatter,
+                "resource identifier `{value}` is invalid for model field `{model_field}`: {message}"
+            ),
+            Self::CollectionQueryInResourcePlan => formatter
+                .write_str("single-resource reads do not support filters, sorting, or pagination"),
             Self::IncludeLoader(message) => write!(formatter, "include loading failed: {message}"),
             Self::Database(error) => write!(formatter, "database read failed: {error}"),
         }
@@ -264,7 +306,7 @@ impl std::error::Error for SeaOrmExecutionError {
     }
 }
 
-/// Executes one registered resource's validated collection read plans.
+/// Executes one registered resource's validated collection and resource plans.
 ///
 /// The mapper converts typed SeaORM models into adapter records. Fieldset
 /// projection is enforced by the executor after mapping, so undeclared model
@@ -436,6 +478,119 @@ where
             resources,
             included,
         })
+    }
+
+    /// Executes a single-resource read by its public persistent identifier.
+    ///
+    /// Includes and sparse fieldsets use the same validated, adapter-independent
+    /// plan as collection reads. The configured codec converts the identifier
+    /// to the entity's typed column value before the database query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before querying for a resource mismatch, unsupported
+    /// collection-only filter/sort plan, invalid field/include mapping,
+    /// identifier conversion failure, a missing include loader, authorization
+    /// denial, or an application limit failure.
+    pub async fn resource(
+        &self,
+        database: &DatabaseConnection,
+        id: &str,
+        plan: &ReadPlan,
+        guard: &dyn SeaOrmReadGuard,
+        include_loader: Option<&dyn SeaOrmIncludeLoader<E>>,
+    ) -> Result<Option<SeaOrmResourceReadResult>, SeaOrmExecutionError>
+    where
+        E::Column: ColumnTrait,
+    {
+        let definition = self
+            .registry
+            .resource(&self.resource_type)
+            .map_err(|_| SeaOrmExecutionError::UnknownResourceType(self.resource_type.clone()))?;
+        if plan.resource_type != self.resource_type {
+            return Err(SeaOrmExecutionError::ResourceTypeMismatch {
+                expected: self.resource_type.clone(),
+                actual: plan.resource_type.clone(),
+            });
+        }
+        if plan.filter.is_some()
+            || !plan.sort.is_empty()
+            || plan.page
+                != (Page {
+                    number: 1,
+                    size: 1,
+                    offset: 0,
+                    limit: 1,
+                })
+        {
+            return Err(SeaOrmExecutionError::CollectionQueryInResourcePlan);
+        }
+        validate_page_plan(plan.page)?;
+        validate_fieldset_mappings(&self.registry, plan)?;
+        validate_include_mappings(&self.registry, &plan.resource_type, &plan.includes)?;
+        guard
+            .validate_limits(plan)
+            .map_err(SeaOrmExecutionError::LimitExceeded)?;
+        if !guard.authorize(plan).await {
+            return Err(SeaOrmExecutionError::NotAuthorized);
+        }
+        if !plan.includes.is_empty() && include_loader.is_none() {
+            return Err(SeaOrmExecutionError::IncludeLoaderRequired);
+        }
+
+        let identifier_value = self
+            .filter_value_codec
+            .encode_resource_identifier(definition.identifier_field(), id)
+            .map_err(|message| SeaOrmExecutionError::InvalidResourceIdentifier {
+                model_field: definition.identifier_field().to_owned(),
+                value: id.to_owned(),
+                message,
+            })?;
+        let identifier_column = column::<E>(definition.identifier_field())?;
+        let Some(row) = E::find()
+            .filter(identifier_column.eq(identifier_value))
+            .one(database)
+            .await
+            .map_err(SeaOrmExecutionError::Database)?
+        else {
+            return Ok(None);
+        };
+
+        let fieldset = plan.fieldsets.get(&plan.resource_type).map(Vec::as_slice);
+        let resource = project_record(definition, (self.mapper)(&row), fieldset);
+        let included = if let Some(loader) = include_loader.filter(|_| !plan.includes.is_empty()) {
+            loader
+                .load_included(
+                    database,
+                    std::slice::from_ref(&row),
+                    &plan.includes,
+                    &plan.fieldsets,
+                )
+                .await
+                .map_err(SeaOrmExecutionError::IncludeLoader)?
+                .into_iter()
+                .map(|mut included| {
+                    let definition =
+                        self.registry
+                            .resource(&included.resource_type)
+                            .map_err(|_| {
+                                SeaOrmExecutionError::UnknownResourceType(
+                                    included.resource_type.clone(),
+                                )
+                            })?;
+                    let fieldset = plan
+                        .fieldsets
+                        .get(&included.resource_type)
+                        .map(Vec::as_slice);
+                    included.resource = project_record(definition, included.resource, fieldset);
+                    Ok(included)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+
+        Ok(Some(SeaOrmResourceReadResult { resource, included }))
     }
 }
 

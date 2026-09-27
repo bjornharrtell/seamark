@@ -508,13 +508,24 @@ existing `ref` object; `atomic_http_requires_a_relationship_ref_for_relationship
 proves the valid control reaches the handler and the invalid request is rejected
 before authorization or handler invocation.
 
-M4 single-resource query-boundary evidence is provided by
-`postgres_single_resource_queries_reject_before_authorization_or_adapters`
-and `sqlite_single_resource_queries_reject_before_authorization_or_adapters`.
-Each sends `GET /ports/1?include=owner` through the collection-query-enabled
-router and verifies JSON:API 400 `unsupported_query` with source parameter
-`include`, before authorization or either query/resource adapter is invoked.
-The PostgreSQL-targeted router probe needs no database connection; the SQLite
-case uses the actual SeaORM query adapter and asserts it is not called. SeaORM
-query execution remains collection-only; no single-resource `ReadPlan`
-executor is provided.
+### M4 single-resource include and sparse-fieldset execution
+
+`plan_resource_read` reuses the adapter-independent `ReadPlan` and registry
+allowlists for single-resource includes and `fields[resource-type]`, while
+rejecting collection-only filters, sort, page number, and page size as a
+sorted, deduplicated unsupported-parameter error. The router plans these
+requests before authorization and calls the query adapter's resource operation.
+`SeaOrmQueryExecutor::resource` validates public mappings before limits,
+authorization, and SQL; it converts the persistent ID through
+`SeaOrmFilterValueCodec::encode_resource_identifier`, loads the selected row,
+and invokes the application include loader with that root.
+
+`query_router_plans_single_resource_includes_and_fieldsets` asserts the
+adapter-independent response projection. The shared PostgreSQL and SQLite
+query integration tests execute `/ports/1?include=owner` with root and included
+sparse fieldsets, asserting the exact document, included identity, and linkage.
+Shared string, i64, and UUID identifier cases also exercise typed single-row
+lookups. The HTTP route tests reject collection-only query components,
+unregistered fields, and relationships with exact parameter sources and zero
+authorization or adapter calls; the backend route regressions pair the valid
+document with an invalid-filter control that performs no SQL.

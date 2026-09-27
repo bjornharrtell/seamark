@@ -36,11 +36,12 @@ use seamark::atomic::{
 };
 use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
-    QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+    QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RequestAuthorizer,
+    ResourceAdapter,
 };
 use seamark::query::{
     FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField, ReadPlan,
-    ReadQuery, SortDirection, SortField, plan_read,
+    ReadQuery, SortDirection, SortField, plan_read, plan_resource_read,
 };
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
@@ -175,7 +176,7 @@ struct PortCodec;
 impl SeaOrmFilterValueCodec for PortCodec {
     fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
         match model_field {
-            "berth_count" | "depth_m" => value
+            "port_id" | "berth_count" | "depth_m" => value
                 .parse::<i32>()
                 .map(Value::from)
                 .map_err(|error| error.to_string()),
@@ -411,40 +412,44 @@ impl QueryResourceAdapter for PortHttpQueryAdapter {
                 .collect(),
         })
     }
-}
-
-#[derive(Default)]
-struct EmptyAdapter;
-
-#[async_trait]
-impl ResourceAdapter for EmptyAdapter {
-    async fn collection(
-        &self,
-        _resource: &ResourceDefinition,
-    ) -> Result<Vec<AdapterResource>, AdapterError> {
-        Ok(Vec::new())
-    }
 
     async fn resource(
         &self,
         _resource: &ResourceDefinition,
-        _id: &str,
-    ) -> Result<Option<AdapterResource>, AdapterError> {
-        Ok(None)
-    }
-}
-
-struct AllowHttpRequest;
-
-#[async_trait]
-impl RequestAuthorizer for AllowHttpRequest {
-    async fn authorize(
-        &self,
-        _resource_type: &str,
-        _resource_id: Option<&str>,
-        _headers: &HeaderMap,
-    ) -> bool {
-        true
+        id: &str,
+        plan: &ReadPlan,
+    ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let result = self
+            .executor
+            .resource(
+                &self.database,
+                id,
+                plan,
+                &AllowGuard,
+                Some(&PortOwnerLoader),
+            )
+            .await
+            .map_err(|error| match error {
+                seamark::seaorm::SeaOrmExecutionError::NotAuthorized => {
+                    QueryAdapterError::NotAuthorized
+                }
+                seamark::seaorm::SeaOrmExecutionError::LimitExceeded(_) => {
+                    QueryAdapterError::LimitExceeded
+                }
+                _ => QueryAdapterError::ReadFailed,
+            })?;
+        Ok(result.map(|result| QueryResourceResult {
+            resource: result.resource,
+            included: result
+                .included
+                .into_iter()
+                .map(|included| AdapterIncludedResource {
+                    resource_type: included.resource_type,
+                    resource: included.resource,
+                })
+                .collect(),
+        }))
     }
 }
 
@@ -1191,6 +1196,47 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     included_neighbor_ids.sort_unstable();
     assert_eq!(included_neighbor_ids, query_cases::NEIGHBOR_PORT_IDS);
 
+    let single_resource_plan = plan_resource_read(
+        &registry(),
+        "ports",
+        &query_cases::single_resource_with_owner(),
+        &pagination(),
+    )
+    .unwrap();
+    let single_resource_result = executor
+        .resource(
+            &database,
+            "1",
+            &single_resource_plan,
+            &AllowGuard,
+            Some(&PortOwnerLoader),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(single_resource_result.resource.id, "1");
+    assert_eq!(
+        single_resource_result.resource.attributes,
+        BTreeMap::from([("title".to_owned(), json!("Alpha"))])
+    );
+    assert_eq!(
+        single_resource_result.resource.relationships["owner_id"].data,
+        Some(seamark::document::RelationshipData::One(
+            seamark::document::ResourceIdentifier {
+                type_name: "people".to_owned(),
+                id: Some("11".to_owned()),
+                ..seamark::document::ResourceIdentifier::default()
+            }
+        ))
+    );
+    assert_eq!(single_resource_result.included.len(), 1);
+    assert_eq!(single_resource_result.included[0].resource_type, "people");
+    assert_eq!(single_resource_result.included[0].resource.id, "11");
+    assert_eq!(
+        single_resource_result.included[0].resource.attributes,
+        BTreeMap::from([("display_name".to_owned(), json!("Mara"))])
+    );
+
     for (filter, expected_ids) in query_cases::FILTER_CASES {
         let query = ReadQuery {
             filters: vec![filter.to_owned()],
@@ -1223,10 +1269,16 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         .unwrap(),
         calls: query_calls.clone(),
     });
+    let authorization_calls = Arc::new(AtomicUsize::new(0));
+    let resource_calls = Arc::new(AtomicUsize::new(0));
     let app = http::router_with_query(
         Arc::new(registry()),
-        Arc::new(EmptyAdapter),
-        Arc::new(AllowHttpRequest),
+        Arc::new(SingleResourceProbeAdapter {
+            calls: resource_calls.clone(),
+        }),
+        Arc::new(SingleResourceProbeAuthorizer {
+            calls: authorization_calls.clone(),
+        }),
         query_adapter,
         pagination(),
     );
@@ -1268,6 +1320,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     );
 
     let neighbors_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/ports?filter=equals%28name%2C%27Alpha%27%29&include=neighbors&fields%5Bports%5D=name,neighbors")
@@ -1307,12 +1360,65 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         assert_eq!(resource["attributes"]["name"], expected_name);
     }
 
-    assert_eq!(query_calls.load(Ordering::SeqCst), 3);
+    let resource_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1?include=owner&fields%5Bports%5D=name,owner&fields%5Bpeople%5D=name")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resource_response.status(), StatusCode::OK);
+    assert_eq!(
+        resource_response.headers().get(CONTENT_TYPE).unwrap(),
+        "application/vnd.api+json"
+    );
+    assert_eq!(resource_response.headers().get(VARY).unwrap(), "Accept");
+    let resource_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(resource_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        resource_document,
+        query_cases::single_resource_owner_document()
+    );
+
+    let invalid_resource_query = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1?filter=equals%28name%2C%27Alpha%27%29")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_resource_query.status(), StatusCode::BAD_REQUEST);
+    let invalid_resource_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(invalid_resource_query.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        invalid_resource_document["errors"][0]["code"],
+        "invalid_query"
+    );
+    assert_eq!(
+        invalid_resource_document["errors"][0]["source"]["parameter"],
+        "filter"
+    );
+    assert_eq!(authorization_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 4);
     database.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn sqlite_single_resource_queries_reject_before_authorization_or_adapters() {
+async fn sqlite_single_resource_collection_queries_reject_before_authorization_or_adapters() {
     let database = database().await;
     let resource_calls = Arc::new(AtomicUsize::new(0));
     let authorization_calls = Arc::new(AtomicUsize::new(0));
@@ -1343,7 +1449,7 @@ async fn sqlite_single_resource_queries_reject_before_authorization_or_adapters(
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/ports/1?include=owner")
+                .uri("/ports/1?filter=equals%28name%2C%27Alpha%27%29")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1357,8 +1463,8 @@ async fn sqlite_single_resource_queries_reject_before_authorization_or_adapters(
     assert_eq!(response.headers().get(VARY).unwrap(), "Accept");
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["errors"][0]["code"], "unsupported_query");
-    assert_eq!(body["errors"][0]["source"]["parameter"], "include");
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "filter");
     assert_eq!(authorization_calls.load(Ordering::SeqCst), 0);
     assert_eq!(resource_calls.load(Ordering::SeqCst), 0);
     assert_eq!(query_calls.load(Ordering::SeqCst), 0);
