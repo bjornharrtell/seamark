@@ -1083,7 +1083,12 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_object_maps() {
             "links": {"@annotation": false, "self": "/ports/1"},
             "meta": {"@annotation": false, "visible": true}
         },
-        "links": {"@annotation": false, "self": "/ports"},
+        "links": {"@annotation": false, "self": {
+            "href": "/ports",
+            "@linkAnnotation": false,
+            "meta": {"@metaAnnotation": false, "visible": true},
+            "describedby": {"href": "/schema", "@describedbyAnnotation": false}
+        }},
         "meta": {"@annotation": false, "revision": "one"},
         "jsonapi": {"version": "1.1", "meta": {"@annotation": false, "vendor": "fixture"}}
     }))
@@ -1097,7 +1102,11 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_object_maps() {
     assert_eq!(document.links.as_ref().unwrap().len(), 1);
     assert_eq!(
         document.links.as_ref().unwrap().get("self"),
-        Some(&json!("/ports"))
+        Some(&json!({
+            "href": "/ports",
+            "meta": {"visible": true},
+            "describedby": {"href": "/schema"}
+        }))
     );
     let Some(PrimaryData::One(resource)) = document.data.as_ref() else {
         panic!("expected one primary resource");
@@ -1140,6 +1149,11 @@ fn ignores_valid_at_members_and_rejects_invalid_names_in_object_maps() {
     for value in [
         json!({"meta": {"@bad/": false}}),
         json!({"links": {"@bad/": false}}),
+        json!({"links": {"self": {"href": "/ports", "@bad/": false}}}),
+        json!({"links": {"self": {"href": "/ports", "meta": {"@bad/": false}}}}),
+        json!({"links": {"self": {"href": "/ports", "describedby": {
+            "href": "/schema", "@bad/": false
+        }}}}),
         json!({"data": {"type": "ports", "id": "1", "meta": {"@bad/": false}}}),
         json!({"data": {"type": "ports", "id": "1", "links": {"@bad/": false}}}),
         json!({"data": {"type": "ports", "id": "1", "relationships": {"owner": {

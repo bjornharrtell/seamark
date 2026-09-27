@@ -1310,16 +1310,7 @@ where
     D: Deserializer<'de>,
 {
     let values = ObjectOnly::<Map<String, Value>>::deserialize(deserializer)?.into_inner();
-    let had_members = !values.is_empty();
-    let members = values
-        .into_iter()
-        .filter(|(name, _)| !is_at_member(name))
-        .collect::<Map<_, _>>();
-    if had_members && members.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(members))
-    }
+    remove_at_members(values)
 }
 
 pub(crate) fn deserialize_links<'de, D>(
@@ -1328,7 +1319,14 @@ pub(crate) fn deserialize_links<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    deserialize_object_map_ignoring_at_members(deserializer)
+    let values = ObjectOnly::<Map<String, Value>>::deserialize(deserializer)?.into_inner();
+    let Some(mut links) = remove_at_members(values)? else {
+        return Ok(None);
+    };
+    for link in links.values_mut() {
+        remove_at_members_from_link(link)?;
+    }
+    Ok(Some(links))
 }
 
 pub(crate) fn deserialize_metadata<'de, D>(
@@ -1338,6 +1336,54 @@ where
     D: Deserializer<'de>,
 {
     deserialize_object_map_ignoring_at_members(deserializer)
+}
+
+fn remove_at_members<E>(values: Map<String, Value>) -> Result<Option<Map<String, Value>>, E>
+where
+    E: serde::de::Error,
+{
+    let had_members = !values.is_empty();
+    let mut members = Map::new();
+    for (name, value) in values {
+        if is_at_member(&name) {
+            validate_member_name(&name).map_err(E::custom)?;
+        } else {
+            members.insert(name, value);
+        }
+    }
+    if had_members && members.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(members))
+    }
+}
+
+fn remove_at_members_from_link<E>(link: &mut Value) -> Result<(), E>
+where
+    E: serde::de::Error,
+{
+    let Value::Object(link_object) = link else {
+        return Ok(());
+    };
+    let mut link_object = std::mem::take(link_object);
+    let metadata = link_object.remove("meta");
+    let describedby = link_object.remove("describedby");
+    let mut link_object = remove_at_members(link_object)?.unwrap_or_default();
+    if let Some(metadata) = metadata {
+        let metadata = match metadata {
+            Value::Object(metadata) => remove_at_members(metadata)?.map(Value::Object),
+            value => Some(value),
+        };
+        if let Some(metadata) = metadata {
+            link_object.insert("meta".to_owned(), metadata);
+        }
+    }
+    if let Some(mut describedby) = describedby {
+        remove_at_members_from_link(&mut describedby)?;
+        link_object.insert("describedby".to_owned(), describedby);
+    }
+    *link = Value::Object(link_object);
+    Ok(())
 }
 
 pub(crate) fn deserialize_relationships<'de, D>(
