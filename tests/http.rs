@@ -746,6 +746,18 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
         assert_eq!(errors[0].status.as_deref(), Some("415"));
     }
 
+    let mut duplicate_content_type =
+        mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
+    duplicate_content_type
+        .headers_mut()
+        .append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let response = app.clone().oneshot(duplicate_content_type).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_jsonapi_headers(&response);
+    let errors = error_document(response).await.errors.unwrap();
+    assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
+    assert_eq!(errors[0].status.as_deref(), Some("415"));
+
     assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
     assert!(adapter.commands.lock().unwrap().is_empty());
 
