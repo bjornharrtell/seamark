@@ -104,6 +104,18 @@ still pass through the application loader on both backends and assert exact
 included identities and linkage. Include traversal remains application
 provided and database-backed.
 
+### M4 SeaORM pagination-plan enforcement
+
+`authorization_limits_and_validation_failures_precede_queries` (PostgreSQL)
+and `sqlite_query_executor_validates_include_trees_before_authorization_or_loading`
+(SQLite) reject manually constructed pages with zero number, size, or limit,
+limit/size mismatch, checked offset overflow, or offset inconsistent with
+`(number - 1) * size` before calling the guard. Each backend also rejects
+page-size and offset values above its explicitly configured `BoundedGuard`
+limits before authorization. A database-backed page at the exact configured
+maximum size and offset succeeds on both backends. `Page` fields are unsigned,
+so negative values are unrepresentable; the checks add no defaults or caps.
+
 ### M5 empty-operations request evidence
 
 The [Atomic Operations extension](https://jsonapi.org/ext/atomic/#document-structure)
