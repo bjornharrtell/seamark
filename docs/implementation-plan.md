@@ -66,6 +66,21 @@ returns HTTP 200 with one empty result. Existing
 `accepts_uri_reference_targets_for_resource_mutations` coverage continues to
 reject the malformed `not a URI reference` value.
 
+### M5 to-many relationship replacement evidence
+
+The [Atomic to-many relationship rules](https://jsonapi.org/ext/atomic/#updating-to-many-relationships)
+define `add`, `remove`, and `update` as add-members, remove-members, and
+replace-all operations. `SeaOrmJoinTableMutationHandler` now implements all
+three for explicitly configured two-column join tables. The shared
+`execute_to_many_relationship_replacement_case` runs on PostgreSQL and SQLite:
+it asserts a non-empty replacement, empty-array clearing, and rollback when a
+replacement includes a target that violates the join table's foreign key.
+The helper resolves the owner and members through `LocalIdMap`, checks the
+declared target type, returns the required empty result object, and relies on
+the operation transaction for rollback. Its two-column table stores set
+membership, not member order; ordered associations and other shapes remain
+application-dispatched.
+
 ## Delivery and verification workflow
 
 - Work iteratively in a pull request tracking issue #1. Keep this roadmap

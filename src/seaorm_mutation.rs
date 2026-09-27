@@ -75,6 +75,7 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
 /// configured explicitly because registry relationship fields do not encode
 /// association cardinality or join-table structure. Other association shapes
 /// remain available to custom [`SeaOrmAtomicOperationExecutor`] implementations.
+/// This two-column mapping does not persist relationship member ordering.
 pub struct SeaOrmJoinTableMutationHandler<E, C>
 where
     E: EntityTrait,

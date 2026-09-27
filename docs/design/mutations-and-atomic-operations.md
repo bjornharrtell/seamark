@@ -64,6 +64,9 @@ not infer cardinality or join-table structure from the registry's opaque
 relationship field. Direct foreign-key to-many associations, join tables with
 additional required columns, and other custom persistence rules continue to
 use application-provided `SeaOrmAtomicOperationExecutor` implementations.
+The two-column mapping has no position column and does not preserve linkage
+order; applications that define ordered relationships must provide a custom
+executor.
 
 `execute_atomic_operations` runs planned operations sequentially in one
 SeaORM transaction. A required guard authorizes the request and applies
