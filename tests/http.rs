@@ -705,6 +705,55 @@ async fn query_router_rejects_invalid_queries_before_authorization_or_execution(
 }
 
 #[tokio::test]
+async fn query_router_rejects_unknown_include_relationship_before_execution() {
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request("/ports?include=owner", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = serde_json::to_value(document(response).await).unwrap();
+    assert_eq!(
+        body["included"],
+        json!([{
+            "type": "people",
+            "id": "3",
+            "attributes": {"name": "Ada"}
+        }])
+    );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request("/ports?include=owner.unknown", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["status"], "400");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "include");
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn query_router_authorizes_before_calling_query_adapter() {
     let query_adapter = Arc::new(TestQueryAdapter {
         plans: Arc::new(Mutex::new(Vec::new())),

@@ -80,11 +80,14 @@ paginated resources, relationship linkage, included resources, and sparse
 fieldsets. Shared PostgreSQL/SQLite query tests cover nullable to-one linkage
 and an application-defined self-referential to-many mapping, including two
 related resources loaded into `included` through the adapter contract. A
-PostgreSQL route regression verifies invalid queries are rejected
-before adapter execution, maps SeaORM authorization and resource-limit failures
-to HTTP 403 and 413, and proves both guarded outcomes occur before SQL against
-an intentionally absent table. The registry rejects resource type and public field names that do
-not meet JSON:API member-name rules. The fallible
+focused Axum regression pairs successful `include=owner` execution with an
+unknown nested include path that returns a JSON:API 400 before authorization
+or any query, include-loader, or collection adapter call. A PostgreSQL route
+regression verifies invalid queries are rejected before adapter execution,
+maps SeaORM authorization and resource-limit failures to HTTP 403 and 413,
+and proves both guarded outcomes occur before SQL against an intentionally
+absent table. The registry rejects resource type and public field names that
+do not meet JSON:API member-name rules. The fallible
 `SeaOrmQueryExecutor::new` validates the registered identifier and all
 filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
