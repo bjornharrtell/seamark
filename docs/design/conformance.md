@@ -89,7 +89,10 @@ ascending `capacity` returns IDs `1,2,3`, and descending returns `2,1,3`.
 `src/seaorm.rs` explicitly sorts the null predicate ascending before each
 requested field order, so null values are last in either direction rather
 than relying on differing native backend defaults. Existing non-null
-descending-depth coverage remains unchanged.
+descending-depth coverage remains unchanged. The shared
+`multi_field_sorted_ports` case sorts by `active,-capacity`: ports `1` and `3`
+tie on the first key, and the secondary descending nullable key produces exact
+IDs `2,1,3`, keeping the null-capacity port last on both PostgreSQL and SQLite.
 SQLite foreign-key behavior is checked on the actual
 `Database::connect("sqlite::memory:")` connection: the query fixture asserts
 `PRAGMA foreign_keys` is `1` and rejects an orphan owner ID.

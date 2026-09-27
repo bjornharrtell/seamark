@@ -611,6 +611,17 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         query_cases::assert_sorted_nullable_capacity(&result, expected_ids);
     }
 
+    let multi_field_sorted_result = executor
+        .collection(
+            &database,
+            &plan(&query_cases::multi_field_sorted_ports()),
+            &AllowGuard,
+            None,
+        )
+        .await
+        .unwrap();
+    query_cases::assert_multi_field_sorted_ports(&multi_field_sorted_result);
+
     let nested_neighbors = executor
         .collection(
             &database,

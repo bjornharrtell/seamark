@@ -82,6 +82,15 @@ the operation transaction for rollback. Its two-column table stores set
 membership, not member order; ordered associations and other shapes remain
 application-dispatched.
 
+### M7 multi-field nullable sort parity evidence
+
+The shared `multi_field_sorted_ports` database case runs on PostgreSQL and
+SQLite with the allow-listed sort `active,-capacity`. Ports 1 and 3 tie on
+`active`; the secondary descending nullable `capacity` key yields exact IDs
+`2,1,3`, keeping the null-capacity row last. The existing single-field
+ascending and descending capacity controls remain in place and continue to
+assert NULLS LAST on both backends.
+
 ## Delivery and verification workflow
 
 - Work iteratively in a pull request tracking issue #1. Keep this roadmap
