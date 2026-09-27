@@ -1116,7 +1116,7 @@ pub async fn execute_local_id_to_one_relationship_case(database: &DatabaseConnec
                     "op": "add",
                     "data": {
                         "type": "people",
-                        "lid": "local-owner",
+                        "lid": "",
                         "attributes": {"name": "Local Owner"}
                     }
                 },
@@ -1128,7 +1128,7 @@ pub async fn execute_local_id_to_one_relationship_case(database: &DatabaseConnec
                         "attributes": {"name": "Local Port"},
                         "relationships": {
                             "owner": {
-                                "data": {"type": "people", "lid": "local-owner"}
+                                "data": {"type": "people", "lid": ""}
                             }
                         }
                     }

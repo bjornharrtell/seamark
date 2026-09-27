@@ -1326,6 +1326,60 @@ fn atomic_references_require_type_and_exactly_one_identity() {
 }
 
 #[test]
+fn atomic_identifiers_accept_empty_jsonapi_strings() {
+    let operations = plan(json!({
+        "atomic:operations": [
+            {"op": "add", "data": {"type": "authors", "id": "", "attributes": {"name": "Empty ID"}}},
+            {
+                "op": "update",
+                "ref": {"type": "authors", "id": ""},
+                "data": {"type": "authors", "id": "", "attributes": {"name": "Updated"}}
+            },
+            {"op": "add", "data": {"type": "authors", "lid": "", "attributes": {"name": "Empty local ID"}}},
+            {
+                "op": "update",
+                "ref": {"type": "authors", "lid": ""},
+                "data": {"type": "authors", "lid": "", "attributes": {"name": "Updated Empty Local ID"}}
+            },
+            {
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": {"type": "authors", "lid": ""}
+            },
+            {
+                "op": "add",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": [{"type": "tags", "id": ""}]
+            }
+        ]
+    }))
+    .expect("empty string identifiers are valid JSON:API identifiers");
+    assert_eq!(operations.len(), 6);
+
+    let empty_identity = ResourceIdentifier {
+        type_name: "authors".to_owned(),
+        id: Some(String::new()),
+        ..ResourceIdentifier::default()
+    };
+    assert_eq!(
+        LocalIdMap::default().resolve(&empty_identity).unwrap(),
+        empty_identity
+    );
+
+    let response = document(json!({
+        "atomic:results": [
+            {"data": {"type": "authors", "id": ""}},
+            {},
+            {"data": {"type": "authors", "id": "assigned"}},
+            {},
+            {},
+            {}
+        ]
+    }));
+    response.validate_response_for(&operations).unwrap();
+}
+
+#[test]
 fn rejects_forward_duplicate_and_mismatched_local_id_references() {
     let forward = plan(json!({
         "atomic:operations": [
@@ -1693,13 +1747,13 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
         .unwrap();
     let operations = plan(json!({
         "atomic:operations": [
-            {"op": "add", "data": {"type": "authors", "lid": "author-local", "attributes": {"name": "Ada"}}},
+            {"op": "add", "data": {"type": "authors", "lid": "", "attributes": {"name": "Ada"}}},
             {
                 "op": "add",
                 "data": {
                     "type": "articles",
                     "lid": "article-local",
-                    "relationships": {"author": {"data": {"type": "authors", "lid": "author-local"}}}
+                    "relationships": {"author": {"data": {"type": "authors", "lid": ""}}}
                 }
             }
         ]

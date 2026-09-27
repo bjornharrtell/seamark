@@ -1572,7 +1572,7 @@ async fn atomic_http_rejects_invalid_linkage_identities_before_authorization() {
         assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
         assert_eq!(
             error["errors"][0]["detail"],
-            "invalid operation 0 at `/atomic:operations/0`: relationship identifiers require exactly one non-empty `id` or `lid`"
+            "invalid operation 0 at `/atomic:operations/0`: relationship identifiers require exactly one `id` or `lid`"
         );
         assert_eq!(
             error["errors"][0]["source"]["pointer"],

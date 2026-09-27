@@ -1104,8 +1104,8 @@ fn validate_reference(
         .resource(&reference.type_name)
         .map_err(|_| format!("resource type `{}` is not registered", reference.type_name))?;
     match (&reference.id, &reference.lid) {
-        (Some(id), None) if !id.is_empty() => {}
-        (None, Some(lid)) if !lid.is_empty() => {
+        (Some(_), None) => {}
+        (None, Some(lid)) => {
             if !local_ids.contains(&(reference.type_name.clone(), lid.clone())) {
                 return Err(format!(
                     "local id `{lid}` for resource type `{}` has not been added earlier",
@@ -1116,7 +1116,7 @@ fn validate_reference(
         (Some(_), Some(_)) => {
             return Err("a reference must contain `id` or `lid`, not both".to_owned());
         }
-        _ => return Err("a reference requires a non-empty `id` or `lid`".to_owned()),
+        _ => return Err("a reference requires exactly one `id` or `lid`".to_owned()),
     }
     if let Some(relationship) = &reference.relationship {
         if relationship.is_empty() {
@@ -1183,11 +1183,6 @@ fn validate_resource_data(
         .map_err(|error| fail(format!("resource links are invalid: {error}")))?;
     if data.type_name.is_empty() {
         return Err(fail("resource `type` must not be empty".to_owned()));
-    }
-    if data.id.as_deref().is_some_and(str::is_empty)
-        || data.lid.as_deref().is_some_and(str::is_empty)
-    {
-        return Err(fail("resource identifiers must not be empty".to_owned()));
     }
     if data.id.is_some() && data.lid.is_some() {
         return Err(fail(
@@ -1378,15 +1373,13 @@ fn validate_linkage(
             )
         })?;
         if identifier.type_name.is_empty()
-            || identifier.id.as_deref().is_some_and(str::is_empty)
-            || identifier.lid.as_deref().is_some_and(str::is_empty)
             || (identifier.id.is_none() && identifier.lid.is_none())
             || (identifier.id.is_some() && identifier.lid.is_some())
         {
             return Err(invalid_operation(
                 index,
                 path,
-                "relationship identifiers require exactly one non-empty `id` or `lid`",
+                "relationship identifiers require exactly one `id` or `lid`",
             ));
         }
         if let Some(lid) = &identifier.lid {
@@ -1503,9 +1496,7 @@ impl LocalIdMap {
     /// Returns an error when the local ID has not been assigned yet.
     pub fn resolve(&self, identifier: &ResourceIdentifier) -> Result<ResourceIdentifier, String> {
         match (&identifier.id, &identifier.lid) {
-            (Some(id), None) if !identifier.type_name.is_empty() && !id.is_empty() => {
-                Ok(identifier.clone())
-            }
+            (Some(_), None) if !identifier.type_name.is_empty() => Ok(identifier.clone()),
             (None, Some(lid)) => self
                 .identities
                 .get(&(identifier.type_name.clone(), lid.clone()))
@@ -1549,10 +1540,7 @@ impl LocalIdMap {
         lid: &str,
         identity: ResourceIdentifier,
     ) -> Result<(), String> {
-        if identity.type_name != type_name
-            || identity.id.as_deref().is_none_or(str::is_empty)
-            || identity.lid.is_some()
-        {
+        if identity.type_name != type_name || identity.id.is_none() || identity.lid.is_some() {
             return Err(format!(
                 "add operation for `{type_name}` lid `{lid}` did not return a persistent identity"
             ));
@@ -1966,7 +1954,7 @@ fn resource_result_identity(
     let id = resource.id.ok_or_else(|| {
         format!("resource result data must contain a persistent `{expected_type}` identity")
     })?;
-    if id.is_empty() || resource.lid.is_some() {
+    if resource.lid.is_some() {
         return Err(format!(
             "resource result data must contain a persistent `{expected_type}` identity"
         ));

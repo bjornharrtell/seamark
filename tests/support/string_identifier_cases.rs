@@ -226,6 +226,13 @@ pub async fn run(database: &DatabaseConnection) {
         .await
         .unwrap();
     }
+    person::ActiveModel {
+        person_code: Set(String::new()),
+        display_name: Set("Empty ID".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
     for (vessel_code, title, owner_code) in [
         ("harbor-east", "East Harbor", "captain-1"),
         ("harbor-west", "West Harbor", "captain-2"),
@@ -337,7 +344,26 @@ pub async fn run(database: &DatabaseConnection) {
                     "relationships": {"owner": {"data": {"type": "people", "id": "captain-2"}}}
                 }
             },
-            {"op": "remove", "ref": {"type": "vessels", "id": "harbor-west"}}
+            {"op": "remove", "ref": {"type": "vessels", "id": "harbor-west"}},
+            {
+                "op": "add",
+                "data": {
+                    "type": "vessels",
+                    "id": "",
+                    "attributes": {"name": "Empty Harbor"},
+                    "relationships": {"owner": {"data": {"type": "people", "id": ""}}}
+                }
+            },
+            {
+                "op": "update",
+                "ref": {"type": "vessels", "id": ""},
+                "data": {"type": "vessels", "id": "", "attributes": {"name": "Empty Harbor Updated"}}
+            },
+            {
+                "op": "update",
+                "ref": {"type": "vessels", "id": "", "relationship": "owner"},
+                "data": {"type": "people", "id": "captain-1"}
+            }
         ]
     }))
     .unwrap();
@@ -362,12 +388,15 @@ pub async fn run(database: &DatabaseConnection) {
             {},
             {},
             {"data": {"type": "vessels", "id": "harbor-north"}},
+            {},
+            {"data": {"type": "vessels", "id": ""}},
+            {},
             {}
         ])
     );
 
     let vessels = vessel::Entity::find().all(database).await.unwrap();
-    assert_eq!(vessels.len(), 2);
+    assert_eq!(vessels.len(), 3);
     assert!(vessels.iter().any(|vessel| {
         vessel.vessel_code == "harbor-east"
             && vessel.title == "East Harbor Updated"
@@ -377,6 +406,11 @@ pub async fn run(database: &DatabaseConnection) {
         vessel.vessel_code == "harbor-north"
             && vessel.title == "North Harbor"
             && vessel.owner_code == "captain-2"
+    }));
+    assert!(vessels.iter().any(|vessel| {
+        vessel.vessel_code.is_empty()
+            && vessel.title == "Empty Harbor Updated"
+            && vessel.owner_code == "captain-1"
     }));
     assert!(
         person::Entity::find()
