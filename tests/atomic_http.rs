@@ -199,11 +199,19 @@ impl AtomicOperationHandler for LocalIdHandler {
     }
 }
 
-struct TestHrefResolver;
+struct TestHrefResolver {
+    base_url: &'static str,
+}
+
+impl TestHrefResolver {
+    fn matches_route(&self, href: &str, path: &str) -> bool {
+        href == path || href == format!("{}{path}", self.base_url)
+    }
+}
 
 impl AtomicHrefResolver for TestHrefResolver {
     fn resolve_relationship(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
-        if href == "/articles/1/relationships/author" {
+        if self.matches_route(href, "/articles/1/relationships/author") {
             Ok(Some(AtomicResourceReference {
                 type_name: "articles".to_owned(),
                 id: Some("1".to_owned()),
@@ -216,7 +224,7 @@ impl AtomicHrefResolver for TestHrefResolver {
     }
 
     fn resolve_resource(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
-        if href == "/articles/1" {
+        if self.matches_route(href, "/articles/1") {
             Ok(Some(AtomicResourceReference {
                 type_name: "articles".to_owned(),
                 id: Some("1".to_owned()),
@@ -229,7 +237,9 @@ impl AtomicHrefResolver for TestHrefResolver {
     }
 
     fn resolve_collection(&self, href: &str) -> Result<Option<String>, String> {
-        Ok((href == "/articles").then(|| "articles".to_owned()))
+        Ok(self
+            .matches_route(href, "/articles")
+            .then(|| "articles".to_owned()))
     }
 }
 
@@ -579,14 +589,17 @@ async fn negotiates_and_executes_atomic_http_requests() {
             fail: false,
             require_resolved_targets: true,
         }),
-        Arc::new(TestHrefResolver),
+        Arc::new(TestHrefResolver {
+            base_url: "https://api.example.test",
+        }),
     );
     let response = href_router
+        .clone()
         .oneshot(request(
             "/operations",
             ATOMIC_MEDIA_TYPE,
             ATOMIC_MEDIA_TYPE,
-            r#"{"atomic:operations":[{"op":"add","href":"/articles","data":{"type":"articles","attributes":{"title":"Created"}}},{"op":"update","href":"/articles/1","data":{"type":"articles","attributes":{"title":"Updated"}}},{"op":"remove","href":"/articles/1"},{"op":"update","href":"/articles/1/relationships/author","data":null}]}"#,
+            r#"{"atomic:operations":[{"op":"add","href":"https://api.example.test/articles","data":{"type":"articles","attributes":{"title":"Created"}}},{"op":"update","href":"https://api.example.test/articles/1","data":{"type":"articles","attributes":{"title":"Updated"}}},{"op":"remove","href":"https://api.example.test/articles/1"},{"op":"update","href":"https://api.example.test/articles/1/relationships/author","data":null}]}"#,
         ))
         .await
         .unwrap();
@@ -599,6 +612,31 @@ async fn negotiates_and_executes_atomic_http_requests() {
             {},
             {}
         ]})
+    );
+
+    let mismatched_body = r#"{"atomic:operations":[{"op":"update","href":"https://api.example.test/articles/1","data":{"type":"articles","id":"2","attributes":{"title":"Mismatch"}}}]}"#;
+    let response = href_router
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            mismatched_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, mismatched_body).await;
+    assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+    assert_eq!(error["errors"][0]["status"], "400");
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0"
+    );
+    assert_eq!(
+        error["errors"][0]["detail"],
+        "invalid operation 0 at `/atomic:operations/0`: the operation target identity must match the resource data"
     );
 }
 

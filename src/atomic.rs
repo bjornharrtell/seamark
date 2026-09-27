@@ -634,9 +634,11 @@ pub enum AtomicTarget {
 
 /// Resolves application routes used as Atomic Operations `href` targets.
 ///
-/// Return `Ok(None)` when the URI-reference is not a route of that target
-/// kind. Resolved references are validated against the resource registry and
-/// local IDs before any transaction begins.
+/// The URI-reference is passed as supplied; this crate does not configure a
+/// base URL or normalize it. The application resolver decides what routes
+/// match. Return `Ok(None)` when the URI-reference is not a route of that
+/// target kind. Resolved references are validated against the resource
+/// registry and local IDs before any transaction begins.
 pub trait AtomicHrefResolver: Send + Sync {
     /// Maps a relationship URI-reference to its resource and public relationship.
     ///
