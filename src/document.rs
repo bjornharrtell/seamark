@@ -802,7 +802,7 @@ fn is_valid_uri_reference(value: &str) -> bool {
     URIReference::try_from(value).is_ok()
 }
 
-fn is_valid_absolute_uri(value: &str) -> bool {
+pub(crate) fn is_valid_absolute_uri(value: &str) -> bool {
     URIReference::try_from(value)
         .ok()
         .is_some_and(|reference| reference.scheme().is_some())

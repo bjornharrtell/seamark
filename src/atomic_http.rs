@@ -17,6 +17,7 @@ use crate::atomic::{
     AtomicOperationsDocument, AtomicOperationsError, AtomicOperationsGuard,
     execute_atomic_operations, plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
+use crate::document::is_valid_absolute_uri;
 use crate::document::{ErrorObject, ErrorSource, JsonApiDocument};
 use crate::registry::ResourceRegistry;
 
@@ -262,7 +263,7 @@ fn has_atomic_content_type(headers: &HeaderMap) -> bool {
                 }
             }
             "profile" if !found_profile => {
-                if !parameter.quoted {
+                if !parameter.quoted || !has_valid_uri_list(&parameter.value) {
                     return false;
                 }
                 found_profile = true;
@@ -303,8 +304,8 @@ fn accepts_atomic_media_type(headers: &HeaderMap) -> bool {
                         }
                     }
                     "profile" if !profile => {
-                        profile = parameter.quoted;
-                        if !parameter.quoted {
+                        profile = parameter.quoted && has_valid_uri_list(&parameter.value);
+                        if !profile {
                             valid = false;
                         }
                     }
@@ -331,6 +332,13 @@ fn accepts_atomic_media_type(headers: &HeaderMap) -> bool {
 
 fn has_only_atomic_extension(value: &str) -> bool {
     value.split_ascii_whitespace().collect::<Vec<_>>() == [ATOMIC_OPERATIONS_EXTENSION]
+}
+
+fn has_valid_uri_list(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .split(' ')
+            .all(|uri| !uri.is_empty() && is_valid_absolute_uri(uri))
 }
 
 fn parse_parameters(value: &str) -> Option<(String, Vec<MediaParameter>)> {
@@ -508,6 +516,37 @@ mod tests {
             ACCEPT,
             HeaderValue::from_static(
                 "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=\"1\"",
+            ),
+        );
+        assert!(!accepts_atomic_media_type(&headers));
+    }
+
+    #[test]
+    fn validates_profile_uri_lists_in_content_type_and_accept() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static(
+                "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/profile https://example.test/other\"",
+            ),
+        );
+        headers.insert(ACCEPT, HeaderValue::from_static(ATOMIC_CONTENT_TYPE));
+        assert!(has_atomic_content_type(&headers));
+        assert!(accepts_atomic_media_type(&headers));
+
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static(
+                "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"relative/profile\"",
+            ),
+        );
+        assert!(!has_atomic_content_type(&headers));
+
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static(ATOMIC_CONTENT_TYPE));
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static(
+                "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/%2\"",
             ),
         );
         assert!(!accepts_atomic_media_type(&headers));
