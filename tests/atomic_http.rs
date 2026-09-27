@@ -1149,6 +1149,51 @@ async fn atomic_http_rejects_invalid_reference_identity_combinations() {
 }
 
 #[tokio::test]
+async fn atomic_http_rejects_relationship_cardinality_mismatch_before_authorization() {
+    let database = database().await;
+    let registry = ResourceRegistry::new([
+        ResourceDefinition::new("authors", "author_id"),
+        ResourceDefinition::new("articles", "article_id")
+            .to_one_relationship("author", "author_id", "authors")
+            .to_many_relationship("tags", "tag_ids", "tags"),
+        ResourceDefinition::new("tags", "tag_id"),
+    ])
+    .unwrap();
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(
+        Arc::new(registry),
+        database.clone(),
+        guard.clone(),
+        handler.clone(),
+    );
+    let body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1","relationship":"author"},"data":[{"type":"authors","id":"2"}]}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(
+        error_document(response, body).await["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0/data"
+    );
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn atomic_http_rejects_operations_with_both_ref_and_href_before_execution() {
     let database = database().await;
     let guard = Arc::new(CountingGuard {

@@ -15,7 +15,7 @@ use crate::document::{
     deserialize_metadata, deserialize_relationships, is_at_member, is_valid_uri_reference,
     validate_links,
 };
-use crate::registry::ResourceRegistry;
+use crate::registry::{RelationshipCardinality, ResourceRegistry};
 
 /// The extension URI required for JSON:API Atomic Operations.
 pub const ATOMIC_OPERATIONS_EXTENSION: &str = "https://jsonapi.org/ext/atomic";
@@ -857,15 +857,21 @@ fn plan_atomic_operations_inner(
                 if let Some(reference) = relationship_reference {
                     let relationship = reference.relationship.as_deref().unwrap_or_default();
                     let data = parse_relationship_data(operation, index, &path)?;
+                    let target = registry
+                        .relationship(&reference.type_name, relationship)
+                        .expect("relationship reference was checked");
+                    validate_declared_cardinality(
+                        target.cardinality(),
+                        RelationshipCardinality::ToMany,
+                        index,
+                        &format!("{path}/data"),
+                    )?;
                     let RelationshipData::Many(identifiers) = data else {
                         return Err(fail(
                             "adding relationship members requires an array of identifiers"
                                 .to_owned(),
                         ));
                     };
-                    let target = registry
-                        .relationship(&reference.type_name, relationship)
-                        .expect("relationship reference was checked");
                     let model_field = target.model_field().to_owned();
                     validate_linkage(
                         registry,
@@ -924,6 +930,12 @@ fn plan_atomic_operations_inner(
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
                     let model_field = target.model_field().to_owned();
+                    validate_relationship_cardinality(
+                        target.cardinality(),
+                        &data,
+                        index,
+                        &format!("{path}/data"),
+                    )?;
                     validate_relationship_data(
                         registry,
                         target.target_type(),
@@ -981,15 +993,21 @@ fn plan_atomic_operations_inner(
                 if let Some(reference) = relationship_reference {
                     let relationship = reference.relationship.as_deref().unwrap_or_default();
                     let data = parse_relationship_data(operation, index, &path)?;
+                    let target = registry
+                        .relationship(&reference.type_name, relationship)
+                        .expect("relationship reference was checked");
+                    validate_declared_cardinality(
+                        target.cardinality(),
+                        RelationshipCardinality::ToMany,
+                        index,
+                        &format!("{path}/data"),
+                    )?;
                     let RelationshipData::Many(identifiers) = data else {
                         return Err(fail(
                             "removing relationship members requires an array of identifiers"
                                 .to_owned(),
                         ));
                     };
-                    let target = registry
-                        .relationship(&reference.type_name, relationship)
-                        .expect("relationship reference was checked");
                     let model_field = target.model_field().to_owned();
                     validate_linkage(
                         registry,
@@ -1246,6 +1264,12 @@ fn validate_resource_data(
                 )
             })?;
             if let Some(linkage) = &relationship.data {
+                validate_relationship_cardinality(
+                    mapping.cardinality(),
+                    linkage,
+                    index,
+                    &format!("{relationship_pointer}/data"),
+                )?;
                 validate_relationship_data(
                     registry,
                     mapping.target_type(),
@@ -1296,6 +1320,35 @@ fn validate_relationship_data(
             validate_linkage(registry, target_type, identifiers, local_ids, index, path)
         }
     }
+}
+
+fn validate_relationship_cardinality(
+    cardinality: Option<RelationshipCardinality>,
+    data: &RelationshipData,
+    index: usize,
+    path: &str,
+) -> Result<(), AtomicOperationsError> {
+    let actual = match data {
+        RelationshipData::Null | RelationshipData::One(_) => RelationshipCardinality::ToOne,
+        RelationshipData::Many(_) => RelationshipCardinality::ToMany,
+    };
+    validate_declared_cardinality(cardinality, actual, index, path)
+}
+
+fn validate_declared_cardinality(
+    declared: Option<RelationshipCardinality>,
+    actual: RelationshipCardinality,
+    index: usize,
+    path: &str,
+) -> Result<(), AtomicOperationsError> {
+    if declared.is_some_and(|declared| declared != actual) {
+        return Err(invalid_operation(
+            index,
+            path,
+            "relationship linkage shape does not match its registered cardinality",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_linkage(

@@ -1075,6 +1075,139 @@ fn validates_operation_specific_request_data_shapes() {
 }
 
 #[test]
+fn atomic_relationship_data_must_match_registered_cardinality() {
+    let registry = ResourceRegistry::new([
+        ResourceDefinition::new("authors", "author_id"),
+        ResourceDefinition::new("articles", "article_id")
+            .to_one_relationship("author", "author_id", "authors")
+            .to_many_relationship("tags", "tag_ids", "tags"),
+        ResourceDefinition::new("tags", "tag_id"),
+    ])
+    .unwrap();
+
+    for (value, expected_pointer) in [
+        (
+            json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {
+                    "type": "articles",
+                    "relationships": {
+                        "author": {"data": [{"type": "authors", "id": "1"}]}
+                    }
+                }
+            }]
+            }),
+            "/atomic:operations/0/data/relationships/author/data",
+        ),
+        (
+            json!({
+            "atomic:operations": [{
+                "op": "add",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": [{"type": "authors", "id": "2"}]
+            }]
+            }),
+            "/atomic:operations/0/data",
+        ),
+        (
+            json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": [{"type": "authors", "id": "2"}]
+            }]
+            }),
+            "/atomic:operations/0/data",
+        ),
+        (
+            json!({
+            "atomic:operations": [{
+                "op": "remove",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": [{"type": "authors", "id": "2"}]
+            }]
+            }),
+            "/atomic:operations/0/data",
+        ),
+        (
+            json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {
+                    "type": "articles",
+                    "relationships": {
+                        "tags": {"data": {"type": "tags", "id": "1"}}
+                    }
+                }
+            }]
+            }),
+            "/atomic:operations/0/data/relationships/tags/data",
+        ),
+        (
+            json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": null
+            }]
+            }),
+            "/atomic:operations/0/data",
+        ),
+    ] {
+        let document = document(value);
+        assert!(matches!(
+            plan_atomic_operations(&registry, &document),
+            Err(AtomicOperationsError::InvalidOperation { index: 0, pointer, .. })
+                if pointer == expected_pointer
+        ));
+    }
+
+    for value in [
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "data": {
+                    "type": "articles",
+                    "relationships": {"author": {"data": null}}
+                }
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "author"},
+                "data": {"type": "authors", "id": "2"}
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "update",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": []
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "add",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": [{"type": "tags", "id": "1"}]
+            }]
+        }),
+        json!({
+            "atomic:operations": [{
+                "op": "remove",
+                "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+                "data": [{"type": "tags", "id": "1"}]
+            }]
+        }),
+    ] {
+        let document = document(value);
+        plan_atomic_operations(&registry, &document).unwrap();
+    }
+}
+
+#[test]
 fn unknown_resource_attributes_point_to_the_nested_data_member() {
     let valid = plan(json!({
         "atomic:operations": [{
