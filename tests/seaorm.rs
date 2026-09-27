@@ -762,6 +762,16 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             query_cases::expected_person_attributes(&included.resource.id)
         );
     }
+    let sparse_fieldset_result = executor
+        .collection(
+            &database,
+            &plan(&query_cases::sparse_fieldset_with_owner_include()),
+            &guard,
+            Some(&PortOwnerLoader),
+        )
+        .await
+        .unwrap();
+    query_cases::assert_sparse_fieldset_owner_include(&sparse_fieldset_result);
 
     let neighbors_query = ReadQuery {
         filters: vec!["equals(name,'Alpha')".to_owned()],
@@ -851,6 +861,29 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body, query_cases::first_page_document());
+
+    let sparse_fieldset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports?filter=equals%28name%2C%27Alpha%27%29&fields%5Bports%5D=name&fields%5Bpeople%5D=name&include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sparse_fieldset_response.status(), StatusCode::OK);
+    assert_query_jsonapi_headers(&sparse_fieldset_response);
+    let sparse_fieldset_document: serde_json::Value = serde_json::from_slice(
+        &to_bytes(sparse_fieldset_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        sparse_fieldset_document,
+        query_cases::sparse_fieldset_owner_include_document()
+    );
 
     let neighbors_response = app
         .oneshot(

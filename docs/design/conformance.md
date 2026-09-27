@@ -113,6 +113,14 @@ descending-depth coverage remains unchanged. The shared
 `multi_field_sorted_ports` case sorts by `active,-capacity`: ports `1` and `3`
 tie on the first key, and the secondary descending nullable key produces exact
 IDs `2,1,3`, keeping the null-capacity port last on both PostgreSQL and SQLite.
+The [compound-document full-linkage rule](https://jsonapi.org/format/#document-compound-documents)
+allows included resources to lack visible linkage when the relationship field
+was excluded by a requested sparse fieldset. Both backend HTTP controls request
+`include=owner` while selecting only `fields[ports]=name`; they assert the same
+exact response document, with root port `1` containing only its `name`
+attribute and included person `11` containing only its `name` attribute. The
+include is preserved rather than suppressed, and shared executor assertions
+confirm the same internal primary/included projection on both backends.
 SQLite foreign-key behavior is checked on the actual
 `Database::connect("sqlite::memory:")` connection: the query fixture asserts
 `PRAGMA foreign_keys` is `1` and rejects an orphan owner ID.
