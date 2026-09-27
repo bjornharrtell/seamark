@@ -1294,6 +1294,7 @@ async fn execution_failure_pointer_identifies_later_failed_operation() {
     assert_eq!(response.headers()[VARY], "Accept");
     let error = error_document(response, body).await;
     assert_eq!(error["errors"].as_array().unwrap().len(), 1);
+    assert!(error.get("atomic:results").is_none());
     assert_eq!(
         error["errors"][0]["source"]["pointer"],
         "/atomic:operations/1"
