@@ -1189,7 +1189,9 @@ fn is_valid_link(link: &Value) -> bool {
                 .get("rel")
                 .is_none_or(|value| value.as_str().is_some_and(is_valid_link_relation_type))
                 && link_object.get("title").is_none_or(Value::is_string)
-                && link_object.get("type").is_none_or(Value::is_string)
+                && link_object
+                    .get("type")
+                    .is_none_or(|value| value.as_str().is_some_and(is_valid_media_type))
                 && link_object.get("hreflang").is_none_or(|value| {
                     value.as_str().is_some_and(is_valid_language_tag)
                         || value.as_array().is_some_and(|values| {
@@ -1214,6 +1216,59 @@ pub(crate) fn is_valid_absolute_uri(value: &str) -> bool {
     URIReference::try_from(value)
         .ok()
         .is_some_and(|reference| reference.scheme().is_some())
+}
+
+fn is_valid_media_type(value: &str) -> bool {
+    if !media_type_parameters_have_values(value) {
+        return false;
+    }
+    value.parse::<mime::Mime>().is_ok_and(|media_type| {
+        let type_name = media_type.type_().as_str();
+        let subtype = media_type.subtype().as_str();
+        !type_name.is_empty()
+            && !type_name.contains('*')
+            && !subtype.is_empty()
+            && !subtype.contains('*')
+    })
+}
+
+fn media_type_parameters_have_values(value: &str) -> bool {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut parameter_start = None;
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && character == '\\' {
+            escaped = true;
+            continue;
+        }
+        match character {
+            '"' => quoted = !quoted,
+            ';' if !quoted => {
+                if let Some(start) = parameter_start
+                    && !media_type_parameter_has_value(&value[start..index])
+                {
+                    return false;
+                }
+                parameter_start = Some(index + 1);
+            }
+            _ => {}
+        }
+    }
+
+    parameter_start.is_none_or(|start| media_type_parameter_has_value(&value[start..]))
+}
+
+fn media_type_parameter_has_value(parameter: &str) -> bool {
+    let Some((name, value)) = parameter.split_once('=') else {
+        return false;
+    };
+    let value = value.trim();
+    !name.trim().is_empty() && (!value.is_empty() || value.starts_with('"'))
 }
 
 fn is_valid_language_tag(value: &str) -> bool {

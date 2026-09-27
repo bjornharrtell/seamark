@@ -13,6 +13,7 @@ sqlite = ["sea-orm/sqlx-sqlite"]
 async-trait = "0.1"
 axum = "0.8"
 language-tags = "0.3.2"
+mime = "0.3"
 sea-orm = {
     version = "1.1.19",
     default-features = false,
