@@ -1467,6 +1467,7 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
     assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 
     for content_type in [
+        "application/vnd.api+json",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";unknown",
         "application/vnd.api+json;ext=\"\"",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic  https://example.test/other\"",
