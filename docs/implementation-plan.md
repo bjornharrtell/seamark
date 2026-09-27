@@ -73,8 +73,9 @@ define `add`, `remove`, and `update` as add-members, remove-members, and
 replace-all operations. `SeaOrmJoinTableMutationHandler` now implements all
 three for explicitly configured two-column join tables. The shared
 `execute_to_many_relationship_replacement_case` runs on PostgreSQL and SQLite:
-it asserts a non-empty replacement, empty-array clearing, and rollback when a
-replacement includes a target that violates the join table's foreign key.
+it asserts an `href`-targeted non-empty replacement, `ref`-targeted empty-array
+clearing, and rollback when a `ref`-targeted replacement includes a target that
+violates the join table's foreign key.
 The helper resolves the owner and members through `LocalIdMap`, checks the
 declared target type, returns the required empty result object, and relies on
 the operation transaction for rollback. Its two-column table stores set
