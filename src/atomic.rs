@@ -364,6 +364,21 @@ pub enum AtomicTarget {
     Href(String),
 }
 
+/// Resolves application routes that target a JSON:API relationship.
+///
+/// Return `Ok(None)` when the URI-reference is not a relationship route.
+/// Resolved references are validated against the resource registry and local
+/// IDs before any transaction begins.
+pub trait AtomicHrefResolver: Send + Sync {
+    /// Maps a relationship URI-reference to its resource and public relationship.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the URI-reference is a route but cannot be
+    /// resolved to a relationship target.
+    fn resolve_relationship(&self, href: &str) -> Result<Option<AtomicResourceReference>, String>;
+}
+
 /// An error during Atomic Operations request validation or planning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AtomicOperationsError {
@@ -433,6 +448,33 @@ pub fn plan_atomic_operations(
     registry: &ResourceRegistry,
     document: &AtomicOperationsDocument,
 ) -> Result<Vec<PlannedAtomicOperation>, AtomicOperationsError> {
+    plan_atomic_operations_inner(registry, document, None)
+}
+
+/// Validates operations and resolves relationship `href` targets through the
+/// application's route table.
+///
+/// Resource collection/resource `href` targets remain in the plan as URI
+/// references for application handlers. Relationship routes are normalized to
+/// registered resource/relationship references.
+///
+/// # Errors
+///
+/// Returns an error for malformed documents, unresolved relationship routes,
+/// invalid operations, or unknown registry fields.
+pub fn plan_atomic_operations_with_href_resolver(
+    registry: &ResourceRegistry,
+    document: &AtomicOperationsDocument,
+    resolver: &dyn AtomicHrefResolver,
+) -> Result<Vec<PlannedAtomicOperation>, AtomicOperationsError> {
+    plan_atomic_operations_inner(registry, document, Some(resolver))
+}
+
+fn plan_atomic_operations_inner(
+    registry: &ResourceRegistry,
+    document: &AtomicOperationsDocument,
+    href_resolver: Option<&dyn AtomicHrefResolver>,
+) -> Result<Vec<PlannedAtomicOperation>, AtomicOperationsError> {
     let operations = document.validate_request()?;
     let mut local_ids = BTreeSet::<(String, String)>::new();
     let mut planned = Vec::with_capacity(operations.len());
@@ -445,16 +487,37 @@ pub fn plan_atomic_operations(
             message,
         };
         validate_operation_target(registry, operation, index, &path, &local_ids)?;
+        let href_relationship = href_resolver
+            .zip(operation.href.as_deref())
+            .map(|(resolver, href)| resolver.resolve_relationship(href))
+            .transpose()
+            .map_err(|message| fail(format!("could not resolve `href`: {message}")))?
+            .flatten();
+        if let Some(reference) = &href_relationship {
+            validate_reference(registry, reference, &local_ids)
+                .map_err(|message| fail(format!("invalid relationship `href`: {message}")))?;
+            if reference.relationship.is_none() {
+                return Err(fail(
+                    "relationship `href` did not resolve to a relationship".to_owned(),
+                ));
+            }
+        }
         let kind = operation.op.as_str();
 
         let planned_operation = match kind {
             "add" => {
-                if let Some(reference) = &operation.reference {
-                    let Some(relationship) = &reference.relationship else {
-                        return Err(fail(
-                            "an add operation with `ref` must target a relationship".to_owned(),
-                        ));
-                    };
+                let relationship_reference = operation
+                    .reference
+                    .as_ref()
+                    .filter(|reference| reference.relationship.is_some())
+                    .or(href_relationship.as_ref());
+                if operation.reference.is_some() && relationship_reference.is_none() {
+                    return Err(fail(
+                        "an add operation with `ref` must target a relationship".to_owned(),
+                    ));
+                }
+                if let Some(reference) = relationship_reference {
+                    let relationship = reference.relationship.as_deref().unwrap_or_default();
                     let data = parse_relationship_data(operation, index, &path)?;
                     let RelationshipData::Many(identifiers) = data else {
                         return Err(fail(
@@ -486,11 +549,11 @@ pub fn plan_atomic_operations(
                             "resource data must not contain both `id` and `lid`".to_owned(),
                         ));
                     }
+                    let changeset =
+                        validate_resource_data(registry, &data, &local_ids, index, &path, true)?;
                     if let Some(lid) = &data.lid {
                         insert_local_id(&mut local_ids, &data.type_name, lid, index, &path)?;
                     }
-                    let changeset =
-                        validate_resource_data(registry, &data, &local_ids, index, &path)?;
                     PlannedOperation::AddResource {
                         href: operation.href.clone(),
                         data,
@@ -499,11 +562,12 @@ pub fn plan_atomic_operations(
                 }
             }
             "update" => {
-                if let Some(reference) = operation
+                let relationship_reference = operation
                     .reference
                     .as_ref()
                     .filter(|reference| reference.relationship.is_some())
-                {
+                    .or(href_relationship.as_ref());
+                if let Some(reference) = relationship_reference {
                     let relationship = reference.relationship.as_deref().unwrap_or_default();
                     let data = parse_relationship_data(operation, index, &path)?;
                     let target = registry
@@ -526,7 +590,7 @@ pub fn plan_atomic_operations(
                 } else {
                     let data = parse_resource_data(operation, index, &path)?;
                     let changeset =
-                        validate_resource_data(registry, &data, &local_ids, index, &path)?;
+                        validate_resource_data(registry, &data, &local_ids, index, &path, false)?;
                     let target = resource_target(operation, &data, index, &path)?;
                     if let AtomicTarget::Reference(reference) = &target {
                         if reference.type_name != data.type_name {
@@ -552,11 +616,12 @@ pub fn plan_atomic_operations(
                 }
             }
             "remove" => {
-                if let Some(reference) = operation
+                let relationship_reference = operation
                     .reference
                     .as_ref()
                     .filter(|reference| reference.relationship.is_some())
-                {
+                    .or(href_relationship.as_ref());
+                if let Some(reference) = relationship_reference {
                     let relationship = reference.relationship.as_deref().unwrap_or_default();
                     let data = parse_relationship_data(operation, index, &path)?;
                     let RelationshipData::Many(identifiers) = data else {
@@ -732,6 +797,7 @@ fn validate_resource_data(
     local_ids: &BTreeSet<(String, String)>,
     index: usize,
     path: &str,
+    is_add: bool,
 ) -> Result<AtomicResourceChangeset, AtomicOperationsError> {
     let fail = |message: String| invalid_operation(index, path, &message);
     if data.type_name.is_empty() {
@@ -750,7 +816,7 @@ fn validate_resource_data(
     if data
         .lid
         .as_ref()
-        .is_some_and(|lid| !local_ids.contains(&(data.type_name.clone(), lid.clone())))
+        .is_some_and(|lid| !is_add && !local_ids.contains(&(data.type_name.clone(), lid.clone())))
     {
         return Err(fail(format!(
             "resource local id `{}` has not been added earlier",

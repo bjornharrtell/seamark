@@ -10,7 +10,13 @@ use axum::body::{Body, to_bytes};
 use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderValue, Request, Response, StatusCode};
 use seamark::document::{JsonApiDocument, Relationship, RelationshipData, ResourceIdentifier};
-use seamark::http::{self, AdapterError, AdapterResource, RequestAuthorizer, ResourceAdapter};
+use seamark::http::{
+    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryCollectionResult,
+    QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+};
+use seamark::query::{
+    FilterExpression, FilterValue, PaginationConfig, PlannedField, ReadPlan, SortDirection,
+};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -42,6 +48,7 @@ impl ResourceAdapter for TestAdapter {
         if self.fail_collection.load(Ordering::SeqCst) {
             return Err(AdapterError);
         }
+
         Ok(self.collection_result.lock().unwrap().clone())
     }
 
@@ -59,6 +66,34 @@ impl ResourceAdapter for TestAdapter {
             return Err(AdapterError);
         }
         Ok(self.resource_result.lock().unwrap().clone())
+    }
+}
+
+struct TestQueryAdapter {
+    plans: Arc<Mutex<Vec<ReadPlan>>>,
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl QueryResourceAdapter for TestQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, AdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.plans.lock().unwrap().push(plan.clone());
+        Ok(QueryCollectionResult {
+            resources: vec![port_record()],
+            included: vec![AdapterIncludedResource {
+                resource_type: "people".to_owned(),
+                resource: AdapterResource {
+                    id: "3".to_owned(),
+                    attributes: BTreeMap::from([("full_name".to_owned(), json!("Ada"))]),
+                    ..AdapterResource::default()
+                },
+            }],
+        })
     }
 }
 
@@ -127,6 +162,35 @@ fn test_app(adapter: Arc<TestAdapter>, allowed: bool) -> (Router, Arc<TestAuthor
     });
     (
         http::router(registry, adapter, authorizer.clone()),
+        authorizer,
+    )
+}
+
+fn query_test_app(
+    adapter: Arc<TestAdapter>,
+    query_adapter: Arc<TestQueryAdapter>,
+    allowed: bool,
+) -> (Router, Arc<TestAuthorizer>) {
+    let ports = ResourceDefinition::new("ports", "port_key")
+        .attribute("name", "title", true, true)
+        .attribute("depth", "depth_m", false, true)
+        .relationship("owner", "owner", "people");
+    let people =
+        ResourceDefinition::new("people", "id").attribute("name", "full_name", false, false);
+    let registry = Arc::new(ResourceRegistry::new([ports, people]).unwrap());
+    let authorizer = Arc::new(TestAuthorizer {
+        allowed,
+        calls: AtomicUsize::new(0),
+    });
+    let pagination = PaginationConfig::new(1, 10, Some(100), Some(1000)).unwrap();
+    (
+        http::router_with_query(
+            registry,
+            adapter,
+            authorizer.clone(),
+            query_adapter,
+            pagination,
+        ),
         authorizer,
     )
 }
@@ -464,4 +528,108 @@ async fn rejects_relationship_linkage_to_an_unregistered_target_type() {
         serde_json::to_value(document(response).await).unwrap()["errors"][0]["code"],
         "read_failed"
     );
+}
+
+#[tokio::test]
+async fn query_router_plans_executes_and_projects_collection_queries() {
+    let plans = Arc::new(Mutex::new(Vec::new()));
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: plans.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request(
+            "/ports?filter=equals%28name%2C%27Harbor%27%29&sort=-depth&page%5Bnumber%5D=2&page%5Bsize%5D=5&fields%5Bports%5D=name,owner&include=owner",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+    let plan = plans.lock().unwrap()[0].clone();
+    assert_eq!(
+        plan.filter,
+        Some(FilterExpression::Equals {
+            model_field: "title".to_owned(),
+            value: FilterValue::String("Harbor".to_owned()),
+        })
+    );
+    assert_eq!(plan.sort[0].model_field, "depth_m");
+    assert_eq!(plan.sort[0].direction, SortDirection::Descending);
+    assert_eq!(plan.page.number, 2);
+    assert_eq!(plan.page.size, 5);
+    assert_eq!(plan.page.offset, 5);
+    assert_eq!(
+        plan.fieldsets["ports"],
+        vec![
+            PlannedField::Attribute {
+                public_name: "name".to_owned(),
+                model_field: "title".to_owned(),
+            },
+            PlannedField::Relationship {
+                public_name: "owner".to_owned(),
+                model_field: "owner".to_owned(),
+                target_type: "people".to_owned(),
+            },
+        ]
+    );
+    assert_eq!(plan.includes[0].public_name, "owner");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["data"][0]["attributes"], json!({"name": null}));
+    assert!(body["data"][0]["relationships"]["owner"].is_object());
+    assert!(
+        body["data"][0]["relationships"]
+            .get("hidden_owner")
+            .is_none()
+    );
+    assert_eq!(body["included"][0]["attributes"], json!({"name": "Ada"}));
+}
+
+#[tokio::test]
+async fn query_router_rejects_invalid_queries_before_authorization_or_execution() {
+    for (uri, parameter) in [
+        ("/ports?unknown=value", "unknown"),
+        ("/ports?include=%GG", "include"),
+        ("/ports?page%5Bsize%5D=2&page%5Bsize%5D=3", "page[size]"),
+    ] {
+        let query_adapter = Arc::new(TestQueryAdapter {
+            plans: Arc::new(Mutex::new(Vec::new())),
+            calls: AtomicUsize::new(0),
+        });
+        let adapter = Arc::new(TestAdapter::default());
+        let (app, authorizer) = query_test_app(adapter, query_adapter.clone(), true);
+        let response = app.oneshot(request(uri, None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0, "{uri}");
+        assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0, "{uri}");
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["errors"][0]["code"], "invalid_query", "{uri}");
+        assert_eq!(body["errors"][0]["source"]["parameter"], parameter, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn query_router_authorizes_before_calling_query_adapter() {
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter, query_adapter.clone(), false);
+    let response = app
+        .oneshot(request("/ports?sort=name", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
 }

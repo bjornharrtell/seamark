@@ -2,7 +2,11 @@
 
 **Status: partial implementation.** The adapter-independent parser/read
 planner and a focused SeaORM/PostgreSQL collection executor are implemented.
-The current Axum routes still reject query strings and do not call this layer.
+The default Axum router continues to reject query strings. The opt-in
+`router_with_query` route parses collection-query parameters and passes a
+validated plan to an application-provided query adapter after authorization.
+A PostgreSQL-backed integration test connects that adapter to the SeaORM
+executor and verifies root and included-resource output.
 
 ## Filters, sorting, and pagination
 
@@ -29,4 +33,4 @@ the plan and applies application-specific page/include limits before database
 work. Applications remain responsible for authorizing included records in
 their loader.
 
-The SeaORM executor maps internal field names to the entity's `Column` type and executes filter predicates, ordering, offset, and limit in PostgreSQL; it has no in-memory fallback. An explicit filter-value encoder converts string literals to the entity's database value types and reports conversion failures before querying. A model mapper converts typed rows into internal-field-keyed adapter records, after which the executor enforces sparse-field projections. The prototype has PostgreSQL integration coverage for string equality/OR, null predicates, typed numeric equality, sort, pagination, fieldsets, include loading, and pre-query authorization/limit rejection. It is a separate executor API, not yet wired to Axum or a finalized production mapping API.
+The SeaORM executor maps internal field names to the entity's `Column` type and executes filter predicates, ordering, offset, and limit in PostgreSQL; it has no in-memory fallback. An explicit filter-value encoder converts string literals to the entity's database value types and reports conversion failures before querying. A model mapper converts typed rows into internal-field-keyed adapter records, after which the executor enforces sparse-field projections. PostgreSQL integration coverage exercises string equality/OR, null predicates, typed numeric equality, sort, pagination, fieldsets, include loading, and pre-query authorization/limit rejection; HTTP integration confirms planned parameters reach this executor and serialized fieldsets/included resources are returned. The reusable production mapping API and broader unsupported-query/resource-limit matrix remain incomplete. SQLite is planned for M7 and is not covered by this milestone.

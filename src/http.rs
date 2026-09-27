@@ -17,6 +17,7 @@ use crate::document::{
     ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship, RelationshipData,
     ResourceObject,
 };
+use crate::query::{PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read};
 use crate::registry::{ResourceDefinition, ResourceRegistry};
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -46,6 +47,24 @@ pub struct AdapterResource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdapterError;
 
+/// A resource from the `included` member of a planned collection read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdapterIncludedResource {
+    /// The public JSON:API type of the included resource.
+    pub resource_type: String,
+    /// The mapped persistence record.
+    pub resource: AdapterResource,
+}
+
+/// Results returned by an adapter for a planned collection read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QueryCollectionResult {
+    /// Root collection resources.
+    pub resources: Vec<AdapterResource>,
+    /// Compound resources requested by the validated include plan.
+    pub included: Vec<AdapterIncludedResource>,
+}
+
 /// The asynchronous read operations required by the initial GET routes.
 #[async_trait]
 pub trait ResourceAdapter: Send + Sync + 'static {
@@ -61,6 +80,17 @@ pub trait ResourceAdapter: Send + Sync + 'static {
         resource: &ResourceDefinition,
         id: &str,
     ) -> Result<Option<AdapterResource>, AdapterError>;
+}
+
+/// Executes validated collection plans produced by [`router_with_query`].
+#[async_trait]
+pub trait QueryResourceAdapter: Send + Sync + 'static {
+    /// Executes the plan for one registered resource.
+    async fn collection(
+        &self,
+        resource: &ResourceDefinition,
+        plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, AdapterError>;
 }
 
 /// Authorizes access before a persistence adapter is called.
@@ -95,6 +125,8 @@ struct ApiState {
     registry: Arc<ResourceRegistry>,
     adapter: Arc<dyn ResourceAdapter>,
     authorizer: Arc<dyn RequestAuthorizer>,
+    query_adapter: Option<Arc<dyn QueryResourceAdapter>>,
+    pagination: Option<PaginationConfig>,
 }
 
 /// Builds the collection and single-resource GET routes.
@@ -107,15 +139,42 @@ pub fn router(
     adapter: Arc<dyn ResourceAdapter>,
     authorizer: Arc<dyn RequestAuthorizer>,
 ) -> Router {
-    let state = Arc::new(ApiState {
+    build_router(ApiState {
         registry,
         adapter,
         authorizer,
-    });
+        query_adapter: None,
+        pagination: None,
+    })
+}
+
+/// Builds collection and single-resource GET routes with planned collection queries.
+///
+/// Query support is opt-in. The supplied pagination policy is explicit, and
+/// the query adapter is called only after parsing, planning, resource lookup,
+/// and request authorization. The single-resource route continues to reject
+/// all query parameters.
+pub fn router_with_query(
+    registry: Arc<ResourceRegistry>,
+    adapter: Arc<dyn ResourceAdapter>,
+    authorizer: Arc<dyn RequestAuthorizer>,
+    query_adapter: Arc<dyn QueryResourceAdapter>,
+    pagination: PaginationConfig,
+) -> Router {
+    build_router(ApiState {
+        registry,
+        adapter,
+        authorizer,
+        query_adapter: Some(query_adapter),
+        pagination: Some(pagination),
+    })
+}
+
+fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/{resource_type}", get(get_collection))
         .route("/{resource_type}/{id}", get(get_resource))
-        .with_state(state)
+        .with_state(Arc::new(state))
 }
 
 async fn get_collection(
@@ -124,8 +183,14 @@ async fn get_collection(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = validate_request(&headers, query.as_deref()) {
-        return request_error_response(error);
+    if !accepts_jsonapi(&headers) {
+        return request_error_response(RequestValidationError::NotAcceptable);
+    }
+    let has_query = query.as_deref().is_some_and(|query| !query.is_empty());
+    if has_query && state.query_adapter.is_none() {
+        return request_error_response(RequestValidationError::UnsupportedQuery(
+            query.as_deref().and_then(first_query_parameter),
+        ));
     }
     let definition = match state.registry.resource(&resource_type) {
         Ok(definition) => definition,
@@ -141,6 +206,23 @@ async fn get_collection(
             );
         }
     };
+    let plan = if has_query {
+        let Some(pagination) = state.pagination.as_ref() else {
+            return request_error_response(RequestValidationError::UnsupportedQuery(
+                query.as_deref().and_then(first_query_parameter),
+            ));
+        };
+        let query = match parse_read_query(query.as_deref().unwrap_or_default()) {
+            Ok(query) => query,
+            Err(error) => return query_parse_error(error),
+        };
+        match plan_read(&state.registry, &resource_type, &query, pagination) {
+            Ok(plan) => Some(plan),
+            Err(error) => return read_plan_error(error),
+        }
+    } else {
+        None
+    };
     if !state
         .authorizer
         .authorize(&resource_type, None, &headers)
@@ -149,22 +231,59 @@ async fn get_collection(
         return forbidden_error();
     }
 
-    let records = match state.adapter.collection(definition).await {
-        Ok(records) => records,
-        Err(_) => return adapter_error(),
-    };
+    let (records, included) =
+        if let (Some(query_adapter), Some(plan)) = (state.query_adapter.as_ref(), plan.as_ref()) {
+            match query_adapter.collection(definition, plan).await {
+                Ok(result) => (result.resources, result.included),
+                Err(_) => return adapter_error(),
+            }
+        } else {
+            match state.adapter.collection(definition).await {
+                Ok(records) => (records, Vec::new()),
+                Err(_) => return adapter_error(),
+            }
+        };
     let resources = match records
         .iter()
-        .map(|record| project_resource(definition, record))
+        .map(|record| {
+            project_resource_with_fieldset(
+                definition,
+                record,
+                plan.as_ref()
+                    .and_then(|plan| plan.fieldsets.get(definition.type_name()))
+                    .map(Vec::as_slice),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(resources) => resources,
+        Err(_) => return adapter_error(),
+    };
+    let included = match included
+        .iter()
+        .map(|included| {
+            let definition = state
+                .registry
+                .resource(&included.resource_type)
+                .map_err(|_| AdapterError)?;
+            project_resource_with_fieldset(
+                definition,
+                &included.resource,
+                plan.as_ref()
+                    .and_then(|plan| plan.fieldsets.get(definition.type_name()))
+                    .map(Vec::as_slice),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(included) => included,
         Err(_) => return adapter_error(),
     };
     respond_with_document(
         StatusCode::OK,
         JsonApiDocument {
             data: Some(PrimaryData::Many(resources)),
+            included: (!included.is_empty()).then_some(included),
             ..JsonApiDocument::default()
         },
     )
@@ -224,6 +343,150 @@ async fn get_resource(
             data: Some(PrimaryData::One(resource)),
             ..JsonApiDocument::default()
         },
+    )
+}
+
+struct QueryParseError {
+    parameter: String,
+    detail: String,
+}
+
+fn parse_read_query(query: &str) -> Result<ReadQuery, QueryParseError> {
+    let mut parsed = ReadQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (raw_name, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        let name = decode_query_component(raw_name).map_err(|detail| QueryParseError {
+            parameter: "query".to_owned(),
+            detail: detail.to_owned(),
+        })?;
+        let value = decode_query_component(raw_value).map_err(|detail| QueryParseError {
+            parameter: name.clone(),
+            detail: detail.to_owned(),
+        })?;
+        match name.as_str() {
+            "filter" => parsed.filters.push(value),
+            "sort" => set_unique_query_value(&mut parsed.sort, &name, value)?,
+            "page[number]" => set_unique_query_value(&mut parsed.page_number, &name, value)?,
+            "page[size]" => set_unique_query_value(&mut parsed.page_size, &name, value)?,
+            "include" => parsed.includes.push(value),
+            _ => {
+                if let Some(resource_type) = name
+                    .strip_prefix("fields[")
+                    .and_then(|name| name.strip_suffix(']'))
+                {
+                    if resource_type.is_empty() {
+                        return Err(QueryParseError {
+                            parameter: name,
+                            detail: "fieldset resource type must not be empty".to_owned(),
+                        });
+                    }
+                    if parsed
+                        .fieldsets
+                        .insert(resource_type.to_owned(), value)
+                        .is_some()
+                    {
+                        return Err(QueryParseError {
+                            parameter: name,
+                            detail: "fieldset parameter must not be repeated".to_owned(),
+                        });
+                    }
+                } else {
+                    parsed.unsupported_parameters.push(name);
+                }
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+fn set_unique_query_value(
+    destination: &mut Option<String>,
+    parameter: &str,
+    value: String,
+) -> Result<(), QueryParseError> {
+    if destination.replace(value).is_some() {
+        return Err(QueryParseError {
+            parameter: parameter.to_owned(),
+            detail: "query parameter must not be repeated".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn decode_query_component(input: &str) -> Result<String, &'static str> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err("invalid percent-encoding");
+                }
+                let high = hex_digit(bytes[index + 1]).ok_or("invalid percent-encoding")?;
+                let low = hex_digit(bytes[index + 2]).ok_or("invalid percent-encoding")?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "query parameter is not valid UTF-8")
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn query_parse_error(error: QueryParseError) -> Response {
+    protocol_error(
+        StatusCode::BAD_REQUEST,
+        "invalid_query",
+        "Invalid query parameter",
+        Some(error.detail),
+        Some(error.parameter),
+    )
+}
+
+fn read_plan_error(error: ReadPlanError) -> Response {
+    let parameter = match &error {
+        ReadPlanError::UnsupportedQueryParameters(parameters) => parameters.first().cloned(),
+        ReadPlanError::Filter(_) => Some("filter".to_owned()),
+        ReadPlanError::InvalidSort(_)
+        | ReadPlanError::DuplicateSortField(_)
+        | ReadPlanError::UnknownSortAttribute { .. }
+        | ReadPlanError::AttributeNotSortable { .. } => Some("sort".to_owned()),
+        ReadPlanError::UnknownFieldsetField { .. } | ReadPlanError::InvalidFieldset { .. } => {
+            Some("fields".to_owned())
+        }
+        ReadPlanError::InvalidIncludePath(_) | ReadPlanError::UnknownRelationship { .. } => {
+            Some("include".to_owned())
+        }
+        ReadPlanError::InvalidPageParameter { parameter, .. } => Some((*parameter).to_owned()),
+        ReadPlanError::UnknownResourceType(_)
+        | ReadPlanError::InvalidPaginationConfig(_)
+        | ReadPlanError::PageSizeExceedsMaximum { .. }
+        | ReadPlanError::PageOffsetExceedsMaximum { .. }
+        | ReadPlanError::PageOffsetOverflow => None,
+    };
+    protocol_error(
+        StatusCode::BAD_REQUEST,
+        "invalid_query",
+        "Invalid collection query",
+        Some(error.to_string()),
+        parameter,
     )
 }
 
@@ -405,6 +668,43 @@ fn project_resource(
         links: None,
         meta: None,
     })
+}
+
+fn project_resource_with_fieldset(
+    definition: &ResourceDefinition,
+    record: &AdapterResource,
+    fieldset: Option<&[PlannedField]>,
+) -> Result<ResourceObject, AdapterError> {
+    let mut resource = project_resource(definition, record)?;
+    if let Some(fieldset) = fieldset {
+        let attributes = fieldset
+            .iter()
+            .filter_map(|field| match field {
+                PlannedField::Attribute { public_name, .. } => Some(public_name.as_str()),
+                PlannedField::Relationship { .. } => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let relationships = fieldset
+            .iter()
+            .filter_map(|field| match field {
+                PlannedField::Attribute { .. } => None,
+                PlannedField::Relationship { public_name, .. } => Some(public_name.as_str()),
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(resource_attributes) = resource.attributes.as_mut() {
+            resource_attributes.retain(|name, _| attributes.contains(name.as_str()));
+            if resource_attributes.is_empty() {
+                resource.attributes = None;
+            }
+        }
+        if let Some(resource_relationships) = resource.relationships.as_mut() {
+            resource_relationships.retain(|name, _| relationships.contains(name.as_str()));
+            if resource_relationships.is_empty() {
+                resource.relationships = None;
+            }
+        }
+    }
+    Ok(resource)
 }
 
 fn relationship_matches_target(relationship: &Relationship, target_type: &str) -> bool {

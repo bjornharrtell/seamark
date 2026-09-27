@@ -8,8 +8,8 @@ use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{Request, Response, StatusCode};
 use sea_orm::{Database, DatabaseConnection, DatabaseTransaction};
 use seamark::atomic::{
-    AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsGuard, AtomicResult,
-    LocalIdMap, PlannedAtomicOperation, PlannedOperation,
+    AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsGuard,
+    AtomicResourceReference, AtomicResult, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
 };
 use seamark::atomic_http;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
@@ -41,6 +41,23 @@ struct TestHandler {
     fail: bool,
 }
 
+struct TestHrefResolver;
+
+impl AtomicHrefResolver for TestHrefResolver {
+    fn resolve_relationship(&self, href: &str) -> Result<Option<AtomicResourceReference>, String> {
+        if href == "/articles/1/relationships/author" {
+            Ok(Some(AtomicResourceReference {
+                type_name: "articles".to_owned(),
+                id: Some("1".to_owned()),
+                lid: None,
+                relationship: Some("author".to_owned()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[async_trait]
 impl AtomicOperationHandler for TestHandler {
     async fn execute_operation(
@@ -69,7 +86,10 @@ impl AtomicOperationHandler for TestHandler {
 fn registry() -> Arc<ResourceRegistry> {
     Arc::new(
         ResourceRegistry::new([
-            ResourceDefinition::new("authors", "id").attribute("name", "name", false, false)
+            ResourceDefinition::new("authors", "id").attribute("name", "name", false, false),
+            ResourceDefinition::new("articles", "id")
+                .attribute("title", "title", false, false)
+                .relationship("author", "author_id", "authors"),
         ])
         .unwrap(),
     )
@@ -205,7 +225,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
 
     let failing = atomic_http::router(
         registry(),
-        database,
+        database.clone(),
         Arc::new(TestGuard { allowed: true }),
         Arc::new(TestHandler { fail: true }),
     );
@@ -219,4 +239,23 @@ async fn negotiates_and_executes_atomic_http_requests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let href_router = atomic_http::router_with_href_resolver(
+        registry(),
+        database,
+        Arc::new(TestGuard { allowed: true }),
+        Arc::new(TestHandler { fail: false }),
+        Arc::new(TestHrefResolver),
+    );
+    let response = href_router
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            r#"{"atomic:operations":[{"op":"update","href":"/articles/1/relationships/author","data":null}]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(document(response).await, json!({"atomic:results": [{}]}));
 }

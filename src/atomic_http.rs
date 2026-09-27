@@ -13,9 +13,9 @@ use sea_orm::DatabaseConnection;
 use serde_json::from_slice;
 
 use crate::atomic::{
-    ATOMIC_OPERATIONS_EXTENSION, AtomicExecutionError, AtomicOperationHandler,
+    ATOMIC_OPERATIONS_EXTENSION, AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler,
     AtomicOperationsDocument, AtomicOperationsError, AtomicOperationsGuard,
-    execute_atomic_operations, plan_atomic_operations,
+    execute_atomic_operations, plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
 use crate::document::{ErrorObject, ErrorSource, JsonApiDocument};
 use crate::registry::ResourceRegistry;
@@ -28,6 +28,7 @@ struct AtomicApiState {
     database: DatabaseConnection,
     guard: Arc<dyn AtomicOperationsGuard>,
     handler: Arc<dyn AtomicOperationHandler>,
+    href_resolver: Option<Arc<dyn AtomicHrefResolver>>,
 }
 
 struct MediaParameter {
@@ -50,6 +51,28 @@ pub fn router(
     guard: Arc<dyn AtomicOperationsGuard>,
     handler: Arc<dyn AtomicOperationHandler>,
 ) -> Router {
+    build_router(registry, database, guard, handler, None)
+}
+
+/// Builds an Atomic Operations router with application route resolution for
+/// relationship `href` targets.
+pub fn router_with_href_resolver(
+    registry: Arc<ResourceRegistry>,
+    database: DatabaseConnection,
+    guard: Arc<dyn AtomicOperationsGuard>,
+    handler: Arc<dyn AtomicOperationHandler>,
+    href_resolver: Arc<dyn AtomicHrefResolver>,
+) -> Router {
+    build_router(registry, database, guard, handler, Some(href_resolver))
+}
+
+fn build_router(
+    registry: Arc<ResourceRegistry>,
+    database: DatabaseConnection,
+    guard: Arc<dyn AtomicOperationsGuard>,
+    handler: Arc<dyn AtomicOperationHandler>,
+    href_resolver: Option<Arc<dyn AtomicHrefResolver>>,
+) -> Router {
     Router::new()
         .route("/operations", post(post_operations))
         .with_state(Arc::new(AtomicApiState {
@@ -57,6 +80,7 @@ pub fn router(
             database,
             guard,
             handler,
+            href_resolver,
         }))
 }
 
@@ -107,7 +131,13 @@ async fn post_operations(
     if let Err(error) = document.validate_request() {
         return atomic_request_error(error);
     }
-    let operations = match plan_atomic_operations(&state.registry, &document) {
+    let planned = match &state.href_resolver {
+        Some(resolver) => {
+            plan_atomic_operations_with_href_resolver(&state.registry, &document, resolver.as_ref())
+        }
+        None => plan_atomic_operations(&state.registry, &document),
+    };
+    let operations = match planned {
         Ok(operations) => operations,
         Err(error) => return atomic_request_error(error),
     };

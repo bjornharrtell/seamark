@@ -13,3 +13,4 @@ pub mod http;
 pub mod query;
 pub mod registry;
 pub mod seaorm;
+pub mod seaorm_mutation;

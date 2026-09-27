@@ -1,9 +1,10 @@
 # Mutations and Atomic Operations
 
 **Status: partial implementation.** An Atomic Operations planner, mapped
-changesets, a standalone Axum route, extension negotiation, and transaction
-orchestration are implemented. General entity CRUD, route-aware relationship
-`href` operations, and full normative conformance are not implemented.
+changesets, a standalone Axum route, extension negotiation, typed SeaORM
+resource CRUD, to-one foreign-key writes, and transaction orchestration are
+implemented. To-many persistence and full normative conformance remain
+application-specific or incomplete.
 
 ## Mutations and concurrency
 
@@ -30,20 +31,32 @@ mapped relationship field. A local ID is available only after its add
 operation; relationship linkages can resolve it through the request-scoped
 `LocalIdMap`.
 
-`atomic_http::router` provides a mergeable `POST /operations` Axum router. It
-requires the quoted Atomic Operations extension in both `Content-Type` and
-`Accept`, rejects query parameters, validates request documents, and emits
-JSON:API result/error documents with `Vary: Accept`. `execute_atomic_operations`
-runs planned operations sequentially in one SeaORM transaction. Applications
-supply the operation handler, which performs the actual resource/relationship
-writes and returns positional results. A required guard authorizes the request
-and applies application limits before the transaction begins. Handler errors,
-invalid results, and failed local-ID assignments roll back preceding writes.
-PostgreSQL tests exercise ordered local-ID use, rollback after an injected
-later-operation failure, and the HTTP route's negotiation/success/error paths.
+`atomic_http::router` provides a mergeable `POST /operations` Axum router;
+`router_with_href_resolver` additionally accepts an application route resolver
+for relationship `href` targets. Both require the quoted Atomic Operations
+extension in `Content-Type` and `Accept`, reject query parameters, validate
+request documents, and emit JSON:API result/error documents with
+`Vary: Accept`.
 
-This is an orchestration and mapping prototype, not complete extension
-support. It does not implement generic SeaORM entity CRUD, route-aware `href`
-relationship operations, or every normative operation/result/error case. The
-application handler still owns actual writes and resource-level authorization.
-Exact changeset, identifier, and hook APIs remain provisional.
+`SeaOrmResourceMutationHandler<E, F, I>` maps a public resource to one typed
+SeaORM entity and performs add/update/remove plus to-one relationship FK
+updates. Applications supply explicit value and identifier codecs. A
+`SeaOrmAtomicOperationDispatcher` composes typed handlers and application
+executors; unsupported to-many relations and `href` resource targets remain
+available for custom handlers. The typed handler supports route-resolved
+relationship hrefs after the planner normalizes them to registry-checked
+references.
+
+`execute_atomic_operations` runs planned operations sequentially in one
+SeaORM transaction. A required guard authorizes the request and applies
+application limits before the transaction begins. Handler errors, invalid
+results, and failed local-ID assignments roll back preceding writes.
+PostgreSQL tests exercise ordered local-ID use, typed create/update/delete,
+to-one linkage, resolved relationship hrefs, and rollback after a later
+operation fails. HTTP tests cover negotiation, success, and error paths.
+
+This is a partial persistence integration, not complete extension support.
+Applications still define each resource's entity, value/identifier codecs,
+relationship route resolver, resource-level authorization, and custom
+to-many persistence. It does not implement every normative
+operation/result/error case. Exact changeset and hook APIs remain provisional.

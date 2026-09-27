@@ -1,6 +1,6 @@
 # Seamark
 
-Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, a read-only Axum collection/single-resource GET slice, and prototype SeaORM query and Atomic Operations transaction support. General-purpose persistence, CRUD routes, and full specification conformance are not implemented.
+Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, a read-only Axum collection/single-resource GET slice, opt-in collection-query integration, and prototype SeaORM query and Atomic Operations persistence support. PostgreSQL is the first validated backend; SQLite is planned as a separate M7 backend. Full resource routing and normative specification conformance are not implemented.
 
 ## Initial target
 
@@ -12,7 +12,7 @@ Initial query support is deliberately focused: function-style filters, using Jso
 
 ## Implementation status
 
-The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The current HTTP slice uses a narrow adapter boundary, authorizes before adapter calls, negotiates JSON:API responses, and projects only registered fields. An adapter-independent filter/read planner and a separate SeaORM/PostgreSQL collection executor prototype exist, but the GET routes still reject non-empty query strings. Atomic Operations has a standalone Axum `POST /operations` router with extension media-type negotiation, mapped mutation changesets, and a transaction runner; application handlers still perform entity writes, and route-aware `href` relationship handling is not implemented. Mutations and full JSON:API 1.1 base-specification and Atomic Operations support remain incomplete; this prototype is not a conformance claim.
+The implementation is tracked in the [implementation plan](docs/implementation-plan.md). The default `router` keeps rejecting non-empty query strings; opt-in `router_with_query` parses and plans supported collection queries and passes the validated plan through a narrow query-adapter boundary after authorization. A PostgreSQL-backed HTTP integration test executes that boundary with the SeaORM query executor and verifies fieldset/included-resource serialization. Atomic Operations has a standalone Axum `POST /operations` router, extension negotiation, mapped changesets, and a typed SeaORM mutator for resource CRUD and to-one foreign-key relationships. Applications provide entity value/identifier codecs, route resolution for relationship `href` values, and custom handlers for to-many relationship persistence. Full normative JSON:API 1.1 and Atomic Operations support remains incomplete; this prototype is not a conformance claim.
 
 ## Design documents
 
@@ -23,4 +23,4 @@ The implementation is tracked in the [implementation plan](docs/implementation-p
 - [JSON:API conformance strategy](docs/design/conformance.md)
 - [Implementation plan and milestones](docs/implementation-plan.md)
 
-The exact mapping and execution APIs remain open pending further adapter integration. The design documents describe intent; implementation status and milestone evidence are recorded in the plan.
+The exact mapping and execution APIs remain open pending further adapter integration. SQLite backend support and cross-backend verification are reserved for M7; PostgreSQL remains the currently validated backend. The design documents describe intent; implementation status and milestone evidence are recorded in the plan.

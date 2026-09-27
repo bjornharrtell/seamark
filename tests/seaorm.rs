@@ -1,15 +1,21 @@
 #![allow(missing_docs)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, DbBackend,
     EntityTrait, QueryFilter, Schema, Set, Value,
 };
 use seamark::document::{Relationship, RelationshipData, ResourceIdentifier};
-use seamark::http::AdapterResource;
+use seamark::http::{
+    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryCollectionResult,
+    QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
+};
 use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_read};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
@@ -17,6 +23,7 @@ use seamark::seaorm::{
     SeaOrmReadGuard,
 };
 use serde_json::json;
+use tower::ServiceExt;
 
 mod port {
     use sea_orm::entity::prelude::*;
@@ -181,6 +188,79 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
                 },
             })
             .collect())
+    }
+}
+
+type PortQueryExecutor = SeaOrmQueryExecutor<
+    port::Entity,
+    fn(&port::Model) -> AdapterResource,
+    fn(&str, &str) -> Result<Value, String>,
+>;
+
+struct PortHttpQueryAdapter {
+    database: DatabaseConnection,
+    executor: PortQueryExecutor,
+    guard: AllowGuard,
+}
+
+#[async_trait]
+impl QueryResourceAdapter for PortHttpQueryAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+        plan: &ReadPlan,
+    ) -> Result<QueryCollectionResult, AdapterError> {
+        let result = self
+            .executor
+            .collection(&self.database, plan, &self.guard, Some(&PortOwnerLoader))
+            .await
+            .map_err(|_| AdapterError)?;
+        Ok(QueryCollectionResult {
+            resources: result.resources,
+            included: result
+                .included
+                .into_iter()
+                .map(|included| AdapterIncludedResource {
+                    resource_type: included.resource_type,
+                    resource: included.resource,
+                })
+                .collect(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct EmptyAdapter;
+
+#[async_trait]
+impl ResourceAdapter for EmptyAdapter {
+    async fn collection(
+        &self,
+        _resource: &ResourceDefinition,
+    ) -> Result<Vec<AdapterResource>, AdapterError> {
+        Ok(Vec::new())
+    }
+
+    async fn resource(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+    ) -> Result<Option<AdapterResource>, AdapterError> {
+        Ok(None)
+    }
+}
+
+struct AllowHttpRequest;
+
+#[async_trait]
+impl RequestAuthorizer for AllowHttpRequest {
+    async fn authorize(
+        &self,
+        _resource_type: &str,
+        _resource_id: Option<&str>,
+        _headers: &axum::http::HeaderMap,
+    ) -> bool {
+        true
     }
 }
 
@@ -370,6 +450,46 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             .collect::<Vec<_>>(),
         vec!["2"]
     );
+
+    let http_query_adapter = Arc::new(PortHttpQueryAdapter {
+        database: database.clone(),
+        executor: SeaOrmQueryExecutor::<port::Entity, _, _>::new(
+            registry(),
+            "ports",
+            port_resource as fn(&port::Model) -> AdapterResource,
+            encode_filter_value as fn(&str, &str) -> Result<Value, String>,
+        ),
+        guard: AllowGuard {
+            authorized: true,
+            maximum_page_size: 10,
+            maximum_offset: 100,
+        },
+    });
+    let app = http::router_with_query(
+        Arc::new(registry()),
+        Arc::new(EmptyAdapter),
+        Arc::new(AllowHttpRequest),
+        http_query_adapter,
+        pagination(),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?filter=equals%28name%2C%27Beta%27%29&sort=-depth&page%5Bsize%5D=1&fields%5Bports%5D=name,owner&fields%5Bpeople%5D=name&include=owner")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["data"][0]["id"], "2");
+    assert_eq!(body["data"][0]["attributes"], json!({"name": "Beta"}));
+    assert!(body["data"][0]["relationships"]["owner"].is_object());
+    assert_eq!(body["included"][0]["id"], "12");
+    assert_eq!(body["included"][0]["attributes"], json!({"name": "Niko"}));
 
     database
         .execute_unprepared("DROP TABLE seamark_m4_ports; DROP TABLE seamark_m4_people;")

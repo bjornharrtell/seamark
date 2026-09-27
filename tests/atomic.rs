@@ -366,6 +366,32 @@ fn rejects_forward_duplicate_and_mismatched_local_id_references() {
 }
 
 #[test]
+fn rejects_local_ids_referenced_by_their_own_add_operation() {
+    let categories = ResourceDefinition::new("categories", "category_id").relationship(
+        "parent",
+        "parent_id",
+        "categories",
+    );
+    let registry = ResourceRegistry::new([categories]).unwrap();
+    let request = document(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {
+                "type": "categories",
+                "lid": "self",
+                "relationships": {
+                    "parent": {"data": {"type": "categories", "lid": "self"}}
+                }
+            }
+        }]
+    }));
+    assert!(matches!(
+        plan_atomic_operations(&registry, &request),
+        Err(AtomicOperationsError::InvalidOperation { index: 0, .. })
+    ));
+}
+
+#[test]
 fn rejects_unassigned_local_ids() {
     let local_ids = LocalIdMap::default();
     let author = ResourceIdentifier {
