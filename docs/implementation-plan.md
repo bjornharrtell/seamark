@@ -152,6 +152,11 @@ That shared fixture also already covers null-filter parity:
 while the non-null `equals(capacity,'8')` control yields ID `2`.
 `FilterValue::Null` maps to database-side `column.is_null()` without invoking
 the non-null typed value codec.
+Repeated `equals(name,...)` values are also already shared through
+`first_page_with_owner`: both backends assert page IDs `2` and `1`, covering
+the full OR union. The shared filter matrix adds `equals(active,'false')` with
+exact ID `2`, complementing the existing `equals(active,'true')` IDs `1,3`
+control on both backends.
 Both database-backed include cases now compare unfielded owner resources
 against the same fixture-derived exact attribute map, including both declared
 values and excluding adapter-only fields.
