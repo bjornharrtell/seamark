@@ -1015,8 +1015,7 @@ async fn atomic_http_rejects_non_request_members_in_operations_request() {
 }
 
 #[tokio::test]
-async fn atomic_http_rejects_resource_add_and_update_without_data_before_authorization_or_handler()
-{
+async fn atomic_http_rejects_missing_operation_data_before_authorization_or_handler() {
     let database = database().await;
     let authorize_calls = Arc::new(AtomicUsize::new(0));
     let limit_calls = Arc::new(AtomicUsize::new(0));
@@ -1037,6 +1036,18 @@ async fn atomic_http_rejects_resource_add_and_update_without_data_before_authori
         (
             r#"{"atomic:operations":[{"op":"update","ref":{"type":"authors","id":"1"}}]}"#,
             "an update operation requires `data`",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1","relationship":"author"}}]}"#,
+            "an add operation requires `data`",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1","relationship":"author"}}]}"#,
+            "an update operation requires `data`",
+        ),
+        (
+            r#"{"atomic:operations":[{"op":"remove","ref":{"type":"articles","id":"1","relationship":"author"}}]}"#,
+            "relationship operation requires `data`",
         ),
     ] {
         let response = app
