@@ -5,6 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
+use uriparse::URIReference;
 
 /// A JSON:API top-level document.
 ///
@@ -498,7 +499,7 @@ pub enum DocumentValidationError {
     EmptyErrors,
     /// An error object has none of its defined members.
     EmptyErrorObject,
-    /// A links object contains a value that is not a link or a valid link object.
+    /// A links object contains an invalid link, URI-reference, or relation type.
     InvalidLinkObject,
     /// The document contains included resources without primary data.
     IncludedWithoutData,
@@ -532,7 +533,7 @@ impl fmt::Display for DocumentValidationError {
             Self::EmptyErrors => "a JSON:API errors array must not be empty",
             Self::EmptyErrorObject => "a JSON:API error object must contain at least one member",
             Self::InvalidLinkObject => {
-                "each links member must be null, a URI-reference string, or a link object with a string href"
+                "each links member must use a valid relation type and a valid URI-reference href"
             }
             Self::IncludedWithoutData => {
                 "a JSON:API document must not contain included resources without data"
@@ -713,46 +714,76 @@ fn validate_links(links: Option<&Map<String, Value>>) -> Result<(), DocumentVali
     let Some(links) = links else {
         return Ok(());
     };
-    for link in links.values() {
-        match link {
-            Value::Null | Value::String(_) => {}
-            Value::Object(link_object) => {
-                if !link_object.get("href").is_some_and(Value::is_string)
-                    || link_object
-                        .get("rel")
-                        .is_some_and(|value| !value.is_string())
-                    || link_object
-                        .get("title")
-                        .is_some_and(|value| !value.is_string())
-                    || link_object
-                        .get("type")
-                        .is_some_and(|value| !value.is_string())
-                    || link_object.get("hreflang").is_some_and(|value| {
-                        !value.is_string()
-                            && !value
-                                .as_array()
-                                .is_some_and(|values| values.iter().all(Value::is_string))
-                    })
-                    || link_object
-                        .get("meta")
-                        .is_some_and(|value| !value.is_object())
-                    || link_object.get("describedby").is_some_and(|value| {
-                        !value.is_null() && !value.is_string() && !value.is_object()
-                    })
-                    || link_object
-                        .get("describedby")
-                        .and_then(Value::as_object)
-                        .is_some_and(|describedby| {
-                            !describedby.get("href").is_some_and(Value::is_string)
-                        })
-                {
-                    return Err(DocumentValidationError::InvalidLinkObject);
-                }
-            }
-            _ => return Err(DocumentValidationError::InvalidLinkObject),
+    for (relation, link) in links {
+        if !is_valid_link_relation_type(relation) || !is_valid_link(link) {
+            return Err(DocumentValidationError::InvalidLinkObject);
         }
     }
     Ok(())
+}
+
+fn is_valid_link(link: &Value) -> bool {
+    match link {
+        Value::Null => true,
+        Value::String(href) => is_valid_uri_reference(href),
+        Value::Object(link_object) => {
+            let Some(Value::String(href)) = link_object.get("href") else {
+                return false;
+            };
+            is_valid_uri_reference(href)
+                && link_object
+                    .get("rel")
+                    .is_none_or(|value| value.as_str().is_some_and(is_valid_link_relation_type))
+                && link_object.get("title").is_none_or(Value::is_string)
+                && link_object.get("type").is_none_or(Value::is_string)
+                && link_object.get("hreflang").is_none_or(|value| {
+                    value.is_string()
+                        || value
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(Value::is_string))
+                })
+                && link_object.get("meta").is_none_or(Value::is_object)
+                && link_object.get("describedby").is_none_or(is_valid_link)
+        }
+        _ => false,
+    }
+}
+
+fn is_valid_uri_reference(value: &str) -> bool {
+    URIReference::try_from(value).is_ok()
+}
+
+fn is_valid_link_relation_type(value: &str) -> bool {
+    if is_registered_link_relation_type(value) {
+        return true;
+    }
+    URIReference::try_from(value)
+        .ok()
+        .is_some_and(|reference| reference.scheme().is_some())
+}
+
+fn is_registered_link_relation_type(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
 }
 
 fn is_globally_allowed_member_character(character: char) -> bool {
