@@ -117,7 +117,13 @@ impl From<ObjectOnly<JsonApiDocumentRepr>> for JsonApiDocument {
 }
 
 /// Restricts protocol objects to map representations rather than Serde's sequence form.
-struct ObjectOnly<T>(T);
+pub(crate) struct ObjectOnly<T>(T);
+
+impl<T> ObjectOnly<T> {
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
 
 impl<'de, T> Deserialize<'de> for ObjectOnly<T>
 where
