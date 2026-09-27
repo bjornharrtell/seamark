@@ -902,6 +902,7 @@ async fn atomic_http_rejects_non_request_members_in_operations_request() {
         r#"{"atomic:operations":[],"atomic:results":[]}"#,
         r#"{"atomic:operations":[],"data":null}"#,
         r#"{"atomic:operations":[],"included":[]}"#,
+        r#"{"atomic:operations":[],"jsonapi":{"profile":["relative/profile"]}}"#,
     ] {
         let response = app
             .clone()
