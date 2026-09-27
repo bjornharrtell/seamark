@@ -7,7 +7,7 @@ use axum::http::HeaderMap;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use seamark::atomic::{
     AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome,
-    AtomicOperationsDocument, AtomicOperationsError, AtomicOperationsGuard,
+    AtomicOperationsDocument, AtomicOperationsError, AtomicOperationsGuard, AtomicResourceData,
     AtomicResourceReference, AtomicResult, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
     execute_atomic_operations, plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
@@ -723,6 +723,75 @@ fn rejects_invalid_at_member_names_in_atomic_protocol_objects() {
             "invalid @-member names must be rejected before unknown members are ignored (case {index})"
         );
     }
+}
+
+#[test]
+fn ignores_valid_at_members_and_rejects_invalid_names_in_atomic_metadata() {
+    let document: AtomicOperationsDocument = serde_json::from_value(json!({
+        "meta": {"@annotation": false, "request": "kept"},
+        "atomic:operations": [{
+            "op": "add",
+            "meta": {"@annotation": false, "operation": "kept"},
+            "data": {
+                "type": "authors",
+                "meta": {"@annotation": false, "resource": "kept"}
+            }
+        }]
+    }))
+    .unwrap();
+    assert_eq!(document.meta.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        document.meta.as_ref().unwrap().get("request"),
+        Some(&json!("kept"))
+    );
+    assert_eq!(
+        document.operations.as_ref().unwrap()[0]
+            .meta
+            .as_ref()
+            .unwrap()
+            .get("operation"),
+        Some(&json!("kept"))
+    );
+    let resource_data: AtomicResourceData = serde_json::from_value(
+        document.operations.as_ref().unwrap()[0]
+            .data
+            .as_ref()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        resource_data.meta.as_ref().unwrap().get("resource"),
+        Some(&json!("kept"))
+    );
+
+    for value in [
+        json!({"meta": {"@bad/": false}, "atomic:operations": []}),
+        json!({"atomic:operations": [{
+            "op": "remove",
+            "ref": {"type": "authors", "id": "1"},
+            "meta": {"@bad/": false}
+        }]}),
+        json!({"atomic:results": [{"meta": {"@bad/": false}}]}),
+    ] {
+        assert!(
+            serde_json::from_value::<AtomicOperationsDocument>(value).is_err(),
+            "invalid @-member names must be rejected in Atomic metadata maps"
+        );
+    }
+
+    let invalid_resource_metadata = json!({
+        "type": "authors",
+        "meta": {"@bad/": false}
+    });
+    assert!(serde_json::from_value::<AtomicResourceData>(invalid_resource_metadata).is_err());
+    let invalid_operation_data = json!({"atomic:operations": [{
+        "op": "add",
+        "data": {"type": "authors", "meta": {"@bad/": false}}
+    }]});
+    let document: AtomicOperationsDocument =
+        serde_json::from_value(invalid_operation_data).unwrap();
+    assert!(plan_atomic_operations(&registry(), &document).is_err());
 }
 
 #[test]
