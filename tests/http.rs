@@ -904,6 +904,53 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
 }
 
 #[tokio::test]
+async fn base_mutation_and_relationship_routes_reject_unacceptable_accept_before_execution() {
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    let requests = [
+        (
+            "POST",
+            "/ports",
+            r#"{"data":{"type":"ports","attributes":{"name":"West"}}}"#,
+        ),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"type":"ports","id":"1","attributes":{"name":"West"}}}"#,
+        ),
+        ("DELETE", "/ports/1", ""),
+        ("GET", "/ports/1/relationships/tags", ""),
+        (
+            "PATCH",
+            "/ports/1/relationships/owner",
+            r#"{"data":{"type":"people","id":"1"}}"#,
+        ),
+        ("POST", "/ports/1/relationships/tags", r#"{"data":[]}"#),
+        ("DELETE", "/ports/1/relationships/tags", r#"{"data":[]}"#),
+    ];
+
+    for (method, uri, body) in requests {
+        let mut request = mutation_request(method, uri, body);
+        request
+            .headers_mut()
+            .insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = app.clone().oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_ACCEPTABLE,
+            "{method} {uri}"
+        );
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("not_acceptable"));
+        assert_eq!(errors[0].status.as_deref(), Some("406"));
+    }
+
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn base_mutation_adapter_errors_map_to_jsonapi_http_statuses() {
     let cases = [
         (
