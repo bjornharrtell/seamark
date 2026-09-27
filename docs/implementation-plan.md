@@ -69,6 +69,15 @@ mapping before authorization or database execution. Valid fieldset projection
 also intersects mapper output with the resource registry, so unregistered
 values cannot escape through direct `SeaOrmReadResult` use.
 
+### M4 SeaORM sort-plan mapping enforcement
+
+The shared PostgreSQL and SQLite SeaORM query regressions construct one sort
+plan with an unknown public name mapped to a real sortable column and another
+with the registered public `depth` name mapped to `owner_id`. Both return the
+exact `InvalidSortField` error even with a denying guard, proving the sort
+allowlist runs before authorization. The existing `first_page_with_owner`
+query remains the valid `-depth` database-side sort control.
+
 ### M5 empty-operations request evidence
 
 The [Atomic Operations extension](https://jsonapi.org/ext/atomic/#document-structure)

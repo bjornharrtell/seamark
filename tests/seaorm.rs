@@ -30,7 +30,10 @@ use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
     QueryCollectionResult, QueryResourceAdapter, RequestAuthorizer, ResourceAdapter,
 };
-use seamark::query::{IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadQuery, plan_read};
+use seamark::query::{
+    IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadQuery, SortDirection, SortField,
+    plan_read,
+};
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     IncludedResource, SeaOrmExecutionError, SeaOrmFilterValueCodec, SeaOrmIncludeLoader,
@@ -663,6 +666,39 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
         error.to_string(),
         "field `owner` is not a valid registered field on resource `ports`"
     );
+    let deny_guard = AllowGuard {
+        authorized: false,
+        maximum_page_size: 10,
+        maximum_offset: 100,
+    };
+    let mut unknown_public_sort = plan(&ReadQuery::default());
+    unknown_public_sort.sort = vec![SortField {
+        public_name: "secret".to_owned(),
+        model_field: "depth_m".to_owned(),
+        direction: SortDirection::Ascending,
+    }];
+    let error = executor
+        .collection(&database, &unknown_public_sort, &deny_guard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "sort field `secret` is not enabled for resource `ports`"
+    );
+    let mut mismapped_sort = plan(&ReadQuery::default());
+    mismapped_sort.sort = vec![SortField {
+        public_name: "depth".to_owned(),
+        model_field: "owner_id".to_owned(),
+        direction: SortDirection::Ascending,
+    }];
+    let error = executor
+        .collection(&database, &mismapped_sort, &deny_guard, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "sort field `depth` is not enabled for resource `ports`"
+    );
 
     let query = query_cases::first_page_with_owner();
     let read_plan = plan(&query);
@@ -1138,8 +1174,8 @@ async fn authorization_limits_and_validation_failures_precede_queries() {
 
     let mut denied_plan = plan(&ReadQuery::default());
     denied_plan.sort = vec![seamark::query::SortField {
-        public_name: "bad".to_owned(),
-        model_field: "not_a_column".to_owned(),
+        public_name: "depth".to_owned(),
+        model_field: "depth_m".to_owned(),
         direction: seamark::query::SortDirection::Ascending,
     }];
     assert!(matches!(

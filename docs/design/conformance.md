@@ -57,6 +57,14 @@ relationship with a mismatched target in a manually constructed `ReadPlan`;
 the executor returns deterministic `InvalidFieldsetField` errors. The valid
 projection path also intersects mapper output with registry-declared fields.
 
+Sort allowlisting at the SeaORM execution boundary is covered by the same
+PostgreSQL and SQLite cases. A manually constructed sort with public name
+`secret` but internal column `depth_m`, and another with public name `depth`
+but internal mapping `owner_id`, both return `InvalidSortField`. The tests use
+a denying read guard, so the deterministic validation error proves malformed
+sort mappings are rejected before authorization; existing `first_page_with_owner`
+coverage retains a valid `-depth` sort control on each backend.
+
 M4 unknown filter fields are covered by
 `tests/http.rs::query_router_rejects_unknown_filter_field_before_authorization_or_execution`.
 Its valid `equals(name,'Harbor')` control reaches the adapter plan as the
