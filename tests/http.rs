@@ -470,18 +470,20 @@ async fn validates_profile_uri_lists_and_duplicate_accept_parameters() {
 
 #[tokio::test]
 async fn ignores_accept_extensions_after_quality_and_unknown_media_parameters_match_no_range() {
-    let adapter = Arc::new(TestAdapter::default());
-    *adapter.resource_result.lock().unwrap() = Some(port_record());
-    let (app, _) = test_app(adapter, true);
-    let response = app
-        .oneshot(request(
-            "/ports/1",
-            Some("application/vnd.api+json;q=1;foo=bar"),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_jsonapi_headers(&response);
+    for path in ["/ports", "/ports/1"] {
+        let adapter = Arc::new(TestAdapter::default());
+        *adapter.resource_result.lock().unwrap() = Some(port_record());
+        let (app, _) = test_app(adapter, true);
+        let response = app
+            .oneshot(request(
+                path,
+                Some("application/vnd.api+json;q=0.5;profile=unquoted"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_jsonapi_headers(&response);
+    }
 
     let adapter = Arc::new(TestAdapter::default());
     let (app, _) = test_app(adapter, true);
