@@ -139,6 +139,13 @@ expected result document. A resource `href` resolving to article `1` paired
 with data identifying article `2` returns HTTP 400
 `invalid_atomic_operation` at `/atomic:operations/0`; the pointer resolves in
 the submitted request. Resolved identity consistency is checked by the planner.
+The [Atomic Operations document-structure rule](https://jsonapi.org/ext/atomic/#document-structure)
+does not require `atomic:operations` to be non-empty; the [processing rule](https://jsonapi.org/ext/atomic/#processing)
+requires a returned `atomic:results` array to have the same length as the
+request. `accepts_empty_atomic_operations_as_a_valid_no_op`
+and `atomic_http_accepts_empty_operations_as_a_successful_no_op` verify that
+an empty array is accepted and returns HTTP 200 with `atomic:results: []`.
+Authorization still runs once, but the operation handler is not called.
 
 M7 nested include parity uses the shared `two_level_neighbors` query with
 `neighbors.neighbors` in both `executes_database_filters_sort_pagination_and_includes_with_fieldsets`
