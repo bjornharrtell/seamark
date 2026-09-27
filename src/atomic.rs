@@ -1194,11 +1194,19 @@ fn validate_resource_data(
             if is_at_member(name) {
                 continue;
             }
+            let attribute_pointer = format!(
+                "{path}/data/attributes/{}",
+                escape_json_pointer_segment(name)
+            );
             let mapping = definition.attribute_by_name(name).ok_or_else(|| {
-                fail(format!(
-                    "attribute `{name}` is not registered on `{}`",
-                    data.type_name
-                ))
+                invalid_operation(
+                    index,
+                    &attribute_pointer,
+                    &format!(
+                        "attribute `{name}` is not registered on `{}`",
+                        data.type_name
+                    ),
+                )
             })?;
             mapped.insert(mapping.model_field().to_owned(), value.clone());
         }
@@ -1394,6 +1402,10 @@ fn invalid_operation(index: usize, path: &str, message: &str) -> AtomicOperation
         pointer: path.to_owned(),
         message: message.to_owned(),
     }
+}
+
+fn escape_json_pointer_segment(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
 }
 
 /// A request result plus an optional created identity for local-ID resolution.

@@ -670,6 +670,40 @@ fn rejects_malformed_operation_shapes_and_unknown_registry_fields() {
 }
 
 #[test]
+fn unknown_resource_attributes_point_to_the_nested_data_member() {
+    let valid = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {"type": "authors", "attributes": {"name": "Ada"}}
+        }]
+    }))
+    .unwrap();
+    let PlannedOperation::AddResource { changeset, .. } = &valid[0].operation else {
+        panic!("expected an add-resource operation");
+    };
+    assert_eq!(
+        changeset.attributes.as_ref().unwrap().get("name"),
+        Some(&json!("Ada"))
+    );
+
+    let error = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {"type": "authors", "attributes": {"unknown": "value"}}
+        }]
+    }))
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicOperationsError::InvalidOperation {
+            index: 0,
+            pointer,
+            ..
+        } if pointer == "/atomic:operations/0/data/attributes/unknown"
+    ));
+}
+
+#[test]
 fn atomic_references_require_type_and_exactly_one_identity() {
     let resource_id_reference = plan(json!({
         "atomic:operations": [{
