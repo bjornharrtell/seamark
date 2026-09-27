@@ -1736,7 +1736,7 @@ async fn persists_sqlite_atomic_crud_and_relationship_updates() {
         .oneshot(atomic_operations_request(failed_request))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         response.headers().get(CONTENT_TYPE).unwrap(),
         ATOMIC_MEDIA_TYPE
@@ -1744,7 +1744,7 @@ async fn persists_sqlite_atomic_crud_and_relationship_updates() {
     assert_eq!(response.headers().get(VARY).unwrap(), "Accept");
     let error_document: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
+    assert_eq!(error_document["errors"][0]["code"], "resource_not_found");
     assert_eq!(
         error_document["errors"][0]["source"]["pointer"],
         "/atomic:operations/1"
@@ -1871,7 +1871,7 @@ async fn rolls_back_sqlite_typed_mutations_after_a_later_operation_fails() {
     .unwrap_err();
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 1, .. }
+        AtomicExecutionError::NotFound { index: 1, .. }
     ));
     let port = port::Entity::find_by_id(1)
         .one(&database)
@@ -1895,7 +1895,7 @@ async fn sqlite_atomic_result_document_matches_shared_backend_case() {
     let error = atomic_cases::execute_failure_case(&database).await;
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 2, .. }
+        AtomicExecutionError::NotFound { index: 2, .. }
     ));
     atomic_cases::assert_final_state(&database).await;
     atomic_cases::execute_local_id_to_one_relationship_case(&database).await;
@@ -1909,6 +1909,7 @@ async fn sqlite_atomic_result_document_matches_shared_backend_case() {
     atomic_cases::execute_invalid_result_rollback_case(&database).await;
     atomic_cases::execute_client_assigned_add_result_http_case(&database).await;
     atomic_cases::execute_duplicate_client_assigned_add_conflict_http_case(&database).await;
+    atomic_cases::execute_update_missing_resource_not_found_http_case(&database).await;
     atomic_cases::execute_client_assigned_add_missing_result_rollback_http_case(&database).await;
 
     database.close().await.unwrap();

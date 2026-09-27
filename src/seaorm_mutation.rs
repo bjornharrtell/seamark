@@ -1107,7 +1107,7 @@ where
         target: &AtomicTarget,
         changeset: &AtomicResourceChangeset,
         local_ids: &LocalIdMap,
-    ) -> Result<AtomicOperationOutcome, String> {
+    ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         let target = self.target_identity(target, local_ids)?;
         let id = target
             .id
@@ -1131,10 +1131,14 @@ where
                 .filter(id_column.eq(id_value))
                 .one(transaction)
                 .await
-                .map_err(|error| format!("resource lookup failed: {error}"))?
+                .map_err(|error| {
+                    AtomicOperationFailure::Operation(format!("resource lookup failed: {error}"))
+                })?
                 .is_some();
             if !exists {
-                return Err("resource to update was not found".to_owned());
+                return Err(AtomicOperationFailure::NotFound(
+                    "resource to update was not found".to_owned(),
+                ));
             }
             return Ok(AtomicOperationOutcome::default());
         }
@@ -1144,10 +1148,13 @@ where
             .try_set(id_column, id_value)
             .map_err(|error| format!("could not map identifier field: {error}"))?;
         self.apply_changeset(&mut active_model, changeset, local_ids, false)?;
-        active_model
-            .update(transaction)
-            .await
-            .map_err(|error| format!("resource update failed: {error}"))?;
+        active_model.update(transaction).await.map_err(|error| {
+            if matches!(&error, DbErr::RecordNotUpdated) {
+                AtomicOperationFailure::NotFound("resource to update was not found".to_owned())
+            } else {
+                AtomicOperationFailure::Operation(format!("resource update failed: {error}"))
+            }
+        })?;
         Ok(AtomicOperationOutcome::default())
     }
 
@@ -1266,7 +1273,10 @@ where
                 .map_err(|failure| failure.to_string()),
             PlannedOperation::UpdateResource {
                 target, changeset, ..
-            } => self.update(transaction, target, changeset, local_ids).await,
+            } => self
+                .update(transaction, target, changeset, local_ids)
+                .await
+                .map_err(|failure| failure.to_string()),
             PlannedOperation::RemoveResource { target } => {
                 self.remove(transaction, target, local_ids).await
             }
@@ -1295,6 +1305,9 @@ where
             PlannedOperation::AddResource { changeset, .. } => {
                 self.add(transaction, changeset, local_ids).await
             }
+            PlannedOperation::UpdateResource {
+                target, changeset, ..
+            } => self.update(transaction, target, changeset, local_ids).await,
             _ => self
                 .execute(transaction, operation, local_ids)
                 .await

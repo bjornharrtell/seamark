@@ -958,6 +958,39 @@ pub async fn execute_duplicate_client_assigned_add_conflict_http_case(
     assert_eq!(people[0].display_name, "Existing");
 }
 
+pub async fn execute_update_missing_resource_not_found_http_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request_body = r#"{"atomic:operations":[{"op":"add","data":{"type":"people","id":"42","attributes":{"name":"Rolled back"}}},{"op":"update","data":{"type":"people","id":"99","attributes":{"name":"Missing"}}}]}"#;
+    let response = app.oneshot(atomic_request(request_body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document["errors"][0]["code"], "resource_not_found");
+    assert_eq!(response_document["errors"][0]["status"], "404");
+    assert_eq!(
+        response_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(response_document.get("atomic:results").is_none());
+    assert!(
+        person::Entity::find()
+            .all(database)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the add preceding a missing-resource update must roll back"
+    );
+}
+
 pub async fn execute_client_assigned_add_missing_result_rollback_http_case(
     database: &DatabaseConnection,
 ) {

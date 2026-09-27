@@ -252,6 +252,13 @@ fn atomic_execution_error(error: AtomicExecutionError, request_document: &Value)
             message,
             Some(format!("/atomic:operations/{index}")),
         ),
+        AtomicExecutionError::NotFound { index, message } => (
+            StatusCode::NOT_FOUND,
+            "resource_not_found",
+            "Resource not found",
+            message,
+            Some(format!("/atomic:operations/{index}")),
+        ),
         AtomicExecutionError::LocalId { index, message } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "atomic_local_id_mapping_failed",

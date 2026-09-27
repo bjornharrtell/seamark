@@ -1555,6 +1555,8 @@ pub trait AtomicOperationHandler: Send + Sync {
 pub enum AtomicOperationFailure {
     /// The operation could not be completed with the supplied input or state.
     Operation(String),
+    /// The resource targeted by the operation does not exist.
+    NotFound(String),
     /// The operation conflicts with an existing resource or application state.
     Conflict(String),
 }
@@ -1562,7 +1564,9 @@ pub enum AtomicOperationFailure {
 impl fmt::Display for AtomicOperationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Operation(message) | Self::Conflict(message) => formatter.write_str(message),
+            Self::Operation(message) | Self::NotFound(message) | Self::Conflict(message) => {
+                formatter.write_str(message)
+            }
         }
     }
 }
@@ -1612,6 +1616,13 @@ pub enum AtomicExecutionError {
         /// The conflict description.
         message: String,
     },
+    /// An operation targeted a resource that does not exist.
+    NotFound {
+        /// Zero-based index of the failed operation.
+        index: usize,
+        /// The not-found description.
+        message: String,
+    },
     /// Rolling back after an operation error also failed.
     Rollback {
         /// Zero-based index of the failed operation.
@@ -1655,6 +1666,12 @@ impl fmt::Display for AtomicExecutionError {
             }
             Self::Conflict { index, message } => {
                 write!(formatter, "operation {index} conflicted: {message}")
+            }
+            Self::NotFound { index, message } => {
+                write!(
+                    formatter,
+                    "operation {index} target was not found: {message}"
+                )
             }
             Self::Rollback {
                 index,
@@ -1730,6 +1747,9 @@ where
                         }
                         AtomicOperationFailure::Conflict(message) => {
                             AtomicExecutionError::Conflict { index, message }
+                        }
+                        AtomicOperationFailure::NotFound(message) => {
+                            AtomicExecutionError::NotFound { index, message }
                         }
                     }),
                     Err(rollback) => Err(AtomicExecutionError::Rollback {

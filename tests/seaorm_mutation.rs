@@ -461,7 +461,7 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
     .await;
     assert!(matches!(
         failed_to_many,
-        Err(AtomicExecutionError::Operation { index: 2, .. })
+        Err(AtomicExecutionError::NotFound { index: 2, .. })
     ));
     assert!(
         tag::Entity::find()
@@ -667,7 +667,7 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
     .await;
     assert!(matches!(
         failing,
-        Err(AtomicExecutionError::Operation { index: 1, .. })
+        Err(AtomicExecutionError::NotFound { index: 1, .. })
     ));
     let authors = author::Entity::find().all(&database).await.unwrap();
     assert_eq!(authors.len(), 1);
@@ -738,12 +738,12 @@ async fn persists_resource_crud_and_to_one_linkage_atomically() {
         .oneshot(atomic_operations_request(failed_request))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
     let error_document: JsonValue =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
+    assert_eq!(error_document["errors"][0]["code"], "resource_not_found");
     assert_eq!(
         error_document["errors"][0]["source"]["pointer"],
         "/atomic:operations/1"
@@ -861,7 +861,7 @@ async fn postgres_atomic_result_document_matches_shared_backend_case() {
     let error = atomic_cases::execute_failure_case(&database).await;
     assert!(matches!(
         error,
-        AtomicExecutionError::Operation { index: 2, .. }
+        AtomicExecutionError::NotFound { index: 2, .. }
     ));
     atomic_cases::assert_final_state(&database).await;
     atomic_cases::execute_local_id_to_one_relationship_case(&database).await;
@@ -875,6 +875,7 @@ async fn postgres_atomic_result_document_matches_shared_backend_case() {
     atomic_cases::execute_invalid_result_rollback_case(&database).await;
     atomic_cases::execute_client_assigned_add_result_http_case(&database).await;
     atomic_cases::execute_duplicate_client_assigned_add_conflict_http_case(&database).await;
+    atomic_cases::execute_update_missing_resource_not_found_http_case(&database).await;
     atomic_cases::execute_client_assigned_add_missing_result_rollback_http_case(&database).await;
 
     database.close().await.unwrap();
