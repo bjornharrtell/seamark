@@ -6,6 +6,9 @@ rust-version = "1.85"
 description = "A Rust framework for building JSON:API servers with SeaORM"
 readme = "README.md"
 
+[features]
+sqlite = ["sea-orm/sqlx-sqlite"]
+
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
