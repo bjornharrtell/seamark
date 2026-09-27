@@ -143,7 +143,13 @@ resource data now reuse base JSON:API validation for top-level links and
 `jsonapi` members, resource links, and relationship object structure/links.
 Additional normative request/result/error/media-type cases remain incomplete.
 Resource, collection, and relationship href resolution now has planner, HTTP,
-and PostgreSQL mutation coverage. Full
+and PostgreSQL mutation coverage. Absolute URI-reference matching remains
+application-defined: `AtomicHrefResolver` receives the original value and
+applies the application's own base-URL policy without framework normalization.
+The HTTP test resolver uses an exact configured base URL, accepts matching
+absolute collection/resource/relationship references, and proves a mismatched
+resource identity returns HTTP 400 at the operation pointer before execution.
+Full
 normative conformance remains the M6 objective. M7 adds a partial opt-in SQLite slice. PostgreSQL and SQLite now assert one
 shared complete query response document and one shared eleven-operation
 Atomic result document with matching persisted state. The shared Atomic case

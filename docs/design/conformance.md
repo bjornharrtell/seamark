@@ -118,6 +118,16 @@ resource-level `ref` omits `relationship`, pointing to the existing `ref`
 object. `atomic_http_requires_a_relationship_ref_for_relationship_adds` pairs
 the successful relationship-add control with that 400 response and verifies
 the invalid operation reaches neither authorization nor the handler.
+Absolute Atomic `href` resolution is application-defined: `AtomicHrefResolver`
+receives the URI-reference unchanged, with no framework-configured base URL or
+normalization. `negotiates_and_executes_atomic_http_requests` configures an
+exact `https://api.example.test` base in its resolver and verifies absolute
+collection, resource, and relationship references return HTTP 200 with the
+expected result document. A resource `href` resolving to article `1` paired
+with data identifying article `2` returns HTTP 400
+`invalid_atomic_operation` at `/atomic:operations/0`; the pointer resolves in
+the submitted request. Resolved identity consistency is checked by the planner.
+
 M7 nested include parity uses the shared `two_level_neighbors` query with
 `neighbors.neighbors` in both `executes_database_filters_sort_pagination_and_includes_with_fieldsets`
 and `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`. The
