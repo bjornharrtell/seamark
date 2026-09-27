@@ -344,6 +344,9 @@ fn validates_link_values_and_link_object_shapes_in_all_document_contexts() {
         json!({"data": null, "links": {"self": {"href": "/ports/1", "rel": "not a relation"}}}),
         json!({"data": null, "links": {"self": {"href": "/ports/1", "rel": "bad/rel"}}}),
         json!({"data": {"type": "ports", "id": "1", "links": {"self": "bad uri"}}}),
+        json!({"data": null, "links": {"self": {"href": "/ports/1", "hreflang": "en_US"}}}),
+        json!({"data": null, "links": {"self": {"href": "/ports/1", "hreflang": []}}}),
+        json!({"data": null, "links": {"self": {"href": "/ports/1", "hreflang": ["en", "bad--tag"]}}}),
         json!({
             "data": {
                 "type": "ports",
@@ -382,6 +385,24 @@ fn validates_uri_references_and_registered_or_extension_link_relations() {
                     "rel": "https://example.test/rels/related"
                 }
             }
+        }))
+        .unwrap();
+        document.validate().unwrap();
+    }
+}
+
+#[test]
+fn accepts_well_formed_bcp47_language_tags() {
+    for hreflang in [
+        json!("en"),
+        json!("en-US"),
+        json!("zh-Hant"),
+        json!("de-CH-1901"),
+        json!(["en", "fr-CA"]),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(json!({
+            "data": null,
+            "links": {"describedby": {"href": "/schema", "hreflang": hreflang}}
         }))
         .unwrap();
         document.validate().unwrap();

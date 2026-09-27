@@ -77,7 +77,7 @@ fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
 fieldsets. The registry rejects resource type and public field names that do
-not meet JSON:API member-name rules. The full suite now has 90 passing
+not meet JSON:API member-name rules. The full suite now has 91 passing
 integration tests and 2 unit tests with PostgreSQL 17; formatting,
 warning-free Clippy, rustdoc, and whitespace checks pass. M4 remains in
 progress pending reusable production mapping APIs, broader database
@@ -111,10 +111,10 @@ Document validation now rejects simultaneous `id`/`lid`, requires persistent
 IDs for response resource objects and relationship identifiers, checks
 conflicting or invalid resource type/field names, rejects unreachable included
 resources, empty relationship objects, and error objects without any defined
-member. It validates link `href` URI references and registered-token or
-absolute-URI relation types in document, resource, relationship, and error
-contexts. The matrix remains partial: `hreflang` language-tag syntax,
-complete error behavior, normative Atomic Operations edge cases, and
+member. It validates link `href` URI references, registered-token or
+absolute-URI relation types, and BCP 47 `hreflang` language-tag syntax in
+document, resource, relationship, and error contexts. The matrix remains
+partial: complete error behavior, normative Atomic Operations edge cases, and
 context-sensitive request/response rules still require coverage before M6 can
 be complete.
 Atomic Operations documents now ignore unrecognized members per JSON:API

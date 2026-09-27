@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
+use language_tags::LanguageTag;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use uriparse::URIReference;
@@ -737,10 +738,13 @@ fn is_valid_link(link: &Value) -> bool {
                 && link_object.get("title").is_none_or(Value::is_string)
                 && link_object.get("type").is_none_or(Value::is_string)
                 && link_object.get("hreflang").is_none_or(|value| {
-                    value.is_string()
-                        || value
-                            .as_array()
-                            .is_some_and(|values| values.iter().all(Value::is_string))
+                    value.as_str().is_some_and(is_valid_language_tag)
+                        || value.as_array().is_some_and(|values| {
+                            !values.is_empty()
+                                && values
+                                    .iter()
+                                    .all(|tag| tag.as_str().is_some_and(is_valid_language_tag))
+                        })
                 })
                 && link_object.get("meta").is_none_or(Value::is_object)
                 && link_object.get("describedby").is_none_or(is_valid_link)
@@ -751,6 +755,10 @@ fn is_valid_link(link: &Value) -> bool {
 
 fn is_valid_uri_reference(value: &str) -> bool {
     URIReference::try_from(value).is_ok()
+}
+
+fn is_valid_language_tag(value: &str) -> bool {
+    LanguageTag::parse(value).is_ok()
 }
 
 fn is_valid_link_relation_type(value: &str) -> bool {
