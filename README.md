@@ -1,6 +1,6 @@
 # Seamark
 
-Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, a read-only Axum collection/single-resource GET slice, opt-in collection-query integration, and prototype SeaORM query and Atomic Operations persistence support. PostgreSQL is the first validated backend; SQLite is planned as a separate M7 backend. Full resource routing and normative specification conformance are not implemented.
+Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, a read-only Axum collection/single-resource GET slice, opt-in collection-query integration, and prototype SeaORM query and Atomic Operations persistence support. PostgreSQL is the first validated backend; the opt-in `sqlite` feature has partial M7 query and mutation test coverage, but full SQLite parity is not established. Full resource routing and normative specification conformance are not implemented.
 
 ## Initial target
 
@@ -23,4 +23,4 @@ The implementation is tracked in the [implementation plan](docs/implementation-p
 - [JSON:API conformance strategy](docs/design/conformance.md)
 - [Implementation plan and milestones](docs/implementation-plan.md)
 
-The exact mapping and execution APIs remain open pending further adapter integration. SQLite backend support and cross-backend verification are reserved for M7; PostgreSQL remains the currently validated backend. The design documents describe intent; implementation status and milestone evidence are recorded in the plan.
+The exact mapping and execution APIs remain open pending further adapter integration. M7 now has partial SQLite implementation evidence; PostgreSQL remains the first validated backend and cross-backend equivalence is incomplete. The design documents describe intent; implementation status and milestone evidence are recorded in the plan.

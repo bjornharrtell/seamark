@@ -5,8 +5,8 @@ adapter-independent resource registry and read planner, Axum read-only GET
 routes with opt-in collection-query planning, a PostgreSQL-backed SeaORM
 collection-executor prototype integrated through the query-adapter boundary,
 and a standalone Atomic Operations `POST /operations` router, typed SeaORM
-resource mutation executors, and transaction runner. SQLite is a planned M7
-SeaORM backend, not yet implemented or validated. Complete JSON:API
+resource mutation executors, and transaction runner. SQLite has an opt-in SeaORM feature and partial M7
+query/mutation test coverage; cross-backend parity is not established. Complete JSON:API
 conformance is not implemented.
 
 ## Boundaries

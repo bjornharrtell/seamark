@@ -1,7 +1,11 @@
 #![cfg(feature = "sqlite")]
 #![allow(missing_docs)]
 
+#[path = "support/query_cases.rs"]
+mod query_cases;
+
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -12,7 +16,7 @@ use sea_orm::{
     DatabaseTransaction, DbBackend, EntityTrait, QueryFilter, Schema, Set, Value,
 };
 use seamark::atomic::{
-    AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsDocument,
+    AtomicExecutionError, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsDocument,
     AtomicOperationsGuard, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
     execute_atomic_operations, plan_atomic_operations,
 };
@@ -21,6 +25,9 @@ use seamark::query::{IncludeNode, PaginationConfig, ReadPlan, ReadQuery, plan_re
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::{
     IncludedResource, SeaOrmIncludeLoader, SeaOrmQueryExecutor, SeaOrmReadGuard,
+};
+use seamark::seaorm_mutation::{
+    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
 };
 use serde_json::json;
 
@@ -36,11 +43,18 @@ mod port {
         pub berth_count: Option<i32>,
         pub depth_m: i32,
         pub active: bool,
-        pub owner_id: i32,
+        pub owner_id: Option<i32>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-    pub enum Relation {}
+    pub enum Relation {
+        #[sea_orm(
+            belongs_to = "super::person::Entity",
+            from = "Column::OwnerId",
+            to = "super::person::Column::PersonId"
+        )]
+        Owner,
+    }
 
     impl ActiveModelBehavior for ActiveModel {}
 }
@@ -99,13 +113,16 @@ fn port_resource(model: &port::Model) -> AdapterResource {
         relationships: BTreeMap::from([(
             "owner_id".to_owned(),
             seamark::document::Relationship {
-                data: Some(seamark::document::RelationshipData::One(
-                    seamark::document::ResourceIdentifier {
-                        type_name: "people".to_owned(),
-                        id: Some(model.owner_id.to_string()),
-                        ..seamark::document::ResourceIdentifier::default()
-                    },
-                )),
+                data: Some(match model.owner_id {
+                    Some(owner_id) => seamark::document::RelationshipData::One(
+                        seamark::document::ResourceIdentifier {
+                            type_name: "people".to_owned(),
+                            id: Some(owner_id.to_string()),
+                            ..seamark::document::ResourceIdentifier::default()
+                        },
+                    ),
+                    None => seamark::document::RelationshipData::Null,
+                }),
                 ..seamark::document::Relationship::default()
             },
         )]),
@@ -158,7 +175,7 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
         }
         let ids = roots
             .iter()
-            .map(|root| root.owner_id)
+            .filter_map(|root| root.owner_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -203,7 +220,7 @@ async fn create_tables(database: &DatabaseConnection) {
 }
 
 async fn insert_fixtures(database: &DatabaseConnection) {
-    for (id, name, note) in [(11, "Mara", "secret A"), (12, "Niko", "secret B")] {
+    for query_cases::PersonFixture { id, name, note } in query_cases::PEOPLE {
         person::ActiveModel {
             person_id: Set(id),
             display_name: Set(name.to_owned()),
@@ -213,18 +230,22 @@ async fn insert_fixtures(database: &DatabaseConnection) {
         .await
         .unwrap();
     }
-    for (id, name, capacity, depth, active, owner) in [
-        (1, "Alpha", Some(4), 2, true, 11),
-        (2, "Beta", Some(8), 9, false, 12),
-        (3, "Gamma", None, 6, true, 11),
-    ] {
+    for query_cases::PortFixture {
+        id,
+        name,
+        capacity,
+        depth,
+        active,
+        owner_id,
+    } in query_cases::PORTS
+    {
         port::ActiveModel {
             port_id: Set(id),
             title: Set(name.to_owned()),
             berth_count: Set(capacity),
             depth_m: Set(depth),
             active: Set(active),
-            owner_id: Set(owner),
+            owner_id: Set(Some(owner_id)),
         }
         .insert(database)
         .await
@@ -232,11 +253,90 @@ async fn insert_fixtures(database: &DatabaseConnection) {
     }
 }
 
+fn encode_mutation_value(field: &str, value: &serde_json::Value) -> Result<Value, String> {
+    match (field, value) {
+        ("owner_id" | "berth_count", serde_json::Value::Null) => Ok(Value::Int(None)),
+        ("port_id" | "person_id" | "owner_id", serde_json::Value::String(value)) => value
+            .parse::<i32>()
+            .map(|value| Value::Int(Some(value)))
+            .map_err(|error| error.to_string()),
+        ("berth_count" | "depth_m", serde_json::Value::Number(value)) => value
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .map(|value| Value::Int(Some(value)))
+            .ok_or_else(|| format!("invalid integer value `{value}` for `{field}`")),
+        ("active", serde_json::Value::Bool(value)) => Ok(Value::from(*value)),
+        ("title" | "display_name" | "private_note", serde_json::Value::String(value)) => {
+            Ok(Value::from(value.clone()))
+        }
+        _ => Err(format!("unsupported value `{value}` for `{field}`")),
+    }
+}
+
+fn decode_mutation_identifier(field: &str, value: &Value) -> Result<String, String> {
+    match (field, value) {
+        ("port_id" | "person_id", Value::Int(Some(value))) => Ok(value.to_string()),
+        _ => Err(format!("unsupported identifier `{value:?}` for `{field}`")),
+    }
+}
+
+fn mutation_dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatcher {
+    let ports = SeaOrmResourceMutationHandler::<port::Entity, _, _>::new(
+        registry,
+        "ports",
+        encode_mutation_value,
+        decode_mutation_identifier,
+    )
+    .unwrap();
+    let people = SeaOrmResourceMutationHandler::<person::Entity, _, _>::new(
+        registry,
+        "people",
+        encode_mutation_value,
+        decode_mutation_identifier,
+    )
+    .unwrap();
+    let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> =
+        vec![Arc::new(ports), Arc::new(people)];
+    SeaOrmAtomicOperationDispatcher::new(executors)
+}
+
+async fn execute_sqlite_mutations(
+    database: &DatabaseConnection,
+    registry: &ResourceRegistry,
+    request: serde_json::Value,
+) -> Result<Vec<seamark::atomic::AtomicResult>, AtomicExecutionError> {
+    let document: AtomicOperationsDocument = serde_json::from_value(request).unwrap();
+    let operations = plan_atomic_operations(registry, &document).unwrap();
+    execute_atomic_operations(
+        database,
+        &operations,
+        &HeaderMap::new(),
+        &AllowAtomicGuard,
+        &mutation_dispatcher(registry),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     let database = database().await;
     create_tables(&database).await;
     insert_fixtures(&database).await;
+
+    let invalid_port = port::ActiveModel {
+        port_id: Set(99),
+        title: Set("Invalid".to_owned()),
+        berth_count: Set(None),
+        depth_m: Set(0),
+        active: Set(false),
+        owner_id: Set(Some(999)),
+    }
+    .insert(&database)
+    .await;
+    assert!(
+        invalid_port.is_err(),
+        "SQLite must enforce the owner foreign key"
+    );
 
     let executor = SeaOrmQueryExecutor::<port::Entity, _, _>::new(
         registry(),
@@ -304,12 +404,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
         vec!["1"]
     );
 
-    for (filter, expected_ids) in [
-        ("equals(capacity,'8')", vec!["2"]),
-        ("equals(active,'true')", vec!["1", "3"]),
-        ("equals(capacity,null)", vec!["3"]),
-        ("equals(name,'Alpha')", vec!["1"]),
-    ] {
+    for (filter, expected_ids) in query_cases::FILTER_CASES {
         let query = ReadQuery {
             filters: vec![filter.to_owned()],
             page_size: Some("10".to_owned()),
@@ -325,10 +420,75 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
                 .iter()
                 .map(|resource| resource.id.as_str())
                 .collect::<Vec<_>>(),
-            expected_ids
+            expected_ids.to_vec()
         );
     }
 
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn persists_sqlite_atomic_crud_and_relationship_updates() {
+    let database = database().await;
+    create_tables(&database).await;
+    person::ActiveModel {
+        person_id: Set(11),
+        display_name: Set("Mara".to_owned()),
+        private_note: Set("seed".to_owned()),
+    }
+    .insert(&database)
+    .await
+    .unwrap();
+    let registry = registry();
+
+    let results = execute_sqlite_mutations(
+        &database,
+        &registry,
+        json!({
+            "atomic:operations": [
+                {"op": "add", "data": {"type": "people", "lid": "person-new", "attributes": {"name": "Rhea", "note": "private"}}},
+                {
+                    "op": "add",
+                    "data": {
+                        "type": "ports",
+                        "lid": "port-new",
+                        "attributes": {"name": "New Port", "capacity": 5, "depth": 7, "active": true},
+                        "relationships": {"owner": {"data": {"type": "people", "lid": "person-new"}}}
+                    }
+                },
+                {
+                    "op": "update",
+                    "ref": {"type": "ports", "lid": "port-new"},
+                    "data": {"type": "ports", "lid": "port-new", "attributes": {"name": "Renamed Port"}}
+                },
+                {
+                    "op": "update",
+                    "ref": {"type": "ports", "lid": "port-new", "relationship": "owner"},
+                    "data": {"type": "people", "id": "11"}
+                },
+                {"op": "remove", "ref": {"type": "ports", "lid": "port-new"}},
+                {"op": "remove", "ref": {"type": "people", "lid": "person-new"}}
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(results.len(), 6);
+    assert_eq!(port::Entity::find().all(&database).await.unwrap().len(), 0);
+    assert_eq!(
+        person::Entity::find().all(&database).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        person::Entity::find_by_id(11)
+            .one(&database)
+            .await
+            .unwrap()
+            .unwrap()
+            .display_name,
+        "Mara"
+    );
     database.close().await.unwrap();
 }
 
@@ -420,6 +580,37 @@ async fn rolls_back_sqlite_atomic_writes_after_operation_failure() {
         .try_get::<i64>("", "count")
         .unwrap();
     assert_eq!(count, 0);
+
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn rolls_back_sqlite_typed_mutations_after_a_later_operation_fails() {
+    let database = database().await;
+    create_tables(&database).await;
+    insert_fixtures(&database).await;
+    let error = execute_sqlite_mutations(
+        &database,
+        &registry(),
+        json!({
+            "atomic:operations": [
+                {"op": "update", "ref": {"type": "ports", "id": "1"}, "data": {"type": "ports", "id": "1", "attributes": {"name": "Changed"}}},
+                {"op": "update", "ref": {"type": "people", "id": "999"}, "data": {"type": "people", "id": "999", "attributes": {"name": "Missing"}}}
+            ]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicExecutionError::Operation { index: 1, .. }
+    ));
+    let port = port::Entity::find_by_id(1)
+        .one(&database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(port.title, "Alpha");
 
     database.close().await.unwrap();
 }

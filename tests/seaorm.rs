@@ -1,5 +1,8 @@
 #![allow(missing_docs)]
 
+#[path = "support/query_cases.rs"]
+mod query_cases;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -343,7 +346,7 @@ async fn create_tables(database: &DatabaseConnection) {
 }
 
 async fn insert_fixtures(database: &DatabaseConnection) {
-    for (id, name, note) in [(11, "Mara", "secret A"), (12, "Niko", "secret B")] {
+    for query_cases::PersonFixture { id, name, note } in query_cases::PEOPLE {
         person::ActiveModel {
             person_id: Set(id),
             display_name: Set(name.to_owned()),
@@ -353,18 +356,22 @@ async fn insert_fixtures(database: &DatabaseConnection) {
         .await
         .unwrap();
     }
-    for (id, name, capacity, depth, active, owner) in [
-        (1, "Alpha", Some(4), 2, true, 11),
-        (2, "Beta", Some(8), 9, false, 12),
-        (3, "Gamma", None, 6, true, 11),
-    ] {
+    for query_cases::PortFixture {
+        id,
+        name,
+        capacity,
+        depth,
+        active,
+        owner_id,
+    } in query_cases::PORTS
+    {
         port::ActiveModel {
             port_id: Set(id),
             title: Set(name.to_owned()),
             berth_count: Set(capacity),
             depth_m: Set(depth),
             active: Set(active),
-            owner_id: Set(owner),
+            owner_id: Set(owner_id),
         }
         .insert(database)
         .await
@@ -447,58 +454,25 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
             .all(|field| field == "display_name" || field == "private_note")
     }));
 
-    let null_query = ReadQuery {
-        filters: vec!["equals(capacity,null)".to_owned()],
-        page_size: Some("10".to_owned()),
-        ..ReadQuery::default()
-    };
-    let null_result = executor
-        .collection(&database, &plan(&null_query), &guard, None)
-        .await
-        .unwrap();
-    assert_eq!(
-        null_result
-            .resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["3"]
-    );
-
-    let numeric_query = ReadQuery {
-        filters: vec!["equals(capacity,'8')".to_owned()],
-        ..ReadQuery::default()
-    };
-    let numeric_result = executor
-        .collection(&database, &plan(&numeric_query), &guard, None)
-        .await
-        .unwrap();
-    assert_eq!(
-        numeric_result
-            .resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["2"]
-    );
-
-    let boolean_query = ReadQuery {
-        filters: vec!["equals(active,'true')".to_owned()],
-        page_size: Some("10".to_owned()),
-        ..ReadQuery::default()
-    };
-    let boolean_result = executor
-        .collection(&database, &plan(&boolean_query), &guard, None)
-        .await
-        .unwrap();
-    assert_eq!(
-        boolean_result
-            .resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["1", "3"])
-    );
+    for (filter, expected_ids) in query_cases::FILTER_CASES {
+        let query = ReadQuery {
+            filters: vec![filter.to_owned()],
+            page_size: Some("10".to_owned()),
+            ..ReadQuery::default()
+        };
+        let result = executor
+            .collection(&database, &plan(&query), &guard, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            result
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>(),
+            expected_ids.to_vec()
+        );
+    }
 
     let nested_filter_query = ReadQuery {
         filters: vec!["and(equals(name,'Beta'),not(equals(depth,'2')))".to_owned()],
