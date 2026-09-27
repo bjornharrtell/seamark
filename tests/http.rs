@@ -833,6 +833,54 @@ async fn query_router_rejects_unknown_sparse_field_before_execution() {
 }
 
 #[tokio::test]
+async fn query_router_rejects_unknown_sort_field_before_execution() {
+    let plans = Arc::new(Mutex::new(Vec::new()));
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: plans.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request("/ports?sort=depth", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let plan = plans.lock().unwrap()[0].clone();
+    assert_eq!(plan.sort[0].public_name, "depth");
+    assert_eq!(plan.sort[0].model_field, "depth_m");
+    assert_eq!(plan.sort[0].direction, SortDirection::Ascending);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 1);
+
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let response = app
+        .oneshot(request("/ports?sort=secret", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["status"], "400");
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "sort");
+    assert_eq!(
+        body["errors"][0]["detail"],
+        "sort attribute `secret` is not registered on resource `ports`"
+    );
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn query_router_enforces_configured_page_size_limit_before_execution() {
     let query_adapter = Arc::new(TestQueryAdapter {
         plans: Arc::new(Mutex::new(Vec::new())),
