@@ -1423,6 +1423,10 @@ async fn atomic_http_enforces_content_type_parameter_rules() {
 
     for content_type in [
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";unknown",
+        "application/vnd.api+json;ext=\"\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic  https://example.test/other\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"\"",
+        "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/one  https://example.test/two\"",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";profile=\"https://example.test/unknown\";charset=utf-8",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";version=1",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic https://example.test/unsupported\"",
