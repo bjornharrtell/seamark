@@ -28,6 +28,12 @@ struct CountingGuard {
     calls: AtomicUsize,
 }
 
+struct AuthorizationOrderGuard {
+    allowed: bool,
+    authorize_calls: Arc<AtomicUsize>,
+    limit_calls: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 impl AtomicOperationsGuard for TestGuard {
     async fn authorize(
@@ -55,6 +61,23 @@ impl AtomicOperationsGuard for CountingGuard {
     }
 
     fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationsGuard for AuthorizationOrderGuard {
+    async fn authorize(
+        &self,
+        _headers: &axum::http::HeaderMap,
+        _operations: &[PlannedAtomicOperation],
+    ) -> bool {
+        self.authorize_calls.fetch_add(1, Ordering::SeqCst);
+        self.allowed
+    }
+
+    fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
+        self.limit_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -374,6 +397,94 @@ async fn error_document(response: Response<Body>, request_body: &str) -> Value {
         }
     }
     document
+}
+
+#[tokio::test]
+async fn atomic_http_denial_precedes_transaction_and_operation_handler() {
+    let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
+    let denied_database = DatabaseConnection::default();
+    let denied_authorize_calls = Arc::new(AtomicUsize::new(0));
+    let denied_limit_calls = Arc::new(AtomicUsize::new(0));
+    let denied_guard = Arc::new(AuthorizationOrderGuard {
+        allowed: false,
+        authorize_calls: denied_authorize_calls.clone(),
+        limit_calls: denied_limit_calls.clone(),
+    });
+    let denied_handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let denied_app = atomic_http::router(
+        registry(),
+        denied_database,
+        denied_guard,
+        denied_handler.clone(),
+    );
+    let denied_response = denied_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied_response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(denied_response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(denied_response.headers()[VARY], "Accept");
+    let denied_document = error_document(denied_response, body).await;
+    assert_eq!(
+        denied_document["errors"],
+        json!([{
+            "status": "403",
+            "code": "forbidden",
+            "title": "Access denied",
+            "detail": "The Atomic Operations request is not authorized."
+        }])
+    );
+    assert_eq!(denied_authorize_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(denied_limit_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(denied_handler.calls.load(Ordering::SeqCst), 0);
+
+    let authorized_database = database().await;
+    let authorized_authorize_calls = Arc::new(AtomicUsize::new(0));
+    let authorized_limit_calls = Arc::new(AtomicUsize::new(0));
+    let authorized_guard = Arc::new(AuthorizationOrderGuard {
+        allowed: true,
+        authorize_calls: authorized_authorize_calls.clone(),
+        limit_calls: authorized_limit_calls.clone(),
+    });
+    let authorized_handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let authorized_app = atomic_http::router(
+        registry(),
+        authorized_database.clone(),
+        authorized_guard,
+        authorized_handler.clone(),
+    );
+    let authorized_response = authorized_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(authorized_response.status(), StatusCode::OK);
+    assert_eq!(
+        authorized_response.headers()[CONTENT_TYPE],
+        ATOMIC_MEDIA_TYPE
+    );
+    assert_eq!(authorized_response.headers()[VARY], "Accept");
+    assert_eq!(
+        document(authorized_response).await,
+        json!({"atomic:results": [{}]})
+    );
+    assert_eq!(authorized_authorize_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(authorized_limit_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(authorized_handler.calls.load(Ordering::SeqCst), 1);
+    authorized_database.close().await.unwrap();
 }
 
 #[tokio::test]
