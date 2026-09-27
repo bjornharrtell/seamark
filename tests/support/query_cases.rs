@@ -58,11 +58,12 @@ pub const PORTS: [PortFixture; 3] = [
     },
 ];
 
-pub const FILTER_CASES: [(&str, &[&str]); 4] = [
+pub const FILTER_CASES: [(&str, &[&str]); 5] = [
     ("equals(capacity,'8')", &["2"]),
     ("equals(active,'true')", &["1", "3"]),
     ("equals(capacity,null)", &["3"]),
     ("equals(name,'Alpha')", &["1"]),
+    ("and(equals(name,'Beta'),not(equals(depth,'2')))", &["2"]),
 ];
 
 pub const FIRST_PAGE_PORT_ID: &str = "2";
