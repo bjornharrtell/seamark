@@ -58,6 +58,17 @@ unregistered field. Typed conversion remains unchanged: `PortFilterCodec`
 encodes typed literals for SeaORM's bound `column.eq(value)` expression, with
 exact-ID numeric and boolean coverage in shared PostgreSQL/SQLite `FILTER_CASES`.
 
+### M4 SeaORM fieldset mapping enforcement
+
+`executes_database_filters_sort_pagination_and_includes_with_fieldsets`
+(PostgreSQL) and `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`
+submit manually constructed plans containing an unregistered mapper-only
+attribute and a registered relationship with a mismatched target. The executor
+returns the same deterministic `InvalidFieldsetField` detail for each invalid
+mapping before authorization or database execution. Valid fieldset projection
+also intersects mapper output with the resource registry, so unregistered
+values cannot escape through direct `SeaOrmReadResult` use.
+
 ### M5 empty-operations request evidence
 
 The [Atomic Operations extension](https://jsonapi.org/ext/atomic/#document-structure)
