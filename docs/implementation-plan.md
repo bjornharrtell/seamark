@@ -132,7 +132,10 @@ Atomic result document with matching persisted state. The shared Atomic case
 covers collection, resource, and relationship `href` targets, custom
 to-many add/remove dispatch, proves removing one of two relationship members
 leaves the other persisted, and verifies rollback of a later relationship add
-when a subsequent operation fails. Broader
+when a subsequent operation fails. Its shared failure batch now creates a
+typed tag through `lid`, attaches it to the relationship, then fails updating
+a missing resource at index 2; both backends assert that index and the exact
+pre-batch persisted state. Broader
 string and integer identifier/type and relationship coverage now runs through
 both query and Atomic paths. Broader identifier/type/relationship-cardinality
 cases, a wider common Atomic matrix, and capability-difference documentation
