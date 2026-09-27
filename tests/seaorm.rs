@@ -380,6 +380,25 @@ struct UnbackedPortHttpQueryAdapter {
     executor: UnbackedQueryExecutor,
     guard: UnbackedQueryGuard,
     calls: Arc<AtomicUsize>,
+    loader_calls: Arc<AtomicUsize>,
+}
+
+struct UnbackedPortLoader {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SeaOrmIncludeLoader<unbacked_port::Entity> for UnbackedPortLoader {
+    async fn load_included(
+        &self,
+        _database: &DatabaseConnection,
+        _roots: &[unbacked_port::Model],
+        _includes: &[IncludeNode],
+        _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+    ) -> Result<Vec<IncludedResource>, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait]
@@ -390,9 +409,12 @@ impl QueryResourceAdapter for UnbackedPortHttpQueryAdapter {
         plan: &ReadPlan,
     ) -> Result<QueryCollectionResult, QueryAdapterError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let loader = UnbackedPortLoader {
+            calls: self.loader_calls.clone(),
+        };
         let result = self
             .executor
-            .collection(&self.database, plan, &self.guard, None)
+            .collection(&self.database, plan, &self.guard, Some(&loader))
             .await
             .map_err(|error| match error {
                 SeaOrmExecutionError::NotAuthorized => QueryAdapterError::NotAuthorized,
@@ -497,10 +519,14 @@ fn unbacked_query_app(
     database: DatabaseConnection,
     read_guard: UnbackedQueryGuard,
     calls: Arc<AtomicUsize>,
+    loader_calls: Arc<AtomicUsize>,
 ) -> axum::Router {
     let registry = Arc::new(
         ResourceRegistry::new([
-            ResourceDefinition::new("ports", "port_key").attribute("name", "title", true, true)
+            ResourceDefinition::new("ports", "port_key")
+                .attribute("name", "title", true, true)
+                .relationship("owner", "owner_id", "people"),
+            ResourceDefinition::new("people", "person_id"),
         ])
         .unwrap(),
     );
@@ -520,6 +546,7 @@ fn unbacked_query_app(
             executor,
             guard: read_guard,
             calls,
+            loader_calls,
         }),
         pagination(),
     )
@@ -875,6 +902,26 @@ async fn executes_database_filters_sort_pagination_and_includes_with_fieldsets()
 #[tokio::test]
 async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql() {
     let database = database().await;
+    database
+        .execute_unprepared("DROP TABLE IF EXISTS seamark_m4_unbacked_ports;")
+        .await
+        .unwrap();
+    let schema = Schema::new(DbBackend::Postgres);
+    database
+        .execute(
+            database
+                .get_database_backend()
+                .build(&schema.create_table_from_entity(unbacked_port::Entity)),
+        )
+        .await
+        .unwrap();
+    unbacked_port::ActiveModel {
+        port_key: Set(1),
+        title: Set("Within limit".to_owned()),
+    }
+    .insert(&database)
+    .await
+    .unwrap();
 
     let invalid_calls = Arc::new(AtomicUsize::new(0));
     let invalid_app = unbacked_query_app(
@@ -884,6 +931,7 @@ async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql
             maximum_page_size: 10,
         },
         invalid_calls.clone(),
+        Arc::new(AtomicUsize::new(0)),
     );
     let invalid_response = invalid_app
         .oneshot(
@@ -913,6 +961,7 @@ async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql
             maximum_page_size: 10,
         },
         denied_calls.clone(),
+        Arc::new(AtomicUsize::new(0)),
     );
     let denied_response = denied_app
         .oneshot(
@@ -936,6 +985,7 @@ async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql
     assert_eq!(denied_calls.load(Ordering::SeqCst), 1);
 
     let limited_calls = Arc::new(AtomicUsize::new(0));
+    let loader_calls = Arc::new(AtomicUsize::new(0));
     let limited_app = unbacked_query_app(
         database.clone(),
         UnbackedQueryGuard {
@@ -943,11 +993,38 @@ async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql
             maximum_page_size: 1,
         },
         limited_calls.clone(),
+        loader_calls.clone(),
     );
+    let within_limit_response = limited_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports?include=owner&page%5Bsize%5D=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(within_limit_response.status(), StatusCode::OK);
+    assert_query_jsonapi_headers(&within_limit_response);
+    let within_limit_body: serde_json::Value = serde_json::from_slice(
+        &to_bytes(within_limit_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(within_limit_body["data"][0]["id"], "1");
+    assert_eq!(limited_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(loader_calls.load(Ordering::SeqCst), 1);
+
+    database
+        .execute_unprepared("DROP TABLE seamark_m4_unbacked_ports;")
+        .await
+        .unwrap();
     let limited_response = limited_app
         .oneshot(
             Request::builder()
-                .uri("/ports?page%5Bsize%5D=2")
+                .uri("/ports?include=owner&page%5Bsize%5D=2")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -961,9 +1038,17 @@ async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(limited_body["errors"][0]["status"], "413");
-    assert_eq!(limited_body["errors"][0]["code"], "resource_limit");
-    assert_eq!(limited_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        limited_body["errors"],
+        json!([{
+            "status": "413",
+            "code": "resource_limit",
+            "title": "Query exceeds configured limits",
+            "detail": "The requested query exceeds the server's configured limits."
+        }])
+    );
+    assert_eq!(limited_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(loader_calls.load(Ordering::SeqCst), 1);
 
     database.close().await.unwrap();
 }

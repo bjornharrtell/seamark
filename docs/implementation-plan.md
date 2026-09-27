@@ -35,6 +35,17 @@ maximum offset 1,000); it adds no pagination defaults. The valid route control
 `query_router_plans_executes_and_projects_collection_queries` asserts page 2,
 size 5, and offset 5.
 
+### M4 HTTP execution-limit route evidence
+
+`postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql`
+now pairs a backed within-limit include request (HTTP 200, a returned database
+row, and one include-loader call) with a page-size-2 request over a configured
+limit of 1. The over-limit request returns the exact JSON:API 413
+`resource_limit` error. It invokes the query adapter but the SeaORM guard
+returns before SQL or the include loader; after the control succeeds, the test
+drops the backing table so an accidental over-limit query would fail instead
+of being masked.
+
 ### M4 unknown-filter field route evidence
 
 `query_router_rejects_unknown_filter_field_before_authorization_or_execution`
