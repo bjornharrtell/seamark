@@ -268,3 +268,12 @@ parameters or an unsupported extension URI. The regression also verifies
 rejected parameters do not invoke authorization or the operation handler. The
 broader media-negotiation matrix remains partial.
 The conformance matrix cites these cases but remains partial.
+The [published Atomic Operations extension](https://jsonapi.org/ext/atomic/)
+distinguishes relationship membership targets from resource references:
+`relationship_adds_require_relationship_refs_without_reclassifying_resource_updates`
+plans an add through `ref.relationship` as a relationship operation and keeps
+a resource update without `relationship` as a resource operation. It rejects
+a relationship add whose `ref` lacks `relationship`, with a pointer to the
+existing `ref` object; `atomic_http_requires_a_relationship_ref_for_relationship_adds`
+proves the valid control reaches the handler and the invalid request is rejected
+before authorization or handler invocation.

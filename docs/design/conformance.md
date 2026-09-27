@@ -85,3 +85,12 @@ an empty `type`.
 and accepts `href`-only, `meta`-only, and combined `href`/`meta` controls.
 The link validator now applies the JSON:API alternate `meta` form without
 weakening URI-reference validation when `href` is present.
+Per the [published Atomic Operations extension](https://jsonapi.org/ext/atomic/),
+relationship membership operations target a relationship through `ref` (or
+`href`), while a resource update uses a resource reference without
+`relationship`. `relationship_adds_require_relationship_refs_without_reclassifying_resource_updates`
+proves those planner classifications and rejects an add operation whose
+resource-level `ref` omits `relationship`, pointing to the existing `ref`
+object. `atomic_http_requires_a_relationship_ref_for_relationship_adds` pairs
+the successful relationship-add control with that 400 response and verifies
+the invalid operation reaches neither authorization nor the handler.

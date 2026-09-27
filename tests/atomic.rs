@@ -631,6 +631,51 @@ fn ignores_at_members_when_planning_atomic_resource_data() {
 }
 
 #[test]
+fn relationship_adds_require_relationship_refs_without_reclassifying_resource_updates() {
+    let relationship_add = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "ref": {"type": "articles", "id": "1", "relationship": "tags"},
+            "data": [{"type": "tags", "id": "tag-1"}]
+        }]
+    }))
+    .unwrap();
+    assert!(matches!(
+        relationship_add[0].operation,
+        PlannedOperation::AddRelationshipMembers { .. }
+    ));
+
+    let resource_update = plan(json!({
+        "atomic:operations": [{
+            "op": "update",
+            "ref": {"type": "articles", "id": "1"},
+            "data": {"type": "articles", "id": "1", "attributes": {"title": "Updated"}}
+        }]
+    }))
+    .unwrap();
+    assert!(matches!(
+        resource_update[0].operation,
+        PlannedOperation::UpdateResource { .. }
+    ));
+
+    let missing_relationship = plan(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "ref": {"type": "articles", "id": "1"},
+            "data": [{"type": "tags", "id": "tag-1"}]
+        }]
+    }));
+    assert!(matches!(
+        missing_relationship,
+        Err(AtomicOperationsError::InvalidOperation {
+            index: 0,
+            pointer,
+            ..
+        }) if pointer == "/atomic:operations/0/ref"
+    ));
+}
+
+#[test]
 fn rejects_malformed_operation_shapes_and_unknown_registry_fields() {
     let cases = [
         json!({"atomic:operations": [{"op": "copy"}]}),

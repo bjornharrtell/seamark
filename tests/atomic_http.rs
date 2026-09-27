@@ -291,6 +291,16 @@ fn registry() -> Arc<ResourceRegistry> {
     )
 }
 
+fn relationship_add_registry() -> Arc<ResourceRegistry> {
+    Arc::new(
+        ResourceRegistry::new([
+            ResourceDefinition::new("articles", "id").relationship("tags", "tag_ids", "tags"),
+            ResourceDefinition::new("tags", "id"),
+        ])
+        .unwrap(),
+    )
+}
+
 async fn database() -> DatabaseConnection {
     let url = std::env::var("SEAMARK_TEST_DATABASE_URL")
         .expect("set SEAMARK_TEST_DATABASE_URL to a dedicated PostgreSQL test database");
@@ -628,6 +638,72 @@ async fn atomic_http_rejects_invalid_reference_identity_combinations() {
         );
     }
 
+    database.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn atomic_http_requires_a_relationship_ref_for_relationship_adds() {
+    let database = database().await;
+    let valid_handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let valid_guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let valid_app = atomic_http::router(
+        relationship_add_registry(),
+        database.clone(),
+        valid_guard.clone(),
+        valid_handler.clone(),
+    );
+    let valid_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"tag-1"}]}]}"#;
+    let response = valid_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            valid_body,
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    let response_body = document(response).await;
+    assert_eq!(status, StatusCode::OK, "{response_body}");
+    assert_eq!(valid_guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(valid_handler.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(response_body, json!({"atomic:results": [{}]}));
+
+    let invalid_handler = Arc::new(CountingHandler {
+        calls: AtomicUsize::new(0),
+    });
+    let invalid_guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let invalid_app = atomic_http::router(
+        relationship_add_registry(),
+        database.clone(),
+        invalid_guard.clone(),
+        invalid_handler.clone(),
+    );
+    let invalid_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"articles","id":"1"},"data":[{"type":"tags","id":"tag-1"}]}]}"#;
+    let response = invalid_app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            invalid_body,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    let error = error_document(response, invalid_body).await;
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations/0/ref"
+    );
+    assert_eq!(invalid_guard.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(invalid_handler.calls.load(Ordering::SeqCst), 0);
     database.close().await.unwrap();
 }
 
