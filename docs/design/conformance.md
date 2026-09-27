@@ -69,6 +69,16 @@ With the route's configured maximum page size of 100 and maximum offset of 1,000
 before authorization or any adapter call. `query_router_plans_executes_and_projects_collection_queries`
 remains the ordinary page-number/page-size success control and asserts offset 5.
 
+M4 HTTP execution-limit handling is covered by
+`tests/seaorm.rs::postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql`.
+A within-limit `include=owner&page[size]=1` request returns 200, reads its
+backed row, and calls the include loader once. After the test drops that table,
+the over-limit size-2 request with the same include still returns JSON:API 413
+with code `resource_limit`, the documented title/detail, and standard response
+headers. The adapter is invoked, but its configured SeaORM guard rejects the
+plan before SQL or another include-loader call; the absent table ensures an
+accidental query would fail rather than produce a success-shaped response.
+
 The shared M7 null-filter parity case is already included in
 `tests/support/query_cases.rs`: `equals(capacity,null)` expects only port ID
 `3`, while the non-null `equals(capacity,'8')` control expects only ID `2`.
