@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+use language_tags::LanguageTag;
 use seamark::document::{
     DocumentValidationError, ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship,
     RelationshipData, ResourceIdentifier, ResourceObject,
@@ -755,6 +756,22 @@ fn accepts_well_formed_bcp47_language_tags() {
         .unwrap();
         document.validate().unwrap();
     }
+}
+
+#[test]
+fn rejects_well_formed_but_unregistered_bcp47_language_tags() {
+    let unregistered = LanguageTag::parse("en-foobar").unwrap();
+    assert!(unregistered.validate().is_err());
+
+    let document: JsonApiDocument = serde_json::from_value(json!({
+        "data": null,
+        "links": {"describedby": {"href": "/schema", "hreflang": "en-foobar"}}
+    }))
+    .unwrap();
+    assert_eq!(
+        document.validate(),
+        Err(DocumentValidationError::InvalidLinkObject)
+    );
 }
 
 #[test]

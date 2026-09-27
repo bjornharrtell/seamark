@@ -1217,7 +1217,7 @@ pub(crate) fn is_valid_absolute_uri(value: &str) -> bool {
 }
 
 fn is_valid_language_tag(value: &str) -> bool {
-    LanguageTag::parse(value).is_ok()
+    LanguageTag::parse(value).is_ok_and(|tag| tag.validate().is_ok())
 }
 
 fn is_valid_json_pointer(value: &str) -> bool {

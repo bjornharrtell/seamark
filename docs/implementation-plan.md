@@ -286,7 +286,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 193 integration
+implementations. The complete all-features suite passes with 194 integration
 tests and 5 unit tests, including 11 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -347,6 +347,8 @@ JSON:API 405 errors with `Allow` and `Vary: Accept` headers before authorization
 or adapter/handler execution. Applications may opt into
 `http::not_found_fallback` as their top-level Axum fallback for unmatched-path
 JSON:API 404 responses; component routers do not capture unrelated app paths.
+Link `hreflang` validation checks registry and prefix rules after syntax
+parsing, including rejection of well-formed but unregistered subtags.
 Additional normative request/result/error/media-type cases remain incomplete.
 Resource, collection, and relationship href resolution now has planner, HTTP,
 and PostgreSQL mutation coverage. Absolute URI-reference matching remains
