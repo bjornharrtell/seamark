@@ -331,7 +331,7 @@ struct ResourceObjectRepr {
     id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_non_null")]
     lid: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_non_null")]
+    #[serde(default, deserialize_with = "deserialize_attributes")]
     attributes: Option<Map<String, Value>>,
     #[serde(default, deserialize_with = "deserialize_relationships")]
     relationships: Option<BTreeMap<String, Relationship>>,
@@ -446,7 +446,10 @@ impl From<ObjectOnly<RelationshipRepr>> for Relationship {
 
 impl Relationship {
     pub(crate) fn validate(&self) -> Result<(), DocumentValidationError> {
-        let has_links = self.links.as_ref().is_some_and(|links| !links.is_empty());
+        let has_links = self
+            .links
+            .as_ref()
+            .is_some_and(|links| links.keys().any(|relation| !is_at_member(relation)));
         if self.data.is_none() && !has_links && self.meta.is_none() {
             return Err(DocumentValidationError::EmptyRelationship);
         }
@@ -1075,7 +1078,7 @@ pub(crate) fn is_valid_member_name(name: &str) -> bool {
     true
 }
 
-fn is_at_member(name: &str) -> bool {
+pub(crate) fn is_at_member(name: &str) -> bool {
     name.starts_with('@')
 }
 
@@ -1086,6 +1089,9 @@ pub(crate) fn validate_links(
         return Ok(());
     };
     for (relation, link) in links {
+        if is_at_member(relation) {
+            continue;
+        }
         if !is_valid_link_relation_type(relation) || !is_valid_link(link) {
             return Err(DocumentValidationError::InvalidLinkObject);
         }
@@ -1220,7 +1226,7 @@ where
     RelationshipData::deserialize(deserializer).map(Some)
 }
 
-fn deserialize_relationships<'de, D>(
+pub(crate) fn deserialize_relationships<'de, D>(
     deserializer: D,
 ) -> Result<Option<BTreeMap<String, Relationship>>, D::Error>
 where
@@ -1240,5 +1246,24 @@ where
         Ok(None)
     } else {
         Ok(Some(relationships))
+    }
+}
+
+pub(crate) fn deserialize_attributes<'de, D>(
+    deserializer: D,
+) -> Result<Option<Map<String, Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Map::<String, Value>::deserialize(deserializer)?;
+    let had_members = !values.is_empty();
+    let attributes = values
+        .into_iter()
+        .filter(|(name, _)| !is_at_member(name))
+        .collect::<Map<_, _>>();
+    if had_members && attributes.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(attributes))
     }
 }

@@ -413,6 +413,12 @@ fn rejects_documents_without_data_errors_or_meta() {
         JsonApiDocument::default().validate(),
         Err(DocumentValidationError::MissingContent)
     );
+    let at_only: JsonApiDocument =
+        serde_json::from_value(json!({"@documentAnnotation": false})).unwrap();
+    assert_eq!(
+        at_only.validate(),
+        Err(DocumentValidationError::MissingContent)
+    );
 }
 
 #[test]
@@ -450,6 +456,13 @@ fn error_objects_must_contain_at_least_one_defined_member() {
     };
     assert_eq!(
         empty.validate(),
+        Err(DocumentValidationError::EmptyErrorObject)
+    );
+
+    let at_only: JsonApiDocument =
+        serde_json::from_value(json!({"errors": [{"@errorAnnotation": false}]})).unwrap();
+    assert_eq!(
+        at_only.validate(),
         Err(DocumentValidationError::EmptyErrorObject)
     );
 
@@ -528,6 +541,79 @@ fn validates_link_values_and_link_object_shapes_in_all_document_contexts() {
             Err(DocumentValidationError::InvalidLinkObject)
         );
     }
+}
+
+#[test]
+fn ignores_at_members_across_jsonapi_document_contexts() {
+    let data_document: JsonApiDocument = serde_json::from_value(json!({
+        "@documentAnnotation": false,
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "@resourceAnnotation": false,
+            "attributes": {"@attributeAnnotation": false, "name": "North"},
+            "relationships": {
+                "@relationshipAnnotation": false,
+                "owner": {
+                    "@relationshipObjectAnnotation": false,
+                    "data": {
+                        "type": "people",
+                        "id": "2",
+                        "@identifierAnnotation": false
+                    },
+                    "links": {
+                        "@relationshipLink": false,
+                        "related": {
+                            "href": "/ports/1/owner",
+                            "@linkObjectAnnotation": false
+                        }
+                    },
+                    "meta": {"@relationshipMeta": false}
+                }
+            },
+            "links": {
+                "@resourceLink": false,
+                "self": {"href": "/ports/1", "@linkObjectAnnotation": false}
+            },
+            "meta": {"@resourceMeta": false}
+        },
+        "links": {"@documentLink": false, "self": "/ports/1"},
+        "meta": {"@documentMeta": false},
+        "jsonapi": {
+            "@jsonapiAnnotation": false,
+            "version": "1.1",
+            "meta": {"@jsonapiMeta": false}
+        }
+    }))
+    .unwrap();
+    data_document.validate().unwrap();
+    let Some(PrimaryData::One(resource)) = data_document.data.as_ref() else {
+        panic!("expected a resource object");
+    };
+    let attributes = resource.attributes.as_ref().unwrap();
+    assert_eq!(attributes.len(), 1);
+    assert_eq!(attributes.get("name"), Some(&json!("North")));
+
+    let error_document: JsonApiDocument = serde_json::from_value(json!({
+        "@documentAnnotation": false,
+        "errors": [{
+            "@errorAnnotation": false,
+            "detail": "not found",
+            "links": {"@errorLink": false, "about": "/errors/1"},
+            "source": {"pointer": "/data", "@sourceAnnotation": false},
+            "meta": {"@errorMeta": false}
+        }],
+        "meta": {"@documentMeta": false}
+    }))
+    .unwrap();
+    error_document.validate().unwrap();
+
+    let invalid_ordinary_link: JsonApiDocument =
+        serde_json::from_value(json!({"data": null, "links": {"self": false}})).unwrap();
+    assert_eq!(
+        invalid_ordinary_link.validate(),
+        Err(DocumentValidationError::InvalidLinkObject)
+    );
 }
 
 #[test]
@@ -708,6 +794,7 @@ fn ignores_at_members_when_interpreting_resource_relationships() {
         panic!("expected a resource object");
     };
     assert!(parsed_resource.relationships.is_none());
+    assert!(parsed_resource.attributes.is_none());
 
     let mut resource = resource("ports", "1");
     resource.attributes = Some(serde_json::Map::from_iter([(
@@ -737,7 +824,12 @@ fn ignores_at_members_when_interpreting_resource_relationships() {
 
 #[test]
 fn relationship_objects_require_linkage_links_or_metadata() {
-    for relationship in [json!({}), json!({"links": {}})] {
+    for relationship in [
+        json!({}),
+        json!({"links": {}}),
+        json!({"links": {"@relationshipLink": false}}),
+        json!({"@relationshipAnnotation": false}),
+    ] {
         let document: JsonApiDocument = serde_json::from_value(json!({
             "data": {
                 "type": "ports",
