@@ -1,29 +1,17 @@
 # Queries, includes, and limits
 
-**Status: proposal for review.** Query semantics and execution are not implemented.
+**Status: proposal for review.** Query parsing and execution are not implemented.
 
-## Request-to-plan model
+## Filters, sorting, and pagination
 
-Query parameters should be parsed and validated into a typed plan before persistence work begins. The plan should capture the selected resource, fieldsets, include paths, sorting, filters, pagination, and relevant authorization and capability context. Invalid or unsupported combinations should fail explicitly rather than being ignored or approximated.
+JSON:API does not define a universal filter grammar or pagination contract. Seamark's initial filter syntax will use a function-style form, with JsonApiDotNetCore as a reference. The initial operators are limited to equality and null checks, composed with `and`, `or`, and `not`. Range comparisons, text functions, relationship-path filters, `has`, and `count` are outside the initial scope.
 
-The contract must account for JSON:API 1.1 fieldsets and supported sorting and pagination behavior. Filtering is not defined as a universal core query language by JSON:API, so any filter parameter and grammar must be documented as an explicit implementation contract, including its supported operators, types, and error behavior.
+Filters apply only to public resource attributes explicitly registered as filterable. Repeated filters at the same resource scope combine with OR, following JsonApiDotNetCore behavior. Sort fields are likewise explicitly opted in per field.
 
-## Persistence execution
+Pagination is a server contract using page number and page size, translated to offset and limit. Exact limits and defaults are not settled here. Requests should be parsed and validated into a query plan; unsupported or invalid behavior should fail explicitly rather than be ignored or approximated.
 
-Where supported, query semantics should be translated to database-side work through SeaORM. The design should not silently fall back to in-memory filtering or sorting when a filter or sort cannot be translated. Such a fallback can change pagination results, expose unintended data, or consume unbounded resources.
+## Includes and execution
 
-Requested relationship includes should be loaded in batches or through an otherwise bounded strategy, not by unbounded per-record queries. Fieldsets should inform projection where appropriate, but relationship linkage and other protocol requirements must still be honored. The serializer must distinguish data omitted by a fieldset from data that was requested and found to be absent.
+Includes are part of JSON:API. Requested relationship data should be loaded efficiently, such as in batches, and bounded by application-configurable resource limits. Authorization applies to included data as well as root resources. Fieldsets may inform projections, while the response must still distinguish omitted fields from requested-but-absent data.
 
-## Resource limits
-
-Applications need configurable limits for at least request size, include depth and breadth, page size, and query complexity. Limits should be applied during planning, before expensive work, and failures should be explicit and testable. Exact defaults and whether limits are global or per-resource remain open.
-
-Authorization must constrain both root and included data. Planning and loading must not let an include path bypass relationship-level access rules.
-
-## Decisions to resolve
-
-- What filter parameter and grammar, if any, should the initial contract support?
-- Which filtering and sorting expressions can be guaranteed to execute in the database, and how are unsupported expressions rejected?
-- What are the default and maximum pagination and include limits?
-- Should applications be able to register custom query operators, and how can those remain safe, typed, and pushable to persistence?
-- What query-plan abstraction offers useful testability without leaking SeaORM details into public API types?
+Where supported, query semantics should be executed by the database through SeaORM rather than silently falling back to in-memory filtering or sorting. Mapping metadata, not DTO or entity structure, determines which public fields can be queried. Exact mapping and execution APIs, including whether custom operators can be added, will be informed by a focused prototype.

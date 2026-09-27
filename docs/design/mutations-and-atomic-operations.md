@@ -2,32 +2,18 @@
 
 **Status: proposal for review.** Mutation APIs, transaction behavior, and extension support are not implemented.
 
-## Explicit mutation commands
+## Mutations and concurrency
 
-Mutation requests should be parsed and validated into typed commands before persistence work. A command or changeset should be scoped to the request and preserve property presence separately from property value, including an explicit `null`. This makes update semantics reviewable and avoids implicit graph change tracking.
+Mutation requests should be validated into explicit commands or changesets before writes. Changesets preserve whether a property was omitted or explicitly set, including to `null`, so updates do not infer changes from arbitrary ORM object graphs.
 
-Validation, authorization, and application business rules should be overrideable through defined integration points. The design should specify which checks run before a transaction, which require transactional state, and how failures are represented. Entity updates and relationship changes should be explicit rather than inferred from arbitrary ORM object graphs.
-
-## Transactions and concurrency
-
-Database transaction boundaries should be explicit. The design must specify atomicity across all writes in a request, rollback behavior on validation or persistence failure, and how generated identifiers and server-side defaults affect the response.
-
-Optimistic concurrency remains an explicit design concern. The framework should define how conditional requests and persistence concurrency checks interact, how conflicts map to protocol errors, and how applications can supply versioning policies. It must not imply conflict protection where the persistence adapter cannot provide it.
+Optimistic concurrency is application-defined initially. Built-in version, ETag, or If-Match support may be revisited later; the initial design does not prescribe framework-managed conflict behavior.
 
 ## Atomic Operations
 
-Atomic Operations is an important supported-extension goal. Its operation document should be validated into an ordered operation plan before execution. The target semantics include ordered execution, all-or-nothing transactional behavior, and local-ID references between operations, including correct resolution and error reporting.
+The complete JSON:API Atomic Operations extension is a target for the first complete release. Operations must execute in document order within a transaction, support local-ID (`lid`) references between operations, and commit as a unit. A failure must not leave partial writes or be represented as success.
 
-The design must define the supported operation kinds and resource/relationship cases, identifier generation and local-ID scope, transaction isolation expectations, and behavior when the database cannot satisfy the required atomicity. Unsupported operations must fail explicitly; they must not be partially applied or represented as successful.
+Atomic Operations requires correct extension negotiation as well as complete operation behavior. Other third-party extensions and profiles are deferred beyond the initial target.
 
-## Negotiated support
+## Prototype
 
-Atomic Operations must be treated as an extension with correct media-type negotiation. The server should advertise and accept it only when the endpoint implements and tests the relevant behavior. Third-party extensions and profiles are not automatically supported; each advertised capability needs its own implementation, negotiation rules, and conformance evidence.
-
-## Decisions to resolve
-
-- What initial scope of Atomic Operations is required, and is every specified operation kind in scope for the first release?
-- What are the supported local-ID reference forms and their validation rules?
-- What transaction guarantees can be made across supported SeaORM database backends?
-- How should optimistic concurrency be configured and surfaced in JSON:API responses?
-- Which third-party profiles or extensions, if any, are candidates beyond Atomic Operations?
+A focused mapping and execution prototype will inform the exact changeset, operation-plan, identifier-mapping, and transaction APIs. Those implementation details, along with hook ordering, are not frozen by this design.
