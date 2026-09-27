@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use sea_orm::DatabaseConnection;
-use serde_json::from_slice;
+use serde_json::{Value, from_slice, from_value};
 
 use crate::atomic::{
     ATOMIC_OPERATIONS_EXTENSION, AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler,
@@ -117,7 +117,19 @@ async fn post_operations(
         );
     }
 
-    let document: AtomicOperationsDocument = match from_slice(&body) {
+    let request_document: Value = match from_slice(&body) {
+        Ok(document) => document,
+        Err(error) => {
+            return atomic_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_document",
+                "Invalid Atomic Operations document",
+                &error.to_string(),
+                None,
+            );
+        }
+    };
+    let document: AtomicOperationsDocument = match from_value(request_document.clone()) {
         Ok(document) => document,
         Err(error) => {
             return atomic_error(
@@ -130,7 +142,7 @@ async fn post_operations(
         }
     };
     if let Err(error) = document.validate_request() {
-        return atomic_request_error(error);
+        return atomic_request_error(error, &request_document);
     }
     let planned = match &state.href_resolver {
         Some(resolver) => {
@@ -140,7 +152,7 @@ async fn post_operations(
     };
     let operations = match planned {
         Ok(operations) => operations,
-        Err(error) => return atomic_request_error(error),
+        Err(error) => return atomic_request_error(error, &request_document),
     };
     let results = match execute_atomic_operations(
         &state.database,
@@ -152,7 +164,7 @@ async fn post_operations(
     .await
     {
         Ok(results) => results,
-        Err(error) => return atomic_execution_error(error),
+        Err(error) => return atomic_execution_error(error, &request_document),
     };
 
     let response = AtomicOperationsDocument {
@@ -173,7 +185,7 @@ async fn post_operations(
     response
 }
 
-fn atomic_request_error(error: AtomicOperationsError) -> Response {
+fn atomic_request_error(error: AtomicOperationsError, request_document: &Value) -> Response {
     let pointer = match &error {
         AtomicOperationsError::InvalidOperation { pointer, .. } => Some(pointer.clone()),
         AtomicOperationsError::MissingOperations => Some("/atomic:operations".to_owned()),
@@ -184,11 +196,11 @@ fn atomic_request_error(error: AtomicOperationsError) -> Response {
         "invalid_atomic_operation",
         "Invalid Atomic Operations request",
         &error.to_string(),
-        pointer,
+        existing_request_pointer(pointer, request_document),
     )
 }
 
-fn atomic_execution_error(error: AtomicExecutionError) -> Response {
+fn atomic_execution_error(error: AtomicExecutionError, request_document: &Value) -> Response {
     let (status, code, title, detail, pointer) = match error {
         AtomicExecutionError::NotAuthorized => (
             StatusCode::FORBIDDEN,
@@ -232,7 +244,17 @@ fn atomic_execution_error(error: AtomicExecutionError) -> Response {
             None,
         ),
     };
-    atomic_error(status, code, title, &detail, pointer)
+    atomic_error(
+        status,
+        code,
+        title,
+        &detail,
+        existing_request_pointer(pointer, request_document),
+    )
+}
+
+fn existing_request_pointer(pointer: Option<String>, request_document: &Value) -> Option<String> {
+    pointer.filter(|pointer| request_document.pointer(pointer).is_some())
 }
 
 fn has_atomic_content_type(headers: &HeaderMap) -> bool {
