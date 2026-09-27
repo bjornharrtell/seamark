@@ -670,6 +670,54 @@ async fn base_mutation_routes_reject_query_parameters_before_authorization_or_ad
 }
 
 #[tokio::test]
+async fn base_mutation_content_type_is_validated_before_authorization_or_adapter() {
+    let (app, adapter, authorizer) = mutation_test_app(true);
+    let invalid_content_types = [
+        None,
+        Some("application/json"),
+        Some("application/vnd.api+json; charset=utf-8"),
+        Some("application/vnd.api+json; profile=https://example.com/profile"),
+        Some("application/vnd.api+json; profile=\"relative\""),
+        Some(
+            "application/vnd.api+json; profile=\"https://example.com/one\"; profile=\"https://example.com/two\"",
+        ),
+    ];
+
+    for content_type in invalid_content_types {
+        let mut request = mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
+        if let Some(content_type) = content_type {
+            request
+                .headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_str(content_type).unwrap());
+        } else {
+            request.headers_mut().remove(CONTENT_TYPE);
+        }
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_jsonapi_headers(&response);
+        let errors = error_document(response).await.errors.unwrap();
+        assert_eq!(errors[0].code.as_deref(), Some("unsupported_media_type"));
+        assert_eq!(errors[0].status.as_deref(), Some("415"));
+    }
+
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+
+    let (app, adapter, authorizer) = mutation_test_app(false);
+    let mut valid_profile = mutation_request("POST", "/ports", r#"{"data":{"type":"ports"}}"#);
+    valid_profile.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(
+            "application/vnd.api+json;profile=\"https://example.com/profile\"",
+        ),
+    );
+    let response = app.oneshot(valid_profile).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn base_mutation_adapter_errors_map_to_jsonapi_http_statuses() {
     let cases = [
         (
