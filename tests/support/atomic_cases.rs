@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::http::HeaderMap;
+use axum::body::{Body, to_bytes};
+use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
+use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
     ActiveModelTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
@@ -13,6 +15,7 @@ use seamark::atomic::{
     LocalIdMap, PlannedAtomicOperation, PlannedOperation, execute_atomic_operations,
     plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
+use seamark::atomic_http;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
@@ -20,6 +23,9 @@ use seamark::seaorm_mutation::{
     SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
+use tower::ServiceExt;
+
+const ATOMIC_MEDIA_TYPE: &str = "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\"";
 
 pub mod person {
     use sea_orm::entity::prelude::*;
@@ -148,7 +154,7 @@ impl SeaOrmMutationValueCodec for MutationCodec {
     }
 }
 
-struct AllowGuard;
+pub struct AllowGuard;
 
 struct InvalidRelationshipResultHandler;
 
@@ -358,35 +364,27 @@ pub fn expected_result_document() -> JsonValue {
     })
 }
 
-async fn execute_request(
-    database: &DatabaseConnection,
-    request: JsonValue,
-) -> Result<Vec<AtomicResult>, AtomicExecutionError> {
-    let registry = registry();
-    let document: AtomicOperationsDocument = serde_json::from_value(request).unwrap();
-    let operations =
-        plan_atomic_operations_with_href_resolver(&registry, &document, &ParityHrefResolver)
-            .unwrap();
+pub fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatcher {
     let people = SeaOrmResourceMutationHandler::<person::Entity, _>::new(
-        &registry,
+        registry,
         "people",
         Arc::new(MutationCodec),
     )
     .unwrap();
     let ports = SeaOrmResourceMutationHandler::<port::Entity, _>::new(
-        &registry,
+        registry,
         "ports",
         Arc::new(MutationCodec),
     )
     .unwrap();
     let tags = SeaOrmResourceMutationHandler::<tag::Entity, _>::new(
-        &registry,
+        registry,
         "tags",
         Arc::new(MutationCodec),
     )
     .unwrap();
     let join_table = SeaOrmJoinTableMutationHandler::<port_tag::Entity, _>::new(
-        &registry,
+        registry,
         "ports",
         "tags",
         "port_id",
@@ -395,7 +393,7 @@ async fn execute_request(
     )
     .unwrap();
     let owned_ports = SeaOrmToManyForeignKeyMutationHandler::<port::Entity, _>::new(
-        &registry,
+        registry,
         "people",
         "ports",
         "owner_id",
@@ -409,7 +407,19 @@ async fn execute_request(
         Arc::new(ports),
         Arc::new(tags),
     ];
-    let dispatcher = SeaOrmAtomicOperationDispatcher::new(executors);
+    SeaOrmAtomicOperationDispatcher::new(executors)
+}
+
+async fn execute_request(
+    database: &DatabaseConnection,
+    request: JsonValue,
+) -> Result<Vec<AtomicResult>, AtomicExecutionError> {
+    let registry = registry();
+    let document: AtomicOperationsDocument = serde_json::from_value(request).unwrap();
+    let operations =
+        plan_atomic_operations_with_href_resolver(&registry, &document, &ParityHrefResolver)
+            .unwrap();
+    let dispatcher = dispatcher(&registry);
     execute_atomic_operations(
         database,
         &operations,
@@ -418,6 +428,93 @@ async fn execute_request(
         &dispatcher,
     )
     .await
+}
+
+pub async fn execute_http_to_many_relationship_dispatch_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    tag::ActiveModel {
+        tag_id: Set(1),
+        tag_name: Set("First".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    tag::ActiveModel {
+        tag_id: Set(2),
+        tag_name: Set("Second".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    port::ActiveModel {
+        port_id: Set(1),
+        title: Set("Pier".to_owned()),
+        owner_id: Set(None),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+
+    let registry = Arc::new(registry());
+    let app = atomic_http::router(
+        Arc::clone(&registry),
+        database.clone(),
+        Arc::new(AllowGuard),
+        Arc::new(dispatcher(&registry)),
+    );
+    let request_body = r#"{"atomic:operations":[{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]},{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"2"}]},{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"1"}]}]}"#;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/operations")
+        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
+        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
+        .body(Body::from(request_body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let response_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response_document, json!({"atomic:results": [{}, {}, {}]}));
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
+
+    let failing_request_body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"2"}]},{"op":"add","ref":{"type":"ports","id":"1","relationship":"tags"},"data":[{"type":"tags","id":"999"}]}]}"#;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/operations")
+        .header(CONTENT_TYPE, ATOMIC_MEDIA_TYPE)
+        .header(ACCEPT, ATOMIC_MEDIA_TYPE)
+        .body(Body::from(failing_request_body))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error_document: JsonValue =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error_document["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(error_document["errors"][0]["code"], "operation_failed");
+    assert_eq!(error_document["errors"][0]["status"], "422");
+    assert_eq!(
+        error_document["errors"][0]["title"],
+        "Atomic operation failed"
+    );
+    assert_eq!(
+        error_document["errors"][0]["source"]["pointer"],
+        "/atomic:operations/1"
+    );
+    assert!(
+        error_document["errors"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| !detail.is_empty())
+    );
+    assert!(error_document.get("atomic:results").is_none());
+    let links = port_tag::Entity::find().all(database).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!((links[0].port_id, links[0].tag_id), (1, 2));
 }
 
 pub async fn execute_invalid_result_rollback_case(database: &DatabaseConnection) {
