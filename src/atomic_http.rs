@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use sea_orm::DatabaseConnection;
-use serde_json::{Value, from_slice, from_value};
+use serde_json::{Value, from_value};
 
 use crate::atomic::{
     ATOMIC_OPERATIONS_EXTENSION, AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler,
@@ -19,6 +19,7 @@ use crate::atomic::{
 };
 use crate::document::is_valid_absolute_uri;
 use crate::document::{ErrorObject, ErrorSource, JsonApiDocument};
+use crate::json::parse_unique_members;
 use crate::registry::ResourceRegistry;
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -117,7 +118,7 @@ async fn post_operations(
         );
     }
 
-    let request_document: Value = match from_slice(&body) {
+    let request_document: Value = match parse_unique_members(&body) {
         Ok(document) => document,
         Err(error) => {
             return atomic_error(

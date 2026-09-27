@@ -143,7 +143,9 @@ Operations edge cases, complete endpoint status mappings, and context-sensitive
 request/response rules still require coverage before M6 can be complete.
 Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
-`included` members. Base GET media negotiation now validates quoted absolute
+`included` members. Atomic HTTP body parsing now rejects duplicate JSON object
+member names recursively before typed decoding, with nested-duplicate and
+trailing-value regression tests. Base GET media negotiation now validates quoted absolute
 profile URI lists, rejects malformed or duplicate profile parameters, ignores
 Accept extensions after `q`, rejects unsupported media parameters/extensions,
 and preserves the rule that unknown profiles do not alter the base response.

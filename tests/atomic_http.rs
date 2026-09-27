@@ -257,6 +257,13 @@ async fn negotiates_and_executes_atomic_http_requests() {
             "/operations",
             ATOMIC_MEDIA_TYPE,
             ATOMIC_MEDIA_TYPE,
+            r#"{"atomic:operations":[{"op":"add","data":{"type":"authors","attributes":{"name":"Ada","name":"Grace"}}}]}"#,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
             r#"{"atomic:operations":[{"op":"unknown"},{"op":"also-unknown"}]}"#,
             StatusCode::BAD_REQUEST,
         ),
