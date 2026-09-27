@@ -33,6 +33,14 @@ the plan and applies application-specific page/include limits before database
 work. Applications remain responsible for authorizing included records in
 their loader.
 
+Because `ReadPlan` is publicly constructible, the executor recursively
+revalidates every include node against the registered relationship's exact
+public name, internal mapping, and target resource type before authorization,
+the include loader, or SQL. Invalid nodes return
+`InvalidIncludeRelationship`, including mismapped nested nodes. Valid nested
+include trees remain application-loaded; this validation neither infers ORM
+relations nor replaces the loader with in-memory traversal.
+
 Fieldset mappings are checked against the registry again at the executor
 boundary because `ReadPlan` is publicly constructible. Invalid attribute or
 relationship mappings return `InvalidFieldsetField` before authorization or

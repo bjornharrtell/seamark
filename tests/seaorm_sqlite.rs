@@ -200,6 +200,23 @@ impl SeaOrmReadGuard for AllowGuard {
     }
 }
 
+struct CountingGuard {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SeaOrmReadGuard for CountingGuard {
+    async fn authorize(&self, _plan: &ReadPlan) -> bool {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn validate_limits(&self, _plan: &ReadPlan) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 struct DenyGuard;
 
 #[async_trait]
@@ -303,6 +320,24 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
             }
         }
         Ok(included)
+    }
+}
+
+struct CountingPortOwnerLoader {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SeaOrmIncludeLoader<port::Entity> for CountingPortOwnerLoader {
+    async fn load_included(
+        &self,
+        _database: &DatabaseConnection,
+        _roots: &[port::Model],
+        _includes: &[IncludeNode],
+        _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+    ) -> Result<Vec<IncludedResource>, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
     }
 }
 
@@ -501,6 +536,94 @@ async fn execute_sqlite_mutations(
         &mutation_dispatcher(registry),
     )
     .await
+}
+
+#[tokio::test]
+async fn sqlite_query_executor_validates_include_trees_before_authorization_or_loading() {
+    let database = database().await;
+    let executor = SeaOrmQueryExecutor::<port::Entity, _, _>::new(
+        registry(),
+        "ports",
+        port_resource,
+        PortCodec,
+    )
+    .unwrap();
+    let invalid_include_cases = vec![
+        (
+            vec![IncludeNode {
+                public_name: "secret".to_owned(),
+                model_field: "owner_id".to_owned(),
+                target_type: "people".to_owned(),
+                children: Vec::new(),
+            }],
+            "ports",
+            "secret",
+        ),
+        (
+            vec![IncludeNode {
+                public_name: "owner".to_owned(),
+                model_field: "secret".to_owned(),
+                target_type: "people".to_owned(),
+                children: Vec::new(),
+            }],
+            "ports",
+            "owner",
+        ),
+        (
+            vec![IncludeNode {
+                public_name: "owner".to_owned(),
+                model_field: "owner_id".to_owned(),
+                target_type: "ports".to_owned(),
+                children: Vec::new(),
+            }],
+            "ports",
+            "owner",
+        ),
+        (
+            vec![IncludeNode {
+                public_name: "neighbors".to_owned(),
+                model_field: "neighbor_ids".to_owned(),
+                target_type: "ports".to_owned(),
+                children: vec![IncludeNode {
+                    public_name: "owner".to_owned(),
+                    model_field: "owner_id".to_owned(),
+                    target_type: "ports".to_owned(),
+                    children: Vec::new(),
+                }],
+            }],
+            "ports",
+            "owner",
+        ),
+    ];
+    let validation_calls = Arc::new(AtomicUsize::new(0));
+    let loader_calls = Arc::new(AtomicUsize::new(0));
+    let counting_guard = CountingGuard {
+        calls: validation_calls.clone(),
+    };
+    let counting_loader = CountingPortOwnerLoader {
+        calls: loader_calls.clone(),
+    };
+    for (includes, expected_resource, expected_relationship) in invalid_include_cases {
+        let mut invalid_plan = plan(&ReadQuery::default());
+        invalid_plan.includes = includes;
+        assert!(matches!(
+            executor
+                .collection(
+                    &database,
+                    &invalid_plan,
+                    &counting_guard,
+                    Some(&counting_loader)
+                )
+                .await,
+            Err(SeaOrmExecutionError::InvalidIncludeRelationship {
+                resource_type,
+                public_name,
+            }) if resource_type == expected_resource && public_name == expected_relationship
+        ));
+    }
+    assert_eq!(validation_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(loader_calls.load(Ordering::SeqCst), 0);
+    database.close().await.unwrap();
 }
 
 #[tokio::test]
