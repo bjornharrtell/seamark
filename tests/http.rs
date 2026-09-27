@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
+const QUERY_TEST_MAX_PAGE_SIZE: u64 = 100;
 
 #[derive(Default)]
 struct TestAdapter {
@@ -182,7 +183,8 @@ fn query_test_app(
         allowed,
         calls: AtomicUsize::new(0),
     });
-    let pagination = PaginationConfig::new(1, 10, Some(100), Some(1000)).unwrap();
+    let pagination =
+        PaginationConfig::new(1, 10, Some(QUERY_TEST_MAX_PAGE_SIZE), Some(1000)).unwrap();
     (
         http::router_with_query(
             registry,
@@ -702,6 +704,42 @@ async fn query_router_rejects_invalid_queries_before_authorization_or_execution(
         assert_eq!(body["errors"][0]["code"], "invalid_query", "{uri}");
         assert_eq!(body["errors"][0]["source"]["parameter"], parameter, "{uri}");
     }
+}
+
+#[tokio::test]
+async fn query_router_enforces_configured_page_size_limit_before_execution() {
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let at_limit_uri = format!("/ports?page%5Bsize%5D={QUERY_TEST_MAX_PAGE_SIZE}");
+    let response = app.oneshot(request(&at_limit_uri, None)).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
+
+    let query_adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let adapter = Arc::new(TestAdapter::default());
+    let (app, authorizer) = query_test_app(adapter.clone(), query_adapter.clone(), true);
+    let over_limit_uri = format!("/ports?page%5Bsize%5D={}", QUERY_TEST_MAX_PAGE_SIZE + 1);
+    let response = app.oneshot(request(&over_limit_uri, None)).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_jsonapi_headers(&response);
+    let body = serde_json::to_value(error_document(response).await).unwrap();
+    assert_eq!(body["errors"][0]["code"], "invalid_query");
+    assert_eq!(body["errors"][0]["status"], "400");
+    assert_eq!(body["errors"][0]["source"]["parameter"], "page[size]");
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(adapter.collection_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
