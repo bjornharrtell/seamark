@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
 use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode};
-use sea_orm::{Database, DatabaseConnection, DatabaseTransaction};
+use sea_orm::{
+    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DatabaseTransaction, Statement,
+};
 use seamark::atomic::{
     AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsGuard,
     AtomicResourceReference, AtomicResult, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
@@ -149,6 +151,12 @@ struct MissingCreatedIdentityHandler {
     calls: AtomicUsize,
 }
 
+struct DeferredCommitFailureHandler {
+    parent_table: String,
+    child_table: String,
+    calls: AtomicUsize,
+}
+
 #[async_trait]
 impl AtomicOperationHandler for AtMemberHandler {
     async fn execute_operation(
@@ -203,6 +211,33 @@ impl AtomicOperationHandler for CountingHandler {
         _operation: &PlannedOperation,
         _local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(AtomicOperationOutcome::default())
+    }
+}
+
+#[async_trait]
+impl AtomicOperationHandler for DeferredCommitFailureHandler {
+    async fn execute_operation(
+        &self,
+        transaction: &DatabaseTransaction,
+        _operation: &PlannedOperation,
+        _local_ids: &LocalIdMap,
+    ) -> Result<AtomicOperationOutcome, String> {
+        transaction
+            .execute_unprepared(&format!(
+                "INSERT INTO {} (id) VALUES (1)",
+                self.parent_table
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute_unprepared(&format!(
+                "INSERT INTO {} (parent_id) VALUES (999)",
+                self.child_table
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(AtomicOperationOutcome::default())
     }
@@ -1396,6 +1431,86 @@ async fn database_failures_return_a_server_error_document() {
     assert!(error["errors"][0].get("source").is_none());
     assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn deferred_constraint_commit_failure_returns_server_error_and_rolls_back_writes() {
+    let database = database().await;
+    let suffix = std::process::id();
+    let parent_table = format!("seamark_atomic_commit_parent_{suffix}");
+    let child_table = format!("seamark_atomic_commit_child_{suffix}");
+    database
+        .execute_unprepared(&format!("DROP TABLE IF EXISTS {child_table}"))
+        .await
+        .unwrap();
+    database
+        .execute_unprepared(&format!("DROP TABLE IF EXISTS {parent_table}"))
+        .await
+        .unwrap();
+    database
+        .execute_unprepared(&format!(
+            "CREATE TABLE {parent_table} (id INTEGER PRIMARY KEY)"
+        ))
+        .await
+        .unwrap();
+    database
+        .execute_unprepared(&format!(
+            "CREATE TABLE {child_table} (parent_id INTEGER REFERENCES {parent_table}(id) DEFERRABLE INITIALLY DEFERRED)"
+        ))
+        .await
+        .unwrap();
+
+    let guard = Arc::new(CountingGuard {
+        calls: AtomicUsize::new(0),
+    });
+    let handler = Arc::new(DeferredCommitFailureHandler {
+        parent_table: parent_table.clone(),
+        child_table: child_table.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let app = atomic_http::router(registry(), database.clone(), guard.clone(), handler.clone());
+    let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
+    let response = app
+        .oneshot(request(
+            "/operations",
+            ATOMIC_MEDIA_TYPE,
+            ATOMIC_MEDIA_TYPE,
+            body,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"][0]["code"], "database_error");
+    assert_eq!(error["errors"][0]["status"], "500");
+    assert!(error["errors"][0].get("source").is_none());
+    assert!(error.get("atomic:results").is_none());
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+
+    for table in [&parent_table, &child_table] {
+        let row = database
+            .query_one(Statement::from_string(
+                DatabaseBackend::Postgres,
+                format!("SELECT COUNT(*) AS count FROM {table}"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.try_get::<i64>("", "count").unwrap(), 0);
+    }
+
+    database
+        .execute_unprepared(&format!("DROP TABLE {child_table}"))
+        .await
+        .unwrap();
+    database
+        .execute_unprepared(&format!("DROP TABLE {parent_table}"))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
