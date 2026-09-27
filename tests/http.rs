@@ -834,6 +834,7 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
         None,
         Some("application/json"),
         Some("application/vnd.api+json; charset=utf-8"),
+        Some("application/vnd.api+json; ext=\"https://jsonapi.org/ext/atomic\""),
         Some("application/vnd.api+json; profile=https://example.com/profile"),
         Some("application/vnd.api+json; profile=\"\""),
         Some("application/vnd.api+json; profile=\"relative\""),
