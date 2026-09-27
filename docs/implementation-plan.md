@@ -90,7 +90,7 @@ filterable/sortable attribute columns against its entity at construction;
 invalid mappings have a focused regression test. The shared
 `SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
 typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. The complete all-features suite passes with 114 integration
+implementations. The complete all-features suite passes with 115 integration
 tests and 5 unit tests, including 6 isolated SQLite tests and PostgreSQL
 integration cases. Formatting, warning-free Clippy, rustdoc, and whitespace
 checks pass. M4 remains in progress pending broader database type/relation
@@ -173,8 +173,10 @@ Atomic Operations documents now ignore unrecognized members per JSON:API
 processing rules while explicitly rejecting the forbidden base `data` and
 `included` members. Atomic HTTP body parsing now rejects duplicate JSON object
 member names recursively before typed decoding, with nested-duplicate and
-trailing-value regression tests. Base GET media negotiation now validates
-quoted absolute profile URI lists, rejects malformed or duplicate profile
+trailing-value regression tests. The Atomic document, operation, reference,
+and result types also reject Serde's sequence-form representations where
+JSON:API requires objects. Base GET media negotiation now validates quoted
+absolute profile URI lists, rejects malformed or duplicate profile
 parameters, ignores Accept extensions after `q`, rejects unsupported media
 parameters/extensions, and preserves the rule that unknown profiles do not
 alter the base response.

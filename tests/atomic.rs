@@ -256,6 +256,27 @@ fn maps_resource_and_relationship_changesets_to_internal_fields() {
 }
 
 #[test]
+fn atomic_documents_and_nested_objects_must_be_json_objects() {
+    for value in [
+        json!([[{"op": "remove", "ref": {"type": "authors", "id": "1"}}]]),
+        json!({"atomic:operations": [["remove"]]}),
+        json!({"atomic:operations": [{"op": "remove", "ref": ["authors", "1"]}]}),
+        json!({"atomic:results": [[]]}),
+    ] {
+        assert!(
+            serde_json::from_value::<AtomicOperationsDocument>(value.clone()).is_err(),
+            "expected Atomic object shapes to reject array values: {value}"
+        );
+    }
+
+    let request: AtomicOperationsDocument = serde_json::from_value(json!({
+        "atomic:operations": [{"op": "add", "data": ["authors"]}]
+    }))
+    .unwrap();
+    assert!(plan_atomic_operations(&registry(), &request).is_err());
+}
+
+#[test]
 fn accepts_uri_reference_targets_for_resource_mutations() {
     let operations = plan(json!({
         "atomic:operations": [

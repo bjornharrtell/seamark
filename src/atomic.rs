@@ -10,8 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 use crate::document::{
-    ErrorObject, JsonApiDocument, JsonApiObject, PrimaryData, RelationshipData, ResourceIdentifier,
-    ResourceObject, validate_links,
+    ErrorObject, JsonApiDocument, JsonApiObject, ObjectOnly, PrimaryData, RelationshipData,
+    ResourceIdentifier, ResourceObject, validate_links,
 };
 use crate::registry::ResourceRegistry;
 
@@ -20,6 +20,7 @@ pub const ATOMIC_OPERATIONS_EXTENSION: &str = "https://jsonapi.org/ext/atomic";
 
 /// A JSON:API document carrying Atomic Operations members.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<AtomicOperationsDocumentRepr>")]
 pub struct AtomicOperationsDocument {
     /// Operations in the order the server must execute them.
     #[serde(
@@ -79,6 +80,50 @@ pub struct AtomicOperationsDocument {
         skip_serializing_if = "Option::is_none"
     )]
     pub included: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct AtomicOperationsDocumentRepr {
+    #[serde(
+        rename = "atomic:operations",
+        default,
+        deserialize_with = "deserialize_non_null"
+    )]
+    operations: Option<Vec<AtomicOperation>>,
+    #[serde(
+        rename = "atomic:results",
+        default,
+        deserialize_with = "deserialize_non_null"
+    )]
+    results: Option<Vec<AtomicResult>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    errors: Option<Vec<ErrorObject>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    links: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    jsonapi: Option<JsonApiObject>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    data: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    included: Option<Value>,
+}
+
+impl From<ObjectOnly<AtomicOperationsDocumentRepr>> for AtomicOperationsDocument {
+    fn from(document: ObjectOnly<AtomicOperationsDocumentRepr>) -> Self {
+        let document = document.into_inner();
+        Self {
+            operations: document.operations,
+            results: document.results,
+            errors: document.errors,
+            links: document.links,
+            meta: document.meta,
+            jsonapi: document.jsonapi,
+            data: document.data,
+            included: document.included,
+        }
+    }
 }
 
 impl AtomicOperationsDocument {
@@ -244,6 +289,7 @@ impl AtomicOperationsDocument {
 
 /// One raw Atomic Operations operation object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<AtomicOperationRepr>")]
 pub struct AtomicOperation {
     /// The operation code: `add`, `update`, or `remove`.
     pub op: String,
@@ -278,8 +324,35 @@ pub struct AtomicOperation {
     pub meta: Option<Map<String, Value>>,
 }
 
+#[derive(Deserialize)]
+struct AtomicOperationRepr {
+    op: String,
+    #[serde(rename = "ref", default, deserialize_with = "deserialize_non_null")]
+    reference: Option<AtomicResourceReference>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    href: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    data: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<AtomicOperationRepr>> for AtomicOperation {
+    fn from(operation: ObjectOnly<AtomicOperationRepr>) -> Self {
+        let operation = operation.into_inner();
+        Self {
+            op: operation.op,
+            reference: operation.reference,
+            href: operation.href,
+            data: operation.data,
+            meta: operation.meta,
+        }
+    }
+}
+
 /// A resource or relationship reference in an operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<AtomicResourceReferenceRepr>")]
 pub struct AtomicResourceReference {
     /// The public resource type of the target resource.
     #[serde(rename = "type")]
@@ -307,11 +380,36 @@ pub struct AtomicResourceReference {
     pub relationship: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AtomicResourceReferenceRepr {
+    #[serde(rename = "type")]
+    type_name: String,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    lid: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    relationship: Option<String>,
+}
+
+impl From<ObjectOnly<AtomicResourceReferenceRepr>> for AtomicResourceReference {
+    fn from(reference: ObjectOnly<AtomicResourceReferenceRepr>) -> Self {
+        let reference = reference.into_inner();
+        Self {
+            type_name: reference.type_name,
+            id: reference.id,
+            lid: reference.lid,
+            relationship: reference.relationship,
+        }
+    }
+}
+
 /// A resource object supplied as operation data.
 ///
 /// Unlike a response resource object, an add request may omit both `id` and
 /// `lid` when the server assigns its identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<AtomicResourceDataRepr>")]
 pub struct AtomicResourceData {
     /// The public resource type.
     #[serde(rename = "type")]
@@ -360,8 +458,42 @@ pub struct AtomicResourceData {
     pub meta: Option<Map<String, Value>>,
 }
 
+#[derive(Deserialize)]
+struct AtomicResourceDataRepr {
+    #[serde(rename = "type")]
+    type_name: String,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    lid: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    attributes: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    relationships: Option<BTreeMap<String, crate::document::Relationship>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    links: Option<Map<String, Value>>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<AtomicResourceDataRepr>> for AtomicResourceData {
+    fn from(resource: ObjectOnly<AtomicResourceDataRepr>) -> Self {
+        let resource = resource.into_inner();
+        Self {
+            type_name: resource.type_name,
+            id: resource.id,
+            lid: resource.lid,
+            attributes: resource.attributes,
+            relationships: resource.relationships,
+            links: resource.links,
+            meta: resource.meta,
+        }
+    }
+}
+
 /// One result object in a successful Atomic Operations response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ObjectOnly<AtomicResultRepr>")]
 pub struct AtomicResult {
     /// Primary data produced by the operation, when required or returned.
     #[serde(
@@ -377,6 +509,24 @@ pub struct AtomicResult {
         skip_serializing_if = "Option::is_none"
     )]
     pub meta: Option<Map<String, Value>>,
+}
+
+#[derive(Deserialize)]
+struct AtomicResultRepr {
+    #[serde(default, deserialize_with = "deserialize_present")]
+    data: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_non_null")]
+    meta: Option<Map<String, Value>>,
+}
+
+impl From<ObjectOnly<AtomicResultRepr>> for AtomicResult {
+    fn from(result: ObjectOnly<AtomicResultRepr>) -> Self {
+        let result = result.into_inner();
+        Self {
+            data: result.data,
+            meta: result.meta,
+        }
+    }
 }
 
 /// One normalized operation accepted by the registry-aware planner.
