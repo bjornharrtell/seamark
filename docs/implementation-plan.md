@@ -547,6 +547,9 @@ and invokes the application include loader with that root.
 adapter-independent response projection. The shared PostgreSQL and SQLite
 query integration tests execute `/ports/1?include=owner` with root and included
 sparse fieldsets, asserting the exact document, included identity, and linkage.
+`query_router_authorizes_before_calling_query_adapter` also denies a valid
+single-resource include/fieldset query with HTTP 403 after one authorization
+call and before either the query adapter or resource adapter is called.
 Each database-backed route test also verifies that the existing row returns
 HTTP 200 while `/ports/999?include=owner` returns HTTP 404 with the exact
 shared `resource_not_found` error document, not successful null data; the
