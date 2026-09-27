@@ -179,7 +179,10 @@ cover these shapes and ensure an invalid server-generated result maps to HTTP
 500 with a pointer to its request operation. The shared
 `execute_invalid_result_rollback_case` confirms PostgreSQL and SQLite both roll
 back a database write made before invalid result data is detected. Client
-operation failures remain HTTP 422. Atomic `Accept` negotiation requires the
+operation failures remain HTTP 422. A handler that omits the persistent
+identity needed to resolve a client-declared local ID is a server contract
+failure and maps to HTTP 500; unresolved or forward client references are
+rejected during planning with HTTP 400. Atomic `Accept` negotiation requires the
 quoted Atomic extension, validates HTTP qvalue syntax, accounts for media-range
 specificity and q=0, accepts/ignores valid token extensions after `q`, and
 rejects duplicate or unsupported extension parameters.

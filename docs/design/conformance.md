@@ -272,8 +272,12 @@ returns a JSON:API error whose status matches the response, and points to the
 associated `/atomic:operations/0` request operation. The shared
 `execute_invalid_result_rollback_case` also proves PostgreSQL and SQLite both
 roll back a database write made before invalid result data is detected. Client
-operation failures remain HTTP 422. The request-shape planner controls remain
-in `plans_ordered_resource_and_relationship_operations_with_local_ids` and
+operation failures remain HTTP 422. `atomic_http_maps_missing_created_local_id_identity_to_server_error`
+verifies that a valid add request becomes HTTP 500 when its handler omits the
+persistent identity needed to resolve the declared local ID. Client-supplied
+unknown or forward local IDs remain planner errors (HTTP 400) before handler
+execution. The request-shape planner controls remain in
+`plans_ordered_resource_and_relationship_operations_with_local_ids` and
 `rejects_malformed_operation_shapes_and_unknown_registry_fields`; this is
 selected operation coverage, not the complete normative matrix.
 

@@ -217,11 +217,17 @@ fn atomic_execution_error(error: AtomicExecutionError, request_document: &Value)
             message,
             None,
         ),
-        AtomicExecutionError::Operation { index, message }
-        | AtomicExecutionError::LocalId { index, message } => (
+        AtomicExecutionError::Operation { index, message } => (
             StatusCode::UNPROCESSABLE_ENTITY,
             "operation_failed",
             "Atomic operation failed",
+            message,
+            Some(format!("/atomic:operations/{index}")),
+        ),
+        AtomicExecutionError::LocalId { index, message } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "atomic_local_id_mapping_failed",
+            "Atomic local ID mapping failed",
             message,
             Some(format!("/atomic:operations/{index}")),
         ),
