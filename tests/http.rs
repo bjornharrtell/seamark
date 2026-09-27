@@ -878,7 +878,7 @@ async fn base_mutation_content_type_is_validated_before_authorization_or_adapter
     valid_profile.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_static(
-            "APPLICATION/VND.API+JSON;PROFILE=\"https://example.com/profile\"",
+            "APPLICATION/VND.API+JSON;PROFILE=\"https://example.com/profile;version=1\"",
         ),
     );
     let response = app.oneshot(valid_profile).await.unwrap();
