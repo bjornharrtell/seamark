@@ -299,6 +299,24 @@ fn accepts_uri_reference_targets_for_resource_mutations() {
 }
 
 #[test]
+fn atomic_operations_must_choose_reference_or_href_target() {
+    assert_eq!(
+        plan(json!({
+            "atomic:operations": [{
+                "op": "remove",
+                "ref": {"type": "authors", "id": "1"},
+                "href": "/author-resource/1"
+            }]
+        })),
+        Err(AtomicOperationsError::InvalidOperation {
+            index: 0,
+            pointer: "/atomic:operations/0".to_owned(),
+            message: "an operation must not contain both `ref` and `href`".to_owned(),
+        })
+    );
+}
+
+#[test]
 fn validates_request_response_shapes_and_result_cardinality() {
     assert_eq!(
         AtomicOperationsDocument::default().validate_request(),
