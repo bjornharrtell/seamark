@@ -76,7 +76,7 @@ decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
 fieldset projection, includes, and authorization order. A PostgreSQL-backed
 HTTP integration drives the SeaORM executor and verifies filtered, sorted,
 paginated resources, relationship linkage, included resources, and sparse
-fieldsets. The full suite now has 85 passing integration tests and 2 unit
+fieldsets. The full suite now has 86 passing integration tests and 2 unit
 tests with PostgreSQL 17; formatting, warning-free Clippy, rustdoc, and
 whitespace checks pass. M4 remains in progress pending reusable production
 mapping APIs, broader database type/relation cases, and expanded
@@ -103,3 +103,11 @@ mutation coverage. Full
 normative conformance remains the M6 objective; SQLite support is a separate
 M7 target and is not included in current PostgreSQL evidence. No release
 conformance claim is made.
+
+M6 conformance work has begun with a gap-tracking requirement-to-test matrix.
+Document validation now rejects simultaneous `id`/`lid`, conflicting or
+invalid resource type/field names, unreachable included resources, empty
+relationship objects, and error objects without any defined member. The
+matrix remains partial: link semantics, complete error behavior, normative
+Atomic Operations edge cases, and context-sensitive request/response rules
+still require coverage before M6 can be complete.

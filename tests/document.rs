@@ -247,6 +247,36 @@ fn rejects_an_empty_errors_array() {
 }
 
 #[test]
+fn error_objects_must_contain_at_least_one_defined_member() {
+    let empty = JsonApiDocument {
+        errors: Some(vec![ErrorObject::default()]),
+        ..JsonApiDocument::default()
+    };
+    assert_eq!(
+        empty.validate(),
+        Err(DocumentValidationError::EmptyErrorObject)
+    );
+
+    for error in [
+        ErrorObject {
+            id: Some("occurrence-1".to_owned()),
+            ..ErrorObject::default()
+        },
+        ErrorObject {
+            meta: Some(serde_json::Map::new()),
+            ..ErrorObject::default()
+        },
+    ] {
+        JsonApiDocument {
+            errors: Some(vec![error]),
+            ..JsonApiDocument::default()
+        }
+        .validate()
+        .unwrap();
+    }
+}
+
+#[test]
 fn rejects_included_resources_without_primary_data() {
     let document = JsonApiDocument {
         included: Some(vec![resource("ports", "1")]),

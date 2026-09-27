@@ -84,6 +84,11 @@ impl JsonApiDocument {
         if self.errors.as_ref().is_some_and(Vec::is_empty) {
             return Err(DocumentValidationError::EmptyErrors);
         }
+        if let Some(errors) = &self.errors {
+            for error in errors {
+                error.validate()?;
+            }
+        }
 
         let mut identities = HashSet::new();
         match &self.data {
@@ -399,6 +404,23 @@ pub struct ErrorObject {
     pub meta: Option<Map<String, Value>>,
 }
 
+impl ErrorObject {
+    fn validate(&self) -> Result<(), DocumentValidationError> {
+        if self.id.is_none()
+            && self.links.is_none()
+            && self.status.is_none()
+            && self.code.is_none()
+            && self.title.is_none()
+            && self.detail.is_none()
+            && self.source.is_none()
+            && self.meta.is_none()
+        {
+            return Err(DocumentValidationError::EmptyErrorObject);
+        }
+        Ok(())
+    }
+}
+
 /// Source information identifying the request portion associated with an error.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ErrorSource {
@@ -467,6 +489,8 @@ pub enum DocumentValidationError {
     DataAndErrors,
     /// The document contains an empty errors array.
     EmptyErrors,
+    /// An error object has none of its defined members.
+    EmptyErrorObject,
     /// The document contains included resources without primary data.
     IncludedWithoutData,
     /// A resource or identifier has an empty type.
@@ -495,6 +519,7 @@ impl fmt::Display for DocumentValidationError {
             Self::MissingContent => "a JSON:API document must contain data, errors, or meta",
             Self::DataAndErrors => "a JSON:API document must not contain both data and errors",
             Self::EmptyErrors => "a JSON:API errors array must not be empty",
+            Self::EmptyErrorObject => "a JSON:API error object must contain at least one member",
             Self::IncludedWithoutData => {
                 "a JSON:API document must not contain included resources without data"
             }
