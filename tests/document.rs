@@ -277,6 +277,54 @@ fn error_objects_must_contain_at_least_one_defined_member() {
 }
 
 #[test]
+fn validates_link_values_and_link_object_shapes_in_all_document_contexts() {
+    let valid: JsonApiDocument = serde_json::from_value(json!({
+        "data": {
+            "type": "ports",
+            "id": "1",
+            "links": {
+                "self": "/ports/1",
+                "describedby": {
+                    "href": "/schemas/ports",
+                    "hreflang": ["en", "fr"],
+                    "meta": {"version": 1}
+                }
+            },
+            "relationships": {
+                "owner": {
+                    "links": {
+                        "related": null,
+                        "self": {"href": "/ports/1/relationships/owner", "rel": "self"}
+                    }
+                }
+            }
+        },
+        "links": {"self": {"href": "/ports/1", "type": "application/vnd.api+json"}}
+    }))
+    .unwrap();
+    valid.validate().unwrap();
+
+    for document in [
+        json!({"data": null, "links": {"self": 42}}),
+        json!({"data": {"type": "ports", "id": "1", "links": {"self": {}}}}),
+        json!({
+            "data": {
+                "type": "ports",
+                "id": "1",
+                "relationships": {"owner": {"links": {"related": {"href": 1}}}}
+            }
+        }),
+        json!({"errors": [{"links": {"about": {"href": "/errors/1", "hreflang": [1]}}}]}),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(document).unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidLinkObject)
+        );
+    }
+}
+
+#[test]
 fn rejects_included_resources_without_primary_data() {
     let document = JsonApiDocument {
         included: Some(vec![resource("ports", "1")]),

@@ -72,6 +72,7 @@ impl JsonApiDocument {
     /// resource identity is duplicated, or a resource/identifier has an invalid
     /// type or identity.
     pub fn validate(&self) -> Result<(), DocumentValidationError> {
+        validate_links(self.links.as_ref())?;
         if self.data.is_some() && self.errors.is_some() {
             return Err(DocumentValidationError::DataAndErrors);
         }
@@ -229,6 +230,7 @@ impl ResourceObject {
                 }
             }
         }
+        validate_links(self.links.as_ref())?;
         if let Some(relationships) = &self.relationships {
             for name in relationships.keys() {
                 validate_member_name(name)?;
@@ -275,6 +277,7 @@ impl Relationship {
         if self.data.is_none() && self.links.is_none() && self.meta.is_none() {
             return Err(DocumentValidationError::EmptyRelationship);
         }
+        validate_links(self.links.as_ref())?;
         if let Some(data) = &self.data {
             match data {
                 RelationshipData::Null => {}
@@ -417,6 +420,7 @@ impl ErrorObject {
         {
             return Err(DocumentValidationError::EmptyErrorObject);
         }
+        validate_links(self.links.as_ref())?;
         Ok(())
     }
 }
@@ -491,6 +495,8 @@ pub enum DocumentValidationError {
     EmptyErrors,
     /// An error object has none of its defined members.
     EmptyErrorObject,
+    /// A links object contains a value that is not a link or a valid link object.
+    InvalidLinkObject,
     /// The document contains included resources without primary data.
     IncludedWithoutData,
     /// A resource or identifier has an empty type.
@@ -520,6 +526,9 @@ impl fmt::Display for DocumentValidationError {
             Self::DataAndErrors => "a JSON:API document must not contain both data and errors",
             Self::EmptyErrors => "a JSON:API errors array must not be empty",
             Self::EmptyErrorObject => "a JSON:API error object must contain at least one member",
+            Self::InvalidLinkObject => {
+                "each links member must be null, a URI-reference string, or a link object with a string href"
+            }
             Self::IncludedWithoutData => {
                 "a JSON:API document must not contain included resources without data"
             }
@@ -663,6 +672,52 @@ fn validate_member_name(name: &str) -> Result<(), DocumentValidationError> {
     }
     if !is_globally_allowed_member_character(first) || !is_globally_allowed_member_character(last) {
         return Err(DocumentValidationError::InvalidMemberName);
+    }
+    Ok(())
+}
+
+fn validate_links(links: Option<&Map<String, Value>>) -> Result<(), DocumentValidationError> {
+    let Some(links) = links else {
+        return Ok(());
+    };
+    for link in links.values() {
+        match link {
+            Value::Null | Value::String(_) => {}
+            Value::Object(link_object) => {
+                if !link_object.get("href").is_some_and(Value::is_string)
+                    || link_object
+                        .get("rel")
+                        .is_some_and(|value| !value.is_string())
+                    || link_object
+                        .get("title")
+                        .is_some_and(|value| !value.is_string())
+                    || link_object
+                        .get("type")
+                        .is_some_and(|value| !value.is_string())
+                    || link_object.get("hreflang").is_some_and(|value| {
+                        !value.is_string()
+                            && !value
+                                .as_array()
+                                .is_some_and(|values| values.iter().all(Value::is_string))
+                    })
+                    || link_object
+                        .get("meta")
+                        .is_some_and(|value| !value.is_object())
+                    || link_object.get("describedby").is_some_and(|value| {
+                        !value.is_null() && !value.is_string() && !value.is_object()
+                    })
+                    || link_object
+                        .get("describedby")
+                        .and_then(Value::as_object)
+                        .is_some_and(|describedby| {
+                            !describedby.get("href").is_some_and(Value::is_string)
+                        })
+                {
+                    return Err(DocumentValidationError::InvalidLinkObject);
+                }
+            }
+            _ => return Err(DocumentValidationError::InvalidLinkObject),
+        }
     }
     Ok(())
 }
