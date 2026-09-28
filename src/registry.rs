@@ -459,6 +459,8 @@ pub enum RelationshipPermission {
     Include,
     /// Fetch linkage from the relationship endpoint.
     LinkageRead,
+    /// Fetch related resources from the related-resource endpoint.
+    RelatedRead,
     /// Replace linkage through a base HTTP PATCH.
     BaseReplace,
     /// Add members through a base HTTP POST.

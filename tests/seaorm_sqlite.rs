@@ -2343,3 +2343,56 @@ async fn sqlite_base_http_mutations_preserve_linkage_and_rollback() {
     http_mutation_cases::run_case(&database).await;
     database.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn standard_seaorm_query_adapter_serves_related_resource_routes() {
+    let database = database().await;
+    create_tables(&database).await;
+    insert_fixtures(&database).await;
+    let ports = ResourceDefinition::new("ports", "port_id")
+        .attribute("name", "title")
+        .mapped_relationship(
+            RelationshipMapping::new("owner", "owner_id", "people")
+                .to_one_foreign_key(true)
+                .allow(RelationshipPermission::RelatedRead),
+        );
+    let people = ResourceDefinition::new("people", "person_id").attribute("name", "display_name");
+    let registry = Arc::new(ResourceRegistry::new([ports, people]).unwrap());
+    let port_executor =
+        SeaOrmQueryExecutor::<port::Entity, _, _>::mapped((*registry).clone(), "ports").unwrap();
+    let people_executor =
+        SeaOrmQueryExecutor::<person::Entity, _, _>::mapped((*registry).clone(), "people").unwrap();
+    let mut query_adapter = SeaOrmQueryAdapter::new();
+    query_adapter
+        .register(database.clone(), port_executor, Arc::new(AllowGuard), None)
+        .unwrap();
+    query_adapter
+        .register(
+            database.clone(),
+            people_executor,
+            Arc::new(AllowGuard),
+            None,
+        )
+        .unwrap();
+    let app = http::ApiBuilder::new(registry.clone(), Arc::new(http::AllowAllAuthorizer))
+        .queries(Arc::new(query_adapter), pagination())
+        .try_build()
+        .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports/1/owner")
+                .header("accept", "application/vnd.api+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(document["data"]["type"], "people");
+    assert_eq!(document["data"]["id"], "11");
+    assert_eq!(document["data"]["attributes"]["name"], "Mara");
+}
