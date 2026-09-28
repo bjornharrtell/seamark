@@ -169,6 +169,12 @@ relationship collections.
 
 ### C. Extensions and profiles
 
+**Status: out of scope (decision).** Extensions beyond Atomic Operations are
+not supported, and profiles are not applied. The framework continues to reject
+unsupported extensions with `415`/`406` and to ignore unrecognized profiles as
+the specification requires. C1–C3 are closed rather than planned; re-open this
+workstream only if a concrete extension or profile is required.
+
 Scope: implement the extension and profile mechanisms the base specification
 defines, with Atomic as the first extension.
 
@@ -268,7 +274,7 @@ on them.
 | --- | --- | --- | --- |
 | Phase 0 — Base protocol closure | In progress | PR2, PR4, PR5 | Workstream A exit criteria met |
 | Phase 1 — Fetch surface | In progress | PR1, Phase 0 | Workstream B exit criteria met |
-| Phase 2 — Extensions and profiles | Blocked | Phase 0, PR2 | Workstream C extension/profile framework met; profile catalog gated by decision |
+| Phase 2 — Extensions and profiles | Closed | — | Out of scope per decision; Atomic remains the only supported extension |
 | Phase 3 — Association breadth | Blocked | PR3, Phase 0 | Workstream D exit criteria met |
 | Phase 4 — Verification closure | Planned | Phase 0–3 | Workstream E exit criteria met |
 
@@ -281,10 +287,13 @@ Open:
 
 1. **Pagination strategy contract** (offset with total count, or cursor) — blocks
    B5 and affects B6.
-2. **Supported profile list** — blocks C3.
-3. **Target association shapes** — blocks D4.
+2. **Target association shapes** — blocks D4.
 
 Resolved:
+
+- **Extensions and profiles beyond Atomic** — out of scope. Atomic remains the
+  only supported extension; profiles are not applied (unrecognized profiles are
+  ignored).
 
 - **Top-level `jsonapi` object** — not emitted. Capability advertisement uses
   `Content-Type`.
