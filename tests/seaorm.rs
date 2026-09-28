@@ -38,7 +38,9 @@ use seamark::query::{
     FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField, ReadPlan,
     ReadQuery, SortDirection, SortField, plan_read, plan_resource_read,
 };
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    RelationshipMapping, RelationshipPermission, ResourceDefinition, ResourceRegistry,
+};
 use seamark::seaorm::{
     IncludedResource, SeaOrmExecutionError, SeaOrmFilterValueCodec, SeaOrmIncludeLoader,
     SeaOrmQueryExecutor, SeaOrmReadGuard,
@@ -105,16 +107,38 @@ mod unbacked_port {
 fn resource_definitions() -> (ResourceDefinition, ResourceDefinition) {
     (
         ResourceDefinition::new("ports", "port_id")
-            .attribute("name", "title", true, true)
-            .attribute("capacity", "berth_count", true, true)
-            .attribute("depth", "depth_m", true, true)
-            .attribute("active", "active", true, true)
-            .relationship("owner", "owner_id", "people")
-            .relationship("neighbors", "neighbor_ids", "ports"),
+            .filterable_and_sortable_attribute("name", "title")
+            .filterable_and_sortable_attribute("capacity", "berth_count")
+            .filterable_and_sortable_attribute("depth", "depth_m")
+            .filterable_and_sortable_attribute("active", "active")
+            .mapped_relationship(read_include_relationship(
+                "owner", "owner_id", "people", true,
+            ))
+            .mapped_relationship(read_include_relationship(
+                "neighbors",
+                "neighbor_ids",
+                "ports",
+                false,
+            )),
         ResourceDefinition::new("people", "person_id")
-            .attribute("name", "display_name", false, true)
-            .attribute("note", "private_note", false, false),
+            .sortable_attribute("name", "display_name")
+            .attribute("note", "private_note"),
     )
+}
+
+fn read_include_relationship(
+    public_name: &str,
+    model_field: &str,
+    target_type: &str,
+    to_one: bool,
+) -> RelationshipMapping {
+    let mapping = RelationshipMapping::new(public_name, model_field, target_type)
+        .allow(RelationshipPermission::Include);
+    if to_one {
+        mapping.to_one()
+    } else {
+        mapping.to_many()
+    }
 }
 
 fn registry() -> ResourceRegistry {
@@ -134,7 +158,7 @@ fn plan(query: &ReadQuery) -> ReadPlan {
 fn query_executor_validates_identifier_and_queryable_columns_at_construction() {
     let people = ResourceDefinition::new("people", "person_id");
     let missing_identifier = ResourceRegistry::new([
-        ResourceDefinition::new("ports", "missing_id").attribute("name", "title", true, false),
+        ResourceDefinition::new("ports", "missing_id").filterable_attribute("name", "title"),
         people.clone(),
     ])
     .unwrap();
@@ -149,12 +173,7 @@ fn query_executor_validates_identifier_and_queryable_columns_at_construction() {
     ));
 
     let missing_query_field = ResourceRegistry::new([
-        ResourceDefinition::new("ports", "port_id").attribute(
-            "name",
-            "missing_column",
-            false,
-            true,
-        ),
+        ResourceDefinition::new("ports", "port_id").sortable_attribute("name", "missing_column"),
         people,
     ])
     .unwrap();
@@ -307,8 +326,10 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
         &self,
         database: &DatabaseConnection,
         roots: &[port::Model],
+        _root_resources: &mut [AdapterResource],
         includes: &[IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+        _runtime_budget: Option<&seamark::seaorm::SeaOrmRuntimeBudget>,
     ) -> Result<Vec<IncludedResource>, String> {
         let mut included = Vec::new();
         if includes
@@ -402,8 +423,10 @@ impl SeaOrmIncludeLoader<port::Entity> for CountingPortOwnerLoader {
         &self,
         _database: &DatabaseConnection,
         _roots: &[port::Model],
+        _root_resources: &mut [AdapterResource],
         _includes: &[IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+        _runtime_budget: Option<&seamark::seaorm::SeaOrmRuntimeBudget>,
     ) -> Result<Vec<IncludedResource>, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Vec::new())
@@ -463,8 +486,10 @@ impl SeaOrmIncludeLoader<unbacked_port::Entity> for UnbackedPortLoader {
         &self,
         _database: &DatabaseConnection,
         _roots: &[unbacked_port::Model],
+        _root_resources: &mut [AdapterResource],
         _includes: &[IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+        _runtime_budget: Option<&seamark::seaorm::SeaOrmRuntimeBudget>,
     ) -> Result<Vec<IncludedResource>, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Vec::new())
@@ -689,8 +714,10 @@ fn unbacked_query_app(
     let registry = Arc::new(
         ResourceRegistry::new([
             ResourceDefinition::new("ports", "port_key")
-                .attribute("name", "title", true, true)
-                .relationship("owner", "owner_id", "people"),
+                .filterable_and_sortable_attribute("name", "title")
+                .mapped_relationship(read_include_relationship(
+                    "owner", "owner_id", "people", true,
+                )),
             ResourceDefinition::new("people", "person_id"),
         ])
         .unwrap(),
@@ -726,19 +753,11 @@ async fn create_tables(database: &DatabaseConnection) {
         .unwrap();
     let schema = Schema::new(DbBackend::Postgres);
     database
-        .execute(
-            database
-                .get_database_backend()
-                .build(&schema.create_table_from_entity(person::Entity)),
-        )
+        .execute(&schema.create_table_from_entity(person::Entity))
         .await
         .unwrap();
     database
-        .execute(
-            database
-                .get_database_backend()
-                .build(&schema.create_table_from_entity(port::Entity)),
-        )
+        .execute(&schema.create_table_from_entity(port::Entity))
         .await
         .unwrap();
 }
@@ -1489,11 +1508,7 @@ async fn postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql
         .unwrap();
     let schema = Schema::new(DbBackend::Postgres);
     database
-        .execute(
-            database
-                .get_database_backend()
-                .build(&schema.create_table_from_entity(unbacked_port::Entity)),
-        )
+        .execute(&schema.create_table_from_entity(unbacked_port::Entity))
         .await
         .unwrap();
     unbacked_port::ActiveModel {

@@ -1,77 +1,75 @@
 # Architecture and request lifecycle
 
-**Status: partial implementation.** The repository has a protocol model, an
-adapter-independent resource registry and read planner, Axum read-only GET
-routes with opt-in collection and single-resource query planning, a
-PostgreSQL-backed SeaORM executor prototype integrated through the
-query-adapter boundary,
-and a standalone Atomic Operations `POST /operations` router, opt-in base
-resource/relationship routes, typed SeaORM mutation executors, and transaction
-runners for both mutation contracts. SQLite has an opt-in SeaORM feature and partial M7
-query/mutation test coverage; cross-backend parity is not established. Complete JSON:API
-conformance is not implemented.
+**Status: partial implementation.** Seamark has an adapter-independent
+resource registry and request planner, a composable `ApiBuilder`, standard
+SeaORM query and mutation adapters, shared resource projection, runtime limits,
+and transaction runners for ordinary and Atomic writes. Standard relationship
+loading covers declared foreign-key and two-column join-table mappings.
+Nonstandard associations and complete JSON:API/Atomic Operations conformance
+remain outside the current support claim.
 
 ## Boundaries
 
-The design separates protocol handling, public API metadata, application policy, and persistence:
+The request path separates protocol handling, public metadata, application
+policy, and persistence:
 
-1. **Axum integration** handles HTTP requests and responses. Axum is the initial HTTP target.
-2. **Protocol layer** parses and validates JSON:API documents and query parameters, negotiates supported capabilities, and serializes resource, relationship, error, and operation documents.
-3. **Resource registry** explicitly describes public resources, fields, relationships, and permitted operations. API resources are separate from SeaORM entities and map to them through registered metadata.
-4. **Planning layer** resolves requests into validated read or mutation plans.
-5. **Application integration** provides validation, authorization, business rules, and link customization.
-6. **SeaORM persistence integration** executes planned database work. PostgreSQL is the first validated target; SQLite is the explicit second target in M7. A generic multi-ORM abstraction is not an initial requirement.
+1. Axum routes parse JSON:API requests and serialize protocol responses.
+2. The protocol layer validates resource documents, query parameters, and
+   negotiated capabilities.
+3. The registry explicitly declares public resources, fields, relationships,
+   and operation permissions. Database columns and ORM relationships are not
+   exposed automatically.
+4. Planners resolve requests into validated read or mutation plans.
+5. Application policy provides authorization, custom validation, business
+   rules, and link customization.
+6. SeaORM adapters execute planned database work using registered typed
+   entities and explicit codecs.
 
-## Routes and request flow
+## Routes and reads
 
-The default HTTP integration registers collection and single-resource GET
-routes only. `router_with_mutations` and
-`router_with_query_and_mutations` opt into the conventional resource and
-relationship-linkage methods: `POST /{type}`, `PATCH|DELETE /{type}/{id}`, and
-`GET|PATCH|POST|DELETE /{type}/{id}/relationships/{name}`. Related-resource
-URLs are not registered. Relationship writes require explicit
-`to_one_relationship` or `to_many_relationship` registry declarations;
-`.relationship(...)` remains cardinality-unspecified and is suitable for
-read-only mapping. Applications that need different paths can compose
-application-owned Axum mutation routes with the read-only router. The helpers
-do not add a route-template language or silently remap paths.
+`ApiBuilder` enables simple reads, planned queries, ordinary mutations, and
+Atomic Operations independently. Collection reads and single-resource reads
+use validated plans when the query adapter is enabled. Filters, sorting, and
+pagination apply to collections; includes and sparse fieldsets also apply to
+single resources. Invalid plans are rejected before authorization or database
+execution where possible.
 
-Registered-route method mismatches return JSON:API 405 errors. Applications
-that want JSON:API 404 documents for unmatched URLs can install
-`http::not_found_fallback` as the final fallback on their top-level router.
-This remains opt-in so the component router does not intercept paths belonging
-to unrelated application routes.
+The standard SeaORM query adapter maps explicitly registered entity columns,
+uses common scalar codecs, and dispatches collection and single-resource
+queries without a forwarding adapter. Registered to-one foreign keys,
+to-many foreign keys, and join tables use batched include loading. Other
+association shapes can provide custom loaders. All results pass through the
+same registry-based projection, which excludes undeclared fields.
+
+## Mutations and transactions
 
 Base requests are validated and mapped to `MutationCommand` values before
-authorization and adapter execution. `MutationResourceAdapter` is distinct
-from the Atomic planner, handlers, and result document. Its command changesets
-key only supplied fields by internal registry mapping, so omitted PATCH fields
-remain absent and explicit `null` remains a value. `SeaOrmBaseMutationAdapter`
-dispatches to the first matching typed base executor in one transaction per
-command. The typed executor and application are responsible for related-target
-existence, idempotent to-many membership updates, model-specific result
-representations, and association persistence. Atomic operations continue to
-use their own request plan and transaction batch.
+authorization and adapter execution. Changesets preserve the difference
+between an omitted property and an explicit `null`. A base command executes in
+its own transaction. Standard SeaORM CRUD handlers can serve as both base and
+Atomic executors; relationship handlers use explicit storage and permission
+metadata and can compose with resource writes in the same transaction.
 
-The default GET router rejects non-empty query strings. The opt-in query router
-parses and plans collection queries plus single-resource includes and sparse
-fieldsets, resolves the resource definition, authorizes the request, then
-passes the validated plan to a query adapter. Filters, sorting, and pagination
-remain collection-only. The typed SeaORM executor handles both plan shapes;
-PostgreSQL and SQLite integration tests cover included resources, linkage,
-fieldset projection, and unsupported single-resource parameters. Application-
-specific filter/identifier conversion, authorization/limit checks, model
-mapping, and included-resource loading remain explicit inputs. Atomic
-Operations requests are negotiated for the required extension, validated into
-ordered plans with public fields resolved to internal model fields, and run
-through one SeaORM transaction. Typed per-entity mutators support resource CRUD
-and to-one foreign-key writes; applications provide value/identifier codecs
-and may register custom executors for to-many relations. A route resolver can
-map relationship `href` references to registered relationship targets. Full
-normative behavior remains future work.
+Atomic Operations have an independent endpoint opt-in, plan, permission set,
+guard, and handler. The complete operation batch runs in one transaction and
+rolls back when an operation fails. Registry permissions for ordinary writes
+do not implicitly enable Atomic writes, or vice versa.
 
-Capability negotiation must expose only supported behavior; unsupported behavior should fail explicitly rather than being silently approximated.
+## Authorization, limits, and errors
 
-## Cross-cutting concerns
+`RequestAuthorizer` receives complete validated read plans, including include
+trees, and separately authorizes ordinary mutations. `AtomicOperationsGuard`
+authorizes the planned Atomic batch. `SharedAuthorization` adapts one
+`AuthorizationPolicy` to both interfaces; `AllOfAuthorizationPolicy` composes
+policies using an all-must-allow rule. A lower-level `SeaOrmReadGuard` remains
+available for query-specific checks that do not use HTTP headers.
 
-Error responses, link generation, authorization of included data, and resource-use limits need consistent framework boundaries. Exact hook ordering, public API stability, and implementation-specific mapping and execution choices remain open for a focused prototype.
+`ExecutionLimits` composes common include, filter, relationship-linkage, and
+Atomic batch limits with application checks. Runtime budgets cap related rows
+and include queries while standard or custom SeaORM loaders expand a request.
+Adapter errors are translated at the HTTP boundary to JSON:API error
+categories.
+
+Capability negotiation exposes only configured behavior; unsupported behavior
+must fail explicitly rather than be silently approximated. Complete normative
+JSON:API and Atomic Operations behavior remains future work.

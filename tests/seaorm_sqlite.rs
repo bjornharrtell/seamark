@@ -30,7 +30,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, Database, DatabaseConnection,
-    DatabaseTransaction, DbBackend, EntityTrait, QueryFilter, Schema, Set, Value,
+    DatabaseTransaction, DbBackend, EntityTrait, QueryFilter, Schema, Set, TransactionTrait, Value,
 };
 use seamark::atomic::{
     AtomicExecutionError, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsDocument,
@@ -39,21 +39,27 @@ use seamark::atomic::{
 };
 use seamark::atomic_http;
 use seamark::http::{
-    self, AdapterError, AdapterIncludedResource, AdapterResource, QueryAdapterError,
-    QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RequestAuthorizer,
-    ResourceAdapter,
+    self, AdapterError, AdapterIncludedResource, AdapterResource, MutationCommand, MutationOutcome,
+    QueryAdapterError, QueryCollectionResult, QueryResourceAdapter, QueryResourceResult,
+    RequestAuthorizer, ResourceAdapter, ResourceMutationChangeset,
 };
 use seamark::query::{
     FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField, ReadPlan,
     ReadQuery, SortDirection, SortField, plan_read, plan_resource_read,
 };
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
+    RelationshipReassignment, ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use seamark::seaorm::{
-    IncludedResource, SeaOrmExecutionError, SeaOrmFilterValueCodec, SeaOrmIncludeLoader,
-    SeaOrmMutationValueCodec, SeaOrmQueryExecutor, SeaOrmReadGuard,
+    IncludedResource, SeaOrmColumnValueCodec, SeaOrmExecutionError, SeaOrmFilterValueCodec,
+    SeaOrmIncludeLoader, SeaOrmMutationValueCodec, SeaOrmQueryAdapter, SeaOrmQueryExecutor,
+    SeaOrmReadGuard, computed_attribute_mapping, join_table_relationship_mapping,
+    to_many_foreign_key_mapping,
 };
 use seamark::seaorm_mutation::{
-    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
+    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmBaseMutationExecutor,
+    SeaOrmResourceMutationHandler,
 };
 use serde_json::json;
 use tower::ServiceExt;
@@ -116,18 +122,60 @@ mod person {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+mod tag {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "seamark_m7_query_tags")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub tag_id: i32,
+        pub name: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+mod port_tag {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "seamark_m7_query_port_tags")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub port_id: i32,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub tag_id: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
-        ResourceDefinition::new("ports", "port_id")
-            .attribute("name", "title", true, true)
-            .attribute("capacity", "berth_count", true, true)
-            .attribute("depth", "depth_m", true, true)
-            .attribute("active", "active", true, true)
-            .relationship("owner", "owner_id", "people")
-            .relationship("neighbors", "neighbor_ids", "ports"),
-        ResourceDefinition::new("people", "person_id")
-            .attribute("name", "display_name", false, true)
-            .attribute("note", "private_note", false, false),
+        atomic_cases::enabled_resource("ports", "port_id")
+            .mapped_attribute(atomic_cases::enabled_attribute("name", "title"))
+            .mapped_attribute(atomic_cases::enabled_attribute("capacity", "berth_count"))
+            .mapped_attribute(atomic_cases::enabled_attribute("depth", "depth_m"))
+            .mapped_attribute(atomic_cases::enabled_attribute("active", "active"))
+            .mapped_relationship(atomic_cases::enabled_relationship(
+                "owner", "owner_id", "people", true,
+            ))
+            .mapped_relationship(atomic_cases::enabled_relationship(
+                "neighbors",
+                "neighbor_ids",
+                "ports",
+                false,
+            )),
+        atomic_cases::enabled_resource("people", "person_id")
+            .mapped_attribute(atomic_cases::enabled_attribute("name", "display_name"))
+            .mapped_attribute(atomic_cases::enabled_attribute("note", "private_note")),
     ])
     .unwrap()
 }
@@ -283,8 +331,10 @@ impl SeaOrmIncludeLoader<port::Entity> for PortOwnerLoader {
         &self,
         database: &DatabaseConnection,
         roots: &[port::Model],
+        _root_resources: &mut [AdapterResource],
         includes: &[IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+        _runtime_budget: Option<&seamark::seaorm::SeaOrmRuntimeBudget>,
     ) -> Result<Vec<IncludedResource>, String> {
         let mut included = Vec::new();
         if includes
@@ -378,8 +428,10 @@ impl SeaOrmIncludeLoader<port::Entity> for CountingPortOwnerLoader {
         &self,
         _database: &DatabaseConnection,
         _roots: &[port::Model],
+        _root_resources: &mut [AdapterResource],
         _includes: &[IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+        _runtime_budget: Option<&seamark::seaorm::SeaOrmRuntimeBudget>,
     ) -> Result<Vec<IncludedResource>, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Vec::new())
@@ -518,12 +570,343 @@ async fn create_tables(database: &DatabaseConnection) {
     for statement in [
         schema.create_table_from_entity(person::Entity),
         schema.create_table_from_entity(port::Entity),
+        schema.create_table_from_entity(tag::Entity),
+        schema.create_table_from_entity(port_tag::Entity),
     ] {
-        database
-            .execute(database.get_database_backend().build(&statement))
-            .await
-            .unwrap();
+        database.execute(&statement).await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn standard_seaorm_query_adapter_builds_and_validates_registry_coverage() {
+    let database = database().await;
+    create_tables(&database).await;
+    insert_fixtures(&database).await;
+    let ports = ResourceDefinition::new("ports", "port_id")
+        .filterable_and_sortable_attribute("name", "title");
+    let registry = ResourceRegistry::new([ports.clone()]).unwrap();
+    let executor =
+        SeaOrmQueryExecutor::<port::Entity, _, _>::mapped(registry.clone(), "ports").unwrap();
+    let mut query_adapter = SeaOrmQueryAdapter::new();
+    query_adapter
+        .register(database.clone(), executor, Arc::new(AllowGuard), None)
+        .unwrap();
+    let app = http::ApiBuilder::new(Arc::new(registry), Arc::new(http::AllowAllAuthorizer))
+        .queries(Arc::new(query_adapter), pagination())
+        .try_build()
+        .unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ports?sort=-name&page%5Bsize%5D=1")
+                .header("accept", "application/vnd.api+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(document["data"][0]["attributes"]["name"], "Gamma");
+
+    let incomplete_registry =
+        ResourceRegistry::new([ports, ResourceDefinition::new("people", "person_id")]).unwrap();
+    let executor =
+        SeaOrmQueryExecutor::<port::Entity, _, _>::mapped(incomplete_registry.clone(), "ports")
+            .unwrap();
+    let mut incomplete_adapter = SeaOrmQueryAdapter::new();
+    incomplete_adapter
+        .register(database, executor, Arc::new(AllowGuard), None)
+        .unwrap();
+    let error = http::ApiBuilder::new(
+        Arc::new(incomplete_registry),
+        Arc::new(http::AllowAllAuthorizer),
+    )
+    .queries(Arc::new(incomplete_adapter), pagination())
+    .try_build()
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        http::ApiConfigurationError::QueryAdapter(message)
+            if message.contains("no SeaORM query executor is registered for `people`")
+    ));
+}
+
+#[tokio::test]
+async fn standard_seaorm_query_adapter_batches_registered_relationship_includes() {
+    let database = database().await;
+    create_tables(&database).await;
+    insert_fixtures(&database).await;
+    let ports = ResourceDefinition::new("ports", "port_id")
+        .attribute("name", "title")
+        .mapped_relationship(
+            RelationshipMapping::new("owner", "owner_id", "people")
+                .to_one_foreign_key(true)
+                .allow(RelationshipPermission::Include),
+        )
+        .mapped_relationship(
+            join_table_relationship_mapping::<port_tag::Entity>(
+                "tags",
+                "tags",
+                "tags",
+                port_tag::Column::PortId,
+                port_tag::Column::TagId,
+            )
+            .allow(RelationshipPermission::Include),
+        );
+    let people = ResourceDefinition::new("people", "person_id")
+        .attribute("name", "display_name")
+        .mapped_relationship(
+            to_many_foreign_key_mapping::<port::Entity>(
+                "ports",
+                "ports",
+                "ports",
+                port::Column::OwnerId,
+                true,
+                RelationshipReassignment::Deny,
+            )
+            .disallow(RelationshipPermission::Read)
+            .allow(RelationshipPermission::Include),
+        );
+    let tags = ResourceDefinition::new("tags", "tag_id").attribute("name", "name");
+    let registry = ResourceRegistry::new([ports, people, tags]).unwrap();
+    let port_executor =
+        SeaOrmQueryExecutor::<port::Entity, _, _>::mapped(registry.clone(), "ports").unwrap();
+    let people_executor =
+        SeaOrmQueryExecutor::<person::Entity, _, _>::mapped(registry.clone(), "people").unwrap();
+    let tags_executor =
+        SeaOrmQueryExecutor::<tag::Entity, _, _>::mapped(registry.clone(), "tags").unwrap();
+    let mut query_adapter = SeaOrmQueryAdapter::new();
+    query_adapter
+        .register(database.clone(), port_executor, Arc::new(AllowGuard), None)
+        .unwrap();
+    query_adapter
+        .register(
+            database.clone(),
+            people_executor,
+            Arc::new(AllowGuard),
+            None,
+        )
+        .unwrap();
+    query_adapter
+        .register(database.clone(), tags_executor, Arc::new(AllowGuard), None)
+        .unwrap();
+    query_adapter
+        .register_join_table::<port_tag::Entity>("ports", "tags", database)
+        .unwrap();
+    let registry = Arc::new(registry);
+    let query_adapter = Arc::new(query_adapter);
+    let app = http::ApiBuilder::new(registry.clone(), Arc::new(http::AllowAllAuthorizer))
+        .queries(query_adapter.clone(), pagination())
+        .try_build()
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/people?include=ports")
+                .header("accept", "application/vnd.api+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        document["data"][0]["relationships"]["ports"]["data"][0]["id"],
+        "1"
+    );
+    assert_eq!(
+        document["data"][1]["relationships"]["ports"]["data"][0]["id"],
+        "2"
+    );
+    assert_eq!(document["included"].as_array().unwrap().len(), 2);
+    assert_eq!(document["included"][0]["type"], "ports");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports?include=owner")
+                .header("accept", "application/vnd.api+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        document["data"][0]["relationships"]["owner"]["data"]["id"],
+        "11"
+    );
+    assert_eq!(document["included"].as_array().unwrap().len(), 2);
+    assert_eq!(document["included"][0]["type"], "people");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ports?include=tags")
+                .header("accept", "application/vnd.api+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let document: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(document["included"].as_array().unwrap().len(), 2);
+    assert_eq!(document["included"][0]["type"], "tags");
+
+    let limited_app = http::ApiBuilder::new(registry, Arc::new(http::AllowAllAuthorizer))
+        .queries(query_adapter, pagination())
+        .limits(seamark::limits::ExecutionLimits::new().max_include_queries(0))
+        .try_build()
+        .unwrap();
+    let response = limited_app
+        .oneshot(
+            Request::builder()
+                .uri("/people?include=ports")
+                .header("accept", "application/vnd.api+json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn computed_seaorm_attributes_use_the_same_mapping_for_reads_and_mutations() {
+    let database = database().await;
+    create_tables(&database).await;
+    person::ActiveModel {
+        person_id: Set(11),
+        display_name: Set("Mara".to_owned()),
+        private_note: Set("seed".to_owned()),
+    }
+    .insert(&database)
+    .await
+    .unwrap();
+
+    let name = AttributeMapping::new("name", "display_name").allow(AttributePermission::Update);
+    let label = AttributeMapping::new("label", "computed_label");
+    let computed = computed_attribute_mapping::<person::Entity, _>(label.clone(), |model| {
+        Ok(json!(format!(
+            "{} ({})",
+            model.display_name, model.private_note
+        )))
+    });
+    let person_definition = ResourceDefinition::new("people", "person_id")
+        .allow(ResourcePermission::Update)
+        .mapped_attribute(name)
+        .mapped_attribute(label);
+    let registry = ResourceRegistry::new([person_definition.clone()]).unwrap();
+    let plan = plan_read(&registry, "people", &ReadQuery::default(), &pagination()).unwrap();
+    let executor = SeaOrmQueryExecutor::<person::Entity, _, _>::mapped_with_computed(
+        registry.clone(),
+        "people",
+        vec![computed.clone()],
+    )
+    .unwrap();
+    let read = executor
+        .collection(&database, &plan, &AllowGuard, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        read.resources[0].attributes["computed_label"],
+        "Mara (seed)"
+    );
+
+    let handler = SeaOrmResourceMutationHandler::<
+        person::Entity,
+        SeaOrmColumnValueCodec<person::Entity>,
+    >::new_with_computed_attributes(
+        &registry,
+        "people",
+        SeaOrmColumnValueCodec::default(),
+        vec![computed],
+    )
+    .unwrap();
+    let transaction = database.begin().await.unwrap();
+    let outcome = SeaOrmBaseMutationExecutor::execute(
+        &handler,
+        &transaction,
+        &person_definition,
+        &MutationCommand::Update {
+            id: "11".to_owned(),
+            changeset: ResourceMutationChangeset {
+                attributes: BTreeMap::from([("display_name".to_owned(), json!("Mara Updated"))]),
+                ..ResourceMutationChangeset::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let MutationOutcome::Resource(resource) = outcome else {
+        panic!("expected an updated resource representation");
+    };
+    assert_eq!(resource.attributes["computed_label"], "Mara Updated (seed)");
+    database.close().await.unwrap();
+}
+
+#[test]
+fn computed_seaorm_attributes_require_registered_read_only_mappings() {
+    let unregistered_registry =
+        ResourceRegistry::new([ResourceDefinition::new("people", "person_id")]).unwrap();
+    let unregistered = computed_attribute_mapping::<person::Entity, _>(
+        AttributeMapping::new("label", "computed_label"),
+        |model| Ok(json!(model.display_name)),
+    );
+    assert!(
+        SeaOrmQueryExecutor::<person::Entity, _, _>::mapped_with_computed(
+            unregistered_registry,
+            "people",
+            vec![unregistered],
+        )
+        .is_err()
+    );
+
+    for permission in [
+        AttributePermission::Filter,
+        AttributePermission::Sort,
+        AttributePermission::Create,
+        AttributePermission::Update,
+        AttributePermission::AtomicCreate,
+        AttributePermission::AtomicUpdate,
+    ] {
+        let mapping = AttributeMapping::new("label", "computed_label").allow(permission);
+        let registry = ResourceRegistry::new([
+            ResourceDefinition::new("people", "person_id").mapped_attribute(mapping.clone())
+        ])
+        .unwrap();
+        let computed = computed_attribute_mapping::<person::Entity, _>(mapping, |model| {
+            Ok(json!(model.display_name))
+        });
+        assert!(
+            SeaOrmQueryExecutor::<person::Entity, _, _>::mapped_with_computed(
+                registry,
+                "people",
+                vec![computed],
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn standard_atomic_dispatcher_validates_enabled_operation_coverage() {
+    let registry = atomic_cases::registry();
+    let dispatcher = atomic_cases::dispatcher(&registry);
+    dispatcher.validate_registry(&registry).unwrap();
 }
 
 async fn insert_fixtures(database: &DatabaseConnection) {
@@ -553,6 +936,22 @@ async fn insert_fixtures(database: &DatabaseConnection) {
             depth_m: Set(depth),
             active: Set(active),
             owner_id: Set(owner_id),
+        }
+        .insert(database)
+        .await
+        .unwrap();
+    }
+    for (tag_id, name, port_id) in [(101, "north", 1), (102, "south", 2)] {
+        tag::ActiveModel {
+            tag_id: Set(tag_id),
+            name: Set(name.to_owned()),
+        }
+        .insert(database)
+        .await
+        .unwrap();
+        port_tag::ActiveModel {
+            port_id: Set(port_id),
+            tag_id: Set(tag_id),
         }
         .insert(database)
         .await
@@ -839,7 +1238,7 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     insert_fixtures(&database).await;
 
     let foreign_keys = database
-        .query_one(sea_orm::Statement::from_string(
+        .query_one_raw(sea_orm::Statement::from_string(
             DbBackend::Sqlite,
             "PRAGMA foreign_keys",
         ))
@@ -1810,9 +2209,8 @@ async fn rolls_back_sqlite_atomic_writes_after_operation_failure() {
         )
         .await
         .unwrap();
-    let registry = ResourceRegistry::new([
-        ResourceDefinition::new("ports", "port_id").attribute("name", "title", false, false)
-    ])
+    let registry = ResourceRegistry::new([atomic_cases::enabled_resource("ports", "port_id")
+        .mapped_attribute(atomic_cases::enabled_attribute("name", "title"))])
     .unwrap();
     let request: AtomicOperationsDocument = serde_json::from_value(json!({
         "atomic:operations": [
@@ -1838,7 +2236,7 @@ async fn rolls_back_sqlite_atomic_writes_after_operation_failure() {
         seamark::atomic::AtomicExecutionError::Operation { index: 1, .. }
     ));
     let count = database
-        .query_one(sea_orm::Statement::from_string(
+        .query_one_raw(sea_orm::Statement::from_string(
             DbBackend::Sqlite,
             "SELECT COUNT(*) AS count FROM seamark_m7_atomic_log",
         ))

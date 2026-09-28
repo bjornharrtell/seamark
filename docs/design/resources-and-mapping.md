@@ -1,89 +1,89 @@
 # Resources and SeaORM mapping
 
-**Status: partial implementation.** An adapter-independent resource registry
-and a focused SeaORM collection-execution prototype are implemented. A
-finalized production entity/relationship mapping API is not implemented.
+**Status: partial implementation.** Seamark has an adapter-independent
+resource registry, named permissions, typed SeaORM field helpers, standard
+query and mutation adapters, common scalar codecs, batched loading for common
+relationship shapes, and shared resource projection. This document describes
+the implemented mapping boundaries; it is not a claim of complete JSON:API or
+Atomic Operations conformance.
 
 ## Public resource schema
 
-An API resource is a public JSON:API model, separate from its SeaORM entity, and maps explicitly to that entity. Its registered metadata describes the public `type`, identifier, exposed attributes, relationships, and permitted operations. Database columns and ORM relations are not exposed merely because they exist.
+An API resource is a public JSON:API model, separate from its SeaORM entity.
+The registry declares its public type, identifier, attributes, relationships,
+and enabled operations. Database columns and ORM relationships are not exposed
+merely because they exist.
 
-This explicit metadata is also the basis for dynamic request queries. Public fields and relationships map to SeaORM columns and relations through registered mapping information; neither queryability nor sortability is inferred from a resource or entity's structure. Attributes must be explicitly marked filterable to accept filters and explicitly marked sortable to accept sorting.
+`attribute_mapping::<Entity>(public_name, Entity::Column::...)` binds an
+attribute to a typed SeaORM column. Filtering, sorting, and each write
+operation are separate `AttributePermission` values. Standard SeaORM codecs
+cover supported scalar, identifier, nullable, date/time, decimal, JSON, and
+UUID values; applications can supply custom codecs.
 
-The registry rejects resource type, attribute, and relationship names that
-violate JSON:API member-name constraints, in addition to rejecting reserved
-`id`/`type` fields and duplicate mappings.
+Computed attributes use `computed_attribute_mapping` with a registered
+`AttributeMapping` and an application function from the SeaORM model to a JSON
+value. The function is shared by the standard query executor and the base
+mutation handler when each is configured with that computed mapping. Computed
+attributes must be read-only and cannot be filtered or sorted because they do
+not correspond to database columns.
 
-## Persistence mapping
+The registry rejects invalid or duplicate public names and validates
+relationship targets and storage declarations. Startup validation checks
+executor coverage, conflicting registrations, entity columns, and supported
+relationship metadata before the HTTP router is served.
 
-SeaORM is the persistence foundation. PostgreSQL is the first validated backend; SQLite is the M7 second backend behind an opt-in Cargo feature, with implementation and parity evidence still partial. Reads should translate supported plans into database-side selection and relationship loading. Writes should map validated requests to explicit, request-scoped changesets or commands that distinguish an omitted property from one explicitly set to `null`.
+## Relationship mappings
 
-The mapping must keep public resource definitions independent of persistence details while making the mapping explicit enough to validate and execute supported queries. The current executor resolves internal field strings through a typed entity's SeaORM `Column` parser and requires an application-provided `SeaOrmFilterValueCodec` and model-to-adapter mapper. Typed Atomic mutation handlers use `SeaOrmMutationValueCodec`; applications implementing both can use the combined `SeaOrmValueCodec` contract. Relationship loading is supplied through an explicit loader hook rather than inferred from opaque registry strings. It does not require a generic multi-ORM abstraction or promise alternative resource-definition patterns in the initial release.
+Relationship metadata declares target resource type, cardinality, storage,
+nullability where applicable, reassignment policy, and operation permissions.
+Typed helpers bind source foreign-key columns, target-side foreign-key columns,
+and join-table columns to generated SeaORM column enums.
 
-`SeaOrmQueryExecutor::new` is fallible and validates the registered
-identifier column and every filterable or sortable attribute against the
-bound SeaORM entity at construction. Non-queryable attributes may remain
-computed mapper outputs. Relationship mapping/loading remains explicit and
-application-defined.
+The standard query adapter batches to-one foreign-key lookups and to-many
+foreign-key lookups. Join-table relationships use an explicitly registered
+typed join entity. Nested includes use the same registry and projection rules.
+Nonstandard association shapes can use custom include loaders and mutation
+executors. Declaring a relationship does not enable includes or writes by
+itself.
 
-At execution, fieldset entries are revalidated against the exact registered
-public name, model field, and relationship target. Filter AST fields must map
-to registered filterable attributes, and sort terms must match the exact
-public/internal attribute mapping and its explicit sortable opt-in. Every
-string filter literal still passes through the configured typed codec before
-SeaORM builds a bound column comparison. The executor also intersects mapper
-output with registered attributes and relationships before applying a
-fieldset, so a manually constructed read plan cannot bypass the registry
-through direct `SeaOrmReadResult` use.
+## Projection, mutations, and authorization
 
-## Relationships and application integration
+Public projection resolves registered model fields and intersects adapter
+output with the declared attributes and relationships. Undeclared model values
+are excluded even if a custom mapper returns them. Sparse fieldsets and include
+linkage use the same projection helpers for HTTP and Atomic result resources.
 
-Registered relationship metadata should identify target resource types and support validating linkage, loading requested related data, and applying explicit relationship-update rules. Applications will need integration points for validation, authorization, business rules, and custom mapping; their exact lifecycle and ordering are not settled here.
+`SeaOrmResourceMutationHandler` can be registered as both the standard base
+CRUD executor and an Atomic executor. Ordinary commands use independent
+transactions; an Atomic request uses one transaction for the complete batch.
+Relationship mutation handlers use the same explicit storage mapping and
+permission model. Omitted properties remain distinct from explicit `null`.
 
-## Prototype and open choices
+`AuthorizationPolicy` receives validated query plans, including their include
+trees, and ordinary mutation or Atomic operation plans. `SharedAuthorization`
+adapts one policy to the HTTP and Atomic interfaces; `AllOfAuthorizationPolicy`
+requires every composed policy to allow the request. Resource, attribute, and
+relationship permissions remain independently enforced. The lower-level
+`SeaOrmReadGuard` has no HTTP headers and can add query-specific checks.
 
-A focused PostgreSQL test now verifies typed field resolution, database-side
-filtering (including OR, null, mapped numeric and boolean values), sorting,
-pagination, identifier serialization, sparse projection, and include loading.
-The PostgreSQL HTTP integration also executes planned collection queries
-through Axum and the SeaORM executor. This validates the prototype approach
-but does not freeze the declaration API. The registry still maps public names
-to opaque strings and does not automatically derive SeaORM relationships or
-CRUD behavior; identifier conversion is an explicit mutation-codec hook.
-Atomic Operations plans map registered public attribute and
-relationship names to internal model-field names in request-scoped changesets.
-Typed SeaORM handlers use these changesets for CRUD and to-one foreign-key
-writes. `SeaOrmJoinTableMutationHandler` supports to-many add/remove and
-Atomic `update` replacement for an explicitly configured two-column
-join-table entity, using the mutation codec and shared transaction.
-`SeaOrmToManyForeignKeyMutationHandler` supports add/remove for a relationship
-stored as a nullable FK on the related entity; add does not implicitly
-reassign a member from a different source, and remove only clears a matching
-FK. For Atomic resource updates, the dispatcher composes mapped scalar and
-to-one changes with each to-many replacement through its configured
-relationship executor, all within the same transaction. Both mappings are
-explicit because the registry does not encode
-association cardinality, join-table structure, or target FK columns. Other
-association shapes still require an application executor. Derive and
-configuration syntax, generalized identifier conversion, relation metadata,
-hook ordering, and transaction details remain open. Shared query and mutation
-codec traits now provide typed boundaries for their respective executor
-paths, while mapping rules and concrete conversions remain
-application-defined. SQLite fixtures
-exercise supported query behavior, enforced foreign-key linkage, typed Atomic
-CRUD/relationship updates, and rollback using isolated in-memory databases.
-PostgreSQL and SQLite consume the same core port/person fixtures and string,
-typed numeric/boolean, and null filter expectations from
-`tests/support/query_cases.rs`. CI already runs `--all-features`, so the opt-in
-SQLite fixture participates in the existing test job. The shared Atomic fixture declares a to-one owner foreign-key relation and
-exercises valid linkage on both backends; the same fixture confirms that an
-orphan owner foreign key is rejected on both without changing connection
-defaults. Shared Atomic coverage now also exercises direct-FK to-many
-add/remove, guarded non-reassignment, and transaction rollback on both
-backends. The core query and mutation adapters contain no backend-specific
-execution branch;
-application codecs and relationship hooks remain responsible for type and
-relation mapping. No intentional protocol capability difference has been
-verified. Full response and Atomic result comparisons, broader
-identifier/type coverage, and the remaining cross-backend parity matrix are
-still required; the current SQLite tests are not a complete support claim.
+## Limits and verification
+
+`ExecutionLimits` configures include depth and breadth, filter complexity,
+relationship member count, and Atomic batch size. Runtime budgets can limit
+included resources and include queries during SeaORM loading. Custom loaders
+can consume those budgets before accepting related rows or issuing queries.
+
+Tests cover typed scalar conversion and identifiers, filters and sorting,
+fieldsets, standard foreign-key and join-table includes, denied operations,
+invalid configuration, execution limits, and base/Atomic transaction
+rollback. The SQLite integration target exercises the common relationship
+paths. PostgreSQL integration tests require `SEAMARK_TEST_DATABASE_URL`.
+
+## Current boundaries
+
+Computed attributes are read-only and non-queryable. Relationship storage
+shapes outside to-one foreign keys, to-many foreign keys, and two-column join
+tables require custom mappers or executors. Application-defined business
+authorization and custom persistence behavior remain application choices.
+Full JSON:API and Atomic Operations specification conformance is outside the
+claim of this mapping layer.

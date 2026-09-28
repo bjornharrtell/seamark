@@ -15,8 +15,15 @@ use seamark::http::{
     self, AdapterError, AdapterResource, MutationAdapterError, MutationCommand, MutationOutcome,
     RelationshipMutation, RequestAuthorizer, ResourceAdapter,
 };
-use seamark::registry::{RelationshipMapping, ResourceDefinition, ResourceRegistry};
-use seamark::seaorm_mutation::{SeaOrmBaseMutationAdapter, SeaOrmBaseMutationExecutor};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
+    ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
+use seamark::seaorm::SeaOrmColumnValueCodec;
+use seamark::seaorm_mutation::{
+    SeaOrmBaseMutationAdapter, SeaOrmBaseMutationExecutor, SeaOrmJoinTableMutationHandler,
+    SeaOrmResourceMutationHandler,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -95,15 +102,53 @@ mod port_tag {
 
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
-        ResourceDefinition::new("ports", "port_id")
-            .attribute("name", "title", false, false)
-            .attribute("description", "description", false, false)
-            .to_one_relationship("owner", "owner_id", "people")
-            .to_many_relationship("tags", "tag_links", "tags"),
-        ResourceDefinition::new("people", "person_id").attribute("name", "name", false, false),
-        ResourceDefinition::new("tags", "tag_id").attribute("name", "name", false, false),
+        enabled_resource("ports", "port_id")
+            .mapped_attribute(enabled_attribute("name", "title"))
+            .mapped_attribute(enabled_attribute("description", "description"))
+            .mapped_relationship(enabled_relationship("owner", "owner_id", "people", true))
+            .mapped_relationship(
+                enabled_relationship("tags", "tag_links", "tags", false)
+                    .to_many_join_table("port_id", "tag_id"),
+            ),
+        ResourceDefinition::new("people", "person_id")
+            .mapped_attribute(enabled_attribute("name", "name")),
+        ResourceDefinition::new("tags", "tag_id")
+            .mapped_attribute(enabled_attribute("name", "name")),
     ])
     .unwrap()
+}
+
+fn enabled_resource(type_name: &str, identifier: &str) -> ResourceDefinition {
+    ResourceDefinition::new(type_name, identifier)
+        .allow(ResourcePermission::Create)
+        .allow(ResourcePermission::Update)
+        .allow(ResourcePermission::Delete)
+}
+
+fn enabled_attribute(public_name: &str, model_field: &str) -> AttributeMapping {
+    AttributeMapping::new(public_name, model_field)
+        .allow(AttributePermission::Create)
+        .allow(AttributePermission::Update)
+}
+
+fn enabled_relationship(
+    public_name: &str,
+    model_field: &str,
+    target_type: &str,
+    to_one: bool,
+) -> RelationshipMapping {
+    let mapping = RelationshipMapping::new(public_name, model_field, target_type)
+        .allow(RelationshipPermission::LinkageRead)
+        .allow(RelationshipPermission::BaseReplace)
+        .allow(RelationshipPermission::BaseAdd)
+        .allow(RelationshipPermission::BaseRemove)
+        .allow(RelationshipPermission::ResourceCreate)
+        .allow(RelationshipPermission::ResourceUpdate);
+    if to_one {
+        mapping.to_one_foreign_key(true)
+    } else {
+        mapping.to_many()
+    }
 }
 
 struct AllowAll;
@@ -114,6 +159,17 @@ impl RequestAuthorizer for AllowAll {
         &self,
         _resource_type: &str,
         _resource_id: Option<&str>,
+        _headers: &HeaderMap,
+    ) -> bool {
+        true
+    }
+
+    async fn authorize_mutation(
+        &self,
+        _action: seamark::http::MutationAction,
+        _resource: &ResourceDefinition,
+        _resource_id: Option<&str>,
+        _command: &MutationCommand,
         _headers: &HeaderMap,
     ) -> bool {
         true
@@ -561,7 +617,7 @@ async fn create_tables(database: &DatabaseConnection) {
         schema.create_table_from_entity(tag::Entity),
         schema.create_table_from_entity(port_tag::Entity),
     ] {
-        database.execute(backend.build(&statement)).await.unwrap();
+        database.execute(&statement).await.unwrap();
     }
 }
 
@@ -647,7 +703,7 @@ pub async fn run_case(database: &DatabaseConnection) {
         vec![invalid_executor],
     ));
     let invalid_router = http::router_with_mutations(
-        registry,
+        registry.clone(),
         Arc::new(NoReads),
         Arc::new(AllowAll),
         invalid_adapter,
@@ -1021,6 +1077,66 @@ pub async fn run_case(database: &DatabaseConnection) {
             .await
             .unwrap()
             .is_none()
+    );
+
+    let standard_handler: Arc<dyn SeaOrmBaseMutationExecutor> = Arc::new(
+        SeaOrmResourceMutationHandler::<port::Entity, _>::new(
+            &registry,
+            "ports",
+            SeaOrmColumnValueCodec::<port::Entity>::default(),
+        )
+        .unwrap(),
+    );
+    let standard_tags_handler: Arc<dyn SeaOrmBaseMutationExecutor> = Arc::new(
+        SeaOrmJoinTableMutationHandler::<port_tag::Entity, _>::new(
+            &registry,
+            "ports",
+            "tags",
+            SeaOrmColumnValueCodec::<port_tag::Entity>::default(),
+        )
+        .unwrap(),
+    );
+    let standard_adapter = Arc::new(SeaOrmBaseMutationAdapter::new(
+        database.clone(),
+        vec![standard_handler, standard_tags_handler],
+    ));
+    let standard_router = http::ApiBuilder::new(registry, Arc::new(AllowAll))
+        .mutations(standard_adapter)
+        .try_build()
+        .unwrap();
+    let response = standard_router
+        .oneshot(mutation_request(
+            "POST",
+            "/ports",
+            &json!({
+                "data": {
+                    "type": "ports",
+                    "attributes": {"name": "Standard executor"},
+                    "relationships": {
+                        "owner": {"data": {"type": "people", "id": "7"}},
+                        "tags": {"data": [
+                            {"type": "tags", "id": "4"},
+                            {"type": "tags", "id": "5"}
+                        ]}
+                    }
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = response_json(response).await;
+    assert_eq!(created["data"]["attributes"]["name"], "Standard executor");
+    assert_eq!(
+        created["data"]["relationships"]["owner"]["data"],
+        json!({"type": "people", "id": "7"})
+    );
+    assert_eq!(
+        created["data"]["relationships"]["tags"]["data"],
+        json!([
+            {"type": "tags", "id": "4"},
+            {"type": "tags", "id": "5"}
+        ])
     );
 }
 

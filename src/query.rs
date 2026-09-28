@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::registry::{RegistryError, ResourceRegistry};
+use crate::registry::{RegistryError, RelationshipPermission, ResourceRegistry};
 
 /// A filter expression with public attributes resolved to internal model fields.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -376,6 +376,13 @@ pub enum ReadPlanError {
         /// The undeclared public relationship.
         relationship: String,
     },
+    /// An include names a relationship without explicit include permission.
+    IncludeNotEnabled {
+        /// The resource type at the path segment.
+        resource_type: String,
+        /// The relationship whose include access is disabled.
+        relationship: String,
+    },
     /// A pagination value is not a positive unsigned integer.
     InvalidPageParameter {
         /// The parameter name.
@@ -457,6 +464,13 @@ impl fmt::Display for ReadPlanError {
             } => write!(
                 formatter,
                 "relationship `{relationship}` is not registered on resource `{resource_type}`"
+            ),
+            Self::IncludeNotEnabled {
+                resource_type,
+                relationship,
+            } => write!(
+                formatter,
+                "include access for relationship `{relationship}` on resource `{resource_type}` is disabled"
             ),
             Self::InvalidPageParameter { parameter, value } => {
                 write!(formatter, "invalid `{parameter}` value `{value}`")
@@ -776,6 +790,12 @@ fn plan_includes(
                         relationship: segment.to_owned(),
                     }
                 })?;
+                if !relationship.allows(RelationshipPermission::Include) {
+                    return Err(ReadPlanError::IncludeNotEnabled {
+                        resource_type: definition.type_name().to_owned(),
+                        relationship: segment.to_owned(),
+                    });
+                }
                 let node =
                     children
                         .entry(segment.to_owned())

@@ -1,26 +1,68 @@
 # Seamark
 
-Seamark is an early-stage Rust framework for building JSON:API servers with SeaORM. It currently provides JSON:API document types, an explicit resource registry, Axum collection/single-resource GET routes, opt-in base resource and relationship-linkage mutations, collection-query and single-resource include/fieldset integration, and prototype SeaORM query and Atomic Operations persistence support. PostgreSQL and the opt-in `sqlite` feature have shared base-mutation route/persistence tests, but full SQLite parity is not established. Full normative specification conformance is not implemented.
+Seamark is a Rust framework for building JSON:API servers with Axum and
+SeaORM. It provides explicit resource and field mappings, planned collection
+and single-resource queries, opt-in ordinary mutations, Atomic Operations,
+and shared projection and validation helpers.
 
-## Initial target
+## Integration
 
-The first complete release is intended to support the full normative JSON:API 1.1 base specification and the complete Atomic Operations extension. Support for other third-party extensions and profiles is deferred.
+Use `http::ApiBuilder` to opt into the capabilities the application serves:
 
-Axum is the initial HTTP integration, with SeaORM and PostgreSQL as the first persistence target. API resources are separate from SeaORM entities and map explicitly to them. Mutation-enabled routers use conventional resource and relationship-linkage paths; explicit to-one/to-many registry declarations are required for relationship writes. Applications needing different URL shapes can compose their own Axum mutation routes with the read-only router instead of using a path-template DSL.
+```rust,ignore
+let authorization = Arc::new(SharedAuthorization::new(request_policy));
+let app = ApiBuilder::new(registry, authorization.clone())
+    .queries(query_adapter, pagination)
+    .mutations(base_mutation_adapter)
+    .atomic_operations(database, authorization.clone(), atomic_handler)
+    .limits(execution_limits)
+    .try_build()?;
+```
 
-Initial query support is deliberately focused: function-style filters, using JsonApiDotNetCore as a reference, will cover equality and null checks with `and`, `or`, and `not`. Filtering applies only to explicitly filterable resource attributes; sortable fields are also explicitly opted in. Repeated filters at the same resource scope combine with OR. Pagination uses a server-defined page-number/page-size contract backed by offset and limit. JSON:API does not define a universal filter or pagination grammar.
+Capabilities are disabled until configured. Write permissions are separate
+from reads, and ordinary writes are separate from Atomic Operations. The
+standard SeaORM query adapter loads registered to-one and to-many foreign-key
+relationships, and registered join tables, without a forwarding adapter or
+application traversal loader. CRUD handlers can serve both ordinary and
+Atomic mutations. Computed read-only attributes can use a registered mapping
+function; custom mappers and executors remain available for more specialized
+behavior and other association shapes.
 
-## Implementation status
+See the [consumer integration guide](docs/consumer-guide.md) for resource
+permissions, typed mappings, SeaORM registration, transaction behavior, and
+current integration boundaries.
 
-The implementation is tracked in the [implementation plan](docs/implementation-plan.md). `router` remains GET-only; `router_with_mutations` adds `POST /{type}`, `PATCH|DELETE /{type}/{id}`, and `GET|PATCH|POST|DELETE /{type}/{id}/relationships/{name}` using an application mutation adapter. `SeaOrmBaseMutationAdapter` runs each validated command in a transaction through explicitly registered typed executors, independently of Atomic Operations. Client-assigned resource IDs are not supported by the base create route (HTTP 403); server-generated IDs return HTTP 201, a resource representation, and a `Location` header. Resource updates preserve omitted fields, and relationship methods require declared cardinality. The default `router` keeps rejecting non-empty query strings; opt-in `router_with_query` supports the documented collection query grammar and single-resource `include` and `fields[resource-type]` parameters. Applications may use `http::not_found_fallback` as their top-level Axum fallback to return JSON:API errors for unmatched paths without having Seamark routers capture unrelated application routes. Full normative JSON:API 1.1 and Atomic Operations support remains incomplete; this prototype is not a conformance claim.
+## Query and mutation behavior
 
-## Design documents
+Public resource types, identifiers, attributes, and relationships are
+registered explicitly. Filtering, sorting, include traversal, and each write
+operation require separate permissions. Query planning validates filters,
+sorts, sparse fieldsets, and include trees before adapter execution. The
+standard scalar codec handles common numeric, string, boolean, date/time,
+decimal, JSON, and UUID values; applications can replace or extend codecs.
 
-- [Architecture and request lifecycle](docs/design/architecture.md)
-- [Resources and SeaORM mapping](docs/design/resources-and-mapping.md)
-- [Queries, includes, and limits](docs/design/queries-and-includes.md)
-- [Mutations and Atomic Operations](docs/design/mutations-and-atomic-operations.md)
-- [JSON:API conformance strategy](docs/design/conformance.md)
-- [Implementation plan and milestones](docs/implementation-plan.md)
+Base resource mutations each run in one transaction. To-many replacement,
+addition, and removal can use explicitly configured join-table or nullable
+foreign-key handlers. A base create/update that includes to-many linkage is
+composed through those handlers in the same transaction. Atomic Operations
+execute the whole request in one transaction. `SharedAuthorization` lets one
+application policy serve HTTP reads, includes, ordinary mutations, and Atomic
+Operations; `AllOfAuthorizationPolicy` composes policies with an
+all-must-allow rule.
 
-The exact mapping and execution APIs remain open pending further adapter integration. M7 now has partial SQLite implementation evidence; PostgreSQL remains the first validated backend and cross-backend equivalence is incomplete. The design documents describe intent; implementation status and milestone evidence are recorded in the plan.
+Reusable limits cover include depth and breadth, filter complexity,
+relationship linkage size, Atomic batch size, and optional related-resource
+and include-query budgets. SeaORM include loaders can consume runtime budgets
+during expansion; other query adapters are checked against the returned include
+count. Pagination limits remain an explicit configuration. Application
+authorization is required for reads and writes;
+`RequestAuthorizer::authorize_mutation` denies unless the application allows
+the operation.
+
+## Scope
+
+This is not a claim of complete JSON:API 1.1 or Atomic Operations conformance.
+The [design documents](docs/design/) record supported behavior and known
+limits. Computed attributes are read-only and cannot be filtered or sorted.
+Association shapes outside the standard foreign-key and join-table mappings
+still use custom mappers or executors.

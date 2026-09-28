@@ -1,22 +1,23 @@
 //! Explicit public resource metadata, independent of persistence entities.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 use crate::document::is_valid_member_name;
 
 /// An explicitly declared public JSON:API resource type.
 ///
-/// The internal field names are opaque strings in this prototype. A later
-/// SeaORM mapping milestone will determine how these names resolve to entity
-/// columns and relations. Public fields cannot alias each other or the
-/// identifier's internal field in this initial registry.
+/// Public fields map explicitly to internal field names. SeaORM helpers can
+/// bind these names to typed columns, but the registry remains independent of
+/// the persistence entity. Public fields cannot alias each other or the
+/// identifier's internal field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceDefinition {
     type_name: String,
     identifier_field: String,
     attributes: Vec<AttributeMapping>,
     relationships: Vec<RelationshipMapping>,
+    permissions: BTreeSet<ResourcePermission>,
 }
 
 impl ResourceDefinition {
@@ -29,7 +30,37 @@ impl ResourceDefinition {
             identifier_field: identifier_field.into(),
             attributes: Vec::new(),
             relationships: Vec::new(),
+            permissions: BTreeSet::new(),
         }
+    }
+
+    /// Enables one resource-level operation. Registered resources are
+    /// exposed for reads; mutations, including Atomic Operations, are denied
+    /// until individually enabled here.
+    #[must_use]
+    pub fn allow(mut self, permission: ResourcePermission) -> Self {
+        self.permissions.insert(permission);
+        self
+    }
+
+    /// Returns whether the resource-level operation was explicitly enabled.
+    #[must_use]
+    pub fn allows(&self, permission: ResourcePermission) -> bool {
+        self.permissions.contains(&permission)
+    }
+
+    /// Adds an explicitly configured typed field mapping.
+    #[must_use]
+    pub fn mapped_attribute(mut self, mapping: AttributeMapping) -> Self {
+        self.attributes.push(mapping);
+        self
+    }
+
+    /// Adds an explicitly configured relationship mapping.
+    #[must_use]
+    pub fn mapped_relationship(mut self, mapping: RelationshipMapping) -> Self {
+        self.relationships.push(mapping);
+        self
     }
 
     /// Declares a public attribute and its internal field mapping.
@@ -40,16 +71,48 @@ impl ResourceDefinition {
         mut self,
         public_name: impl Into<String>,
         model_field: impl Into<String>,
-        filterable: bool,
-        sortable: bool,
     ) -> Self {
-        self.attributes.push(AttributeMapping {
-            public_name: public_name.into(),
-            model_field: model_field.into(),
-            filterable,
-            sortable,
-        });
+        self.attributes
+            .push(AttributeMapping::new(public_name, model_field));
         self
+    }
+
+    /// Declares a public attribute that can be filtered but not sorted.
+    #[must_use]
+    pub fn filterable_attribute(
+        self,
+        public_name: impl Into<String>,
+        model_field: impl Into<String>,
+    ) -> Self {
+        self.mapped_attribute(
+            AttributeMapping::new(public_name, model_field).allow(AttributePermission::Filter),
+        )
+    }
+
+    /// Declares a public attribute that can be sorted but not filtered.
+    #[must_use]
+    pub fn sortable_attribute(
+        self,
+        public_name: impl Into<String>,
+        model_field: impl Into<String>,
+    ) -> Self {
+        self.mapped_attribute(
+            AttributeMapping::new(public_name, model_field).allow(AttributePermission::Sort),
+        )
+    }
+
+    /// Declares a public attribute that can be filtered and sorted.
+    #[must_use]
+    pub fn filterable_and_sortable_attribute(
+        self,
+        public_name: impl Into<String>,
+        model_field: impl Into<String>,
+    ) -> Self {
+        self.mapped_attribute(
+            AttributeMapping::new(public_name, model_field)
+                .allow(AttributePermission::Filter)
+                .allow(AttributePermission::Sort),
+        )
     }
 
     /// Declares a public relationship and its internal field and target type.
@@ -112,6 +175,8 @@ impl ResourceDefinition {
             model_field,
             target_type,
             cardinality,
+            storage: RelationshipStorage::Custom,
+            permissions: BTreeSet::from([RelationshipPermission::Read]),
         });
         self
     }
@@ -196,8 +261,109 @@ impl ResourceDefinition {
                     relationship: relationship.public_name.clone(),
                 });
             }
+            let storage_error = match &relationship.storage {
+                RelationshipStorage::Custom => None,
+                RelationshipStorage::ToOneForeignKey { .. }
+                    if relationship.cardinality != Some(RelationshipCardinality::ToOne) =>
+                {
+                    Some("source-side foreign keys require to-one cardinality".to_owned())
+                }
+                RelationshipStorage::ToManyForeignKey { .. }
+                    if relationship.cardinality != Some(RelationshipCardinality::ToMany) =>
+                {
+                    Some("target-side foreign keys require to-many cardinality".to_owned())
+                }
+                RelationshipStorage::JoinTable { .. }
+                    if relationship.cardinality != Some(RelationshipCardinality::ToMany) =>
+                {
+                    Some("join tables require to-many cardinality".to_owned())
+                }
+                RelationshipStorage::ToManyForeignKey {
+                    foreign_key_field, ..
+                } if foreign_key_field.is_empty() => {
+                    Some("target foreign-key field must not be empty".to_owned())
+                }
+                RelationshipStorage::JoinTable {
+                    source_column,
+                    target_column,
+                } if source_column.is_empty()
+                    || target_column.is_empty()
+                    || source_column == target_column =>
+                {
+                    Some("join-table columns must be non-empty and distinct".to_owned())
+                }
+                _ => None,
+            };
+            if let Some(reason) = storage_error {
+                return Err(RegistryError::InvalidRelationshipStorage {
+                    resource_type: self.type_name.clone(),
+                    relationship: relationship.public_name.clone(),
+                    reason,
+                });
+            }
         }
         Ok(())
+    }
+}
+
+/// A resource-level operation permission.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ResourcePermission {
+    /// Create through ordinary JSON:API HTTP mutations.
+    Create,
+    /// Update through ordinary JSON:API HTTP mutations.
+    Update,
+    /// Delete through ordinary JSON:API HTTP mutations.
+    Delete,
+    /// Add a resource through Atomic Operations.
+    AtomicCreate,
+    /// Update a resource through Atomic Operations.
+    AtomicUpdate,
+    /// Remove a resource through Atomic Operations.
+    AtomicDelete,
+}
+
+/// A field-level permission for a public attribute.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum AttributePermission {
+    /// Return the attribute in a resource representation.
+    Read,
+    /// Allow this attribute in collection filters.
+    Filter,
+    /// Allow this attribute in collection sort expressions.
+    Sort,
+    /// Set this attribute through ordinary resource creation.
+    Create,
+    /// Change this attribute through ordinary resource updates.
+    Update,
+    /// Set this attribute through Atomic resource adds.
+    AtomicCreate,
+    /// Change this attribute through Atomic resource updates.
+    AtomicUpdate,
+}
+
+impl AttributeMapping {
+    /// Creates a read-only public attribute mapping.
+    #[must_use]
+    pub fn new(public_name: impl Into<String>, model_field: impl Into<String>) -> Self {
+        Self {
+            public_name: public_name.into(),
+            model_field: model_field.into(),
+            permissions: BTreeSet::from([AttributePermission::Read]),
+        }
+    }
+
+    /// Enables a named field capability.
+    #[must_use]
+    pub fn allow(mut self, permission: AttributePermission) -> Self {
+        self.permissions.insert(permission);
+        self
+    }
+
+    /// Returns whether a named field capability was explicitly enabled.
+    #[must_use]
+    pub fn allows(&self, permission: AttributePermission) -> bool {
+        self.permissions.contains(&permission)
     }
 }
 
@@ -206,8 +372,7 @@ impl ResourceDefinition {
 pub struct AttributeMapping {
     public_name: String,
     model_field: String,
-    filterable: bool,
-    sortable: bool,
+    permissions: BTreeSet<AttributePermission>,
 }
 
 impl AttributeMapping {
@@ -225,14 +390,14 @@ impl AttributeMapping {
 
     /// Returns whether filtering is explicitly enabled for this attribute.
     #[must_use]
-    pub const fn is_filterable(&self) -> bool {
-        self.filterable
+    pub fn is_filterable(&self) -> bool {
+        self.permissions.contains(&AttributePermission::Filter)
     }
 
     /// Returns whether sorting is explicitly enabled for this attribute.
     #[must_use]
-    pub const fn is_sortable(&self) -> bool {
-        self.sortable
+    pub fn is_sortable(&self) -> bool {
+        self.permissions.contains(&AttributePermission::Sort)
     }
 }
 
@@ -243,6 +408,170 @@ pub struct RelationshipMapping {
     model_field: String,
     target_type: String,
     cardinality: Option<RelationshipCardinality>,
+    storage: RelationshipStorage,
+    permissions: BTreeSet<RelationshipPermission>,
+}
+
+/// Persistence shape declared for a relationship.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RelationshipStorage {
+    /// A foreign key on this resource points to the related resource.
+    ToOneForeignKey {
+        /// Whether the foreign key may contain SQL `NULL`.
+        nullable: bool,
+    },
+    /// A foreign key on each related resource points back to this resource.
+    ToManyForeignKey {
+        /// The foreign-key column on the related resource.
+        foreign_key_field: String,
+        /// Whether the related foreign key may contain SQL `NULL`.
+        nullable: bool,
+        /// How adding a member already owned by another resource is handled.
+        reassignment: RelationshipReassignment,
+    },
+    /// A two-column join table connects this resource and the related resource.
+    JoinTable {
+        /// The join-table column containing this resource's identifier.
+        source_column: String,
+        /// The join-table column containing the related resource's identifier.
+        target_column: String,
+    },
+    /// Persistence is application-defined and requires a custom executor.
+    Custom,
+}
+
+/// Reassignment policy for a to-many foreign-key relationship.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelationshipReassignment {
+    /// Reject adding a resource currently owned by a different source.
+    Deny,
+    /// Move a resource from its current source to the requested source.
+    Transfer,
+}
+
+/// A relationship-level permission. Linkage reads and include traversal are
+/// independent, as are ordinary and Atomic relationship writes.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RelationshipPermission {
+    /// Return this relationship's linkage in resource representations.
+    Read,
+    /// Load this relationship through an `include` query.
+    Include,
+    /// Fetch linkage from the relationship endpoint.
+    LinkageRead,
+    /// Replace linkage through a base HTTP PATCH.
+    BaseReplace,
+    /// Add members through a base HTTP POST.
+    BaseAdd,
+    /// Remove members through a base HTTP DELETE.
+    BaseRemove,
+    /// Replace linkage through an Atomic update.
+    AtomicReplace,
+    /// Add members through an Atomic add.
+    AtomicAdd,
+    /// Remove members through an Atomic remove.
+    AtomicRemove,
+    /// Change linkage as part of a base resource POST.
+    ResourceCreate,
+    /// Change linkage as part of a base resource PATCH.
+    ResourceUpdate,
+    /// Change linkage as part of an Atomic resource add.
+    AtomicResourceCreate,
+    /// Change linkage as part of an Atomic resource update.
+    AtomicResourceUpdate,
+}
+
+impl RelationshipMapping {
+    /// Creates a relationship mapping with no include or write access.
+    #[must_use]
+    pub fn new(
+        public_name: impl Into<String>,
+        model_field: impl Into<String>,
+        target_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            public_name: public_name.into(),
+            model_field: model_field.into(),
+            target_type: target_type.into(),
+            cardinality: None,
+            storage: RelationshipStorage::Custom,
+            permissions: BTreeSet::from([RelationshipPermission::Read]),
+        }
+    }
+
+    /// Declares to-one linkage cardinality.
+    #[must_use]
+    pub fn to_one(mut self) -> Self {
+        self.cardinality = Some(RelationshipCardinality::ToOne);
+        self
+    }
+
+    /// Declares a source-side foreign key and its SQL nullability.
+    #[must_use]
+    pub fn to_one_foreign_key(mut self, nullable: bool) -> Self {
+        self.cardinality = Some(RelationshipCardinality::ToOne);
+        self.storage = RelationshipStorage::ToOneForeignKey { nullable };
+        self
+    }
+
+    /// Declares to-many linkage cardinality.
+    #[must_use]
+    pub fn to_many(mut self) -> Self {
+        self.cardinality = Some(RelationshipCardinality::ToMany);
+        self
+    }
+
+    /// Declares a target-side foreign key for a to-many relationship.
+    #[must_use]
+    pub fn to_many_foreign_key(
+        mut self,
+        foreign_key_field: impl Into<String>,
+        nullable: bool,
+        reassignment: RelationshipReassignment,
+    ) -> Self {
+        self.cardinality = Some(RelationshipCardinality::ToMany);
+        self.storage = RelationshipStorage::ToManyForeignKey {
+            foreign_key_field: foreign_key_field.into(),
+            nullable,
+            reassignment,
+        };
+        self
+    }
+
+    /// Declares a two-column join-table mapping for a to-many relationship.
+    #[must_use]
+    pub fn to_many_join_table(
+        mut self,
+        source_column: impl Into<String>,
+        target_column: impl Into<String>,
+    ) -> Self {
+        self.cardinality = Some(RelationshipCardinality::ToMany);
+        self.storage = RelationshipStorage::JoinTable {
+            source_column: source_column.into(),
+            target_column: target_column.into(),
+        };
+        self
+    }
+
+    /// Enables a named relationship capability.
+    #[must_use]
+    pub fn allow(mut self, permission: RelationshipPermission) -> Self {
+        self.permissions.insert(permission);
+        self
+    }
+
+    /// Removes a named relationship capability.
+    #[must_use]
+    pub fn disallow(mut self, permission: RelationshipPermission) -> Self {
+        self.permissions.remove(&permission);
+        self
+    }
+
+    /// Returns whether a named relationship capability was explicitly enabled.
+    #[must_use]
+    pub fn allows(&self, permission: RelationshipPermission) -> bool {
+        self.permissions.contains(&permission)
+    }
 }
 
 impl RelationshipMapping {
@@ -268,6 +597,12 @@ impl RelationshipMapping {
     #[must_use]
     pub const fn cardinality(&self) -> Option<RelationshipCardinality> {
         self.cardinality
+    }
+
+    /// Returns the declared persistence shape.
+    #[must_use]
+    pub fn storage(&self) -> &RelationshipStorage {
+        &self.storage
     }
 }
 
@@ -336,6 +671,11 @@ impl ResourceRegistry {
             .ok_or_else(|| RegistryError::UnknownResourceType(type_name.to_owned()))
     }
 
+    /// Iterates over explicitly registered resource definitions.
+    pub fn resources(&self) -> impl Iterator<Item = &ResourceDefinition> {
+        self.resources.values()
+    }
+
     /// Looks up an explicitly registered public attribute.
     ///
     /// # Errors
@@ -366,7 +706,7 @@ impl ResourceRegistry {
         public_name: &str,
     ) -> Result<&AttributeMapping, RegistryError> {
         let attribute = self.attribute(type_name, public_name)?;
-        if !attribute.filterable {
+        if !attribute.allows(AttributePermission::Filter) {
             return Err(RegistryError::AttributeNotFilterable {
                 resource_type: type_name.to_owned(),
                 field_name: public_name.to_owned(),
@@ -387,7 +727,7 @@ impl ResourceRegistry {
         public_name: &str,
     ) -> Result<&AttributeMapping, RegistryError> {
         let attribute = self.attribute(type_name, public_name)?;
-        if !attribute.sortable {
+        if !attribute.allows(AttributePermission::Sort) {
             return Err(RegistryError::AttributeNotSortable {
                 resource_type: type_name.to_owned(),
                 field_name: public_name.to_owned(),
@@ -473,6 +813,15 @@ pub enum RegistryError {
         resource_type: String,
         /// The relationship name.
         relationship: String,
+    },
+    /// A relationship storage declaration conflicts with its cardinality or fields.
+    InvalidRelationshipStorage {
+        /// The public resource type.
+        resource_type: String,
+        /// The relationship name.
+        relationship: String,
+        /// The invalid storage detail.
+        reason: String,
     },
     /// A public resource type is declared more than once.
     DuplicateResourceType(String),
@@ -571,6 +920,14 @@ impl fmt::Display for RegistryError {
             } => write!(
                 formatter,
                 "relationship `{relationship}` on resource `{resource_type}` has an empty target"
+            ),
+            Self::InvalidRelationshipStorage {
+                resource_type,
+                relationship,
+                reason,
+            } => write!(
+                formatter,
+                "relationship `{relationship}` on resource `{resource_type}` has invalid storage: {reason}"
             ),
             Self::DuplicateResourceType(type_name) => {
                 write!(formatter, "resource type `{type_name}` is duplicated")

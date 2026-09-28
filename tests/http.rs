@@ -16,11 +16,13 @@ use seamark::http::{
     QueryCollectionResult, QueryResourceAdapter, QueryResourceResult, RelationshipMutation,
     RequestAuthorizer, ResourceAdapter, ResourceMutationChangeset,
 };
+use seamark::limits::ExecutionLimits;
 use seamark::query::{
     FilterExpression, FilterValue, PaginationConfig, PlannedField, ReadPlan, SortDirection,
 };
 use seamark::registry::{
-    RelationshipCardinality, RelationshipMapping, ResourceDefinition, ResourceRegistry,
+    AttributeMapping, AttributePermission, RelationshipCardinality, RelationshipMapping,
+    RelationshipPermission, ResourceDefinition, ResourcePermission, ResourceRegistry,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -282,6 +284,18 @@ impl RequestAuthorizer for TestAuthorizer {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.allowed
     }
+
+    async fn authorize_mutation(
+        &self,
+        _action: seamark::http::MutationAction,
+        _resource: &ResourceDefinition,
+        _resource_id: Option<&str>,
+        _command: &MutationCommand,
+        _headers: &axum::http::HeaderMap,
+    ) -> bool {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.allowed
+    }
 }
 
 fn port_record() -> AdapterResource {
@@ -326,10 +340,9 @@ fn port_record_without_owner() -> AdapterResource {
 
 fn test_app(adapter: Arc<TestAdapter>, allowed: bool) -> (Router, Arc<TestAuthorizer>) {
     let ports = ResourceDefinition::new("ports", "port_key")
-        .attribute("name", "title", true, true)
+        .filterable_and_sortable_attribute("name", "title")
         .relationship("owner", "owner", "people");
-    let people =
-        ResourceDefinition::new("people", "id").attribute("name", "full_name", false, false);
+    let people = ResourceDefinition::new("people", "id").attribute("name", "full_name");
     let registry = Arc::new(ResourceRegistry::new([ports, people]).unwrap());
     let authorizer = Arc::new(TestAuthorizer {
         allowed,
@@ -347,11 +360,13 @@ fn query_test_app(
     allowed: bool,
 ) -> (Router, Arc<TestAuthorizer>) {
     let ports = ResourceDefinition::new("ports", "port_key")
-        .attribute("name", "title", true, true)
-        .attribute("depth", "depth_m", false, true)
-        .relationship("owner", "owner", "people");
-    let people =
-        ResourceDefinition::new("people", "id").attribute("name", "full_name", false, false);
+        .filterable_and_sortable_attribute("name", "title")
+        .sortable_attribute("depth", "depth_m")
+        .mapped_relationship(
+            RelationshipMapping::new("owner", "owner", "people")
+                .allow(RelationshipPermission::Include),
+        );
+    let people = ResourceDefinition::new("people", "id").attribute("name", "full_name");
     let registry = Arc::new(ResourceRegistry::new([ports, people]).unwrap());
     let authorizer = Arc::new(TestAuthorizer {
         allowed,
@@ -373,9 +388,31 @@ fn query_test_app(
 
 fn mutation_test_app(allowed: bool) -> (Router, Arc<TestMutationAdapter>, Arc<TestAuthorizer>) {
     let ports = ResourceDefinition::new("ports", "port_id")
-        .attribute("name", "title", false, false)
-        .to_one_relationship("owner", "owner_id", "people")
-        .to_many_relationship("tags", "tag_links", "tags");
+        .allow(ResourcePermission::Create)
+        .allow(ResourcePermission::Update)
+        .allow(ResourcePermission::Delete)
+        .mapped_attribute(
+            AttributeMapping::new("name", "title")
+                .allow(AttributePermission::Create)
+                .allow(AttributePermission::Update),
+        )
+        .mapped_relationship(
+            RelationshipMapping::new("owner", "owner_id", "people")
+                .to_one()
+                .allow(RelationshipPermission::ResourceCreate)
+                .allow(RelationshipPermission::ResourceUpdate)
+                .allow(RelationshipPermission::BaseReplace),
+        )
+        .mapped_relationship(
+            RelationshipMapping::new("tags", "tag_links", "tags")
+                .to_many()
+                .allow(RelationshipPermission::LinkageRead)
+                .allow(RelationshipPermission::ResourceCreate)
+                .allow(RelationshipPermission::ResourceUpdate)
+                .allow(RelationshipPermission::BaseReplace)
+                .allow(RelationshipPermission::BaseAdd)
+                .allow(RelationshipPermission::BaseRemove),
+        );
     let people = ResourceDefinition::new("people", "person_id");
     let tags = ResourceDefinition::new("tags", "tag_id");
     let registry = Arc::new(ResourceRegistry::new([ports, people, tags]).unwrap());
@@ -613,6 +650,92 @@ async fn relationship_linkage_routes_read_replace_add_and_remove() {
             }
         ]
     ));
+}
+
+#[tokio::test]
+async fn api_builder_limits_reject_expensive_queries_before_authorization_or_execution() {
+    let ports = ResourceDefinition::new("ports", "port_key")
+        .filterable_and_sortable_attribute("name", "title");
+    let registry = Arc::new(ResourceRegistry::new([ports]).unwrap());
+    let adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let authorizer = Arc::new(TestAuthorizer {
+        allowed: true,
+        calls: AtomicUsize::new(0),
+    });
+    let pagination = PaginationConfig::new(1, 10, Some(100), Some(1000)).unwrap();
+    let app = http::ApiBuilder::new(registry, authorizer.clone())
+        .queries(adapter.clone(), pagination)
+        .limits(ExecutionLimits::new().max_filter_nodes(1))
+        .build();
+    let response = app
+        .oneshot(read_request(
+            "/ports?filter=and(equals(name,'a'),equals(name,'b'))",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn include_requires_separate_permission_and_is_denied_before_query_execution() {
+    let ports = ResourceDefinition::new("ports", "port_key")
+        .attribute("name", "title")
+        .relationship("owner", "owner", "people");
+    let people = ResourceDefinition::new("people", "id");
+    let registry = Arc::new(ResourceRegistry::new([ports, people]).unwrap());
+    let adapter = Arc::new(TestQueryAdapter {
+        plans: Arc::new(Mutex::new(Vec::new())),
+        calls: AtomicUsize::new(0),
+    });
+    let authorizer = Arc::new(TestAuthorizer {
+        allowed: true,
+        calls: AtomicUsize::new(0),
+    });
+    let pagination = PaginationConfig::new(1, 10, Some(100), Some(1000)).unwrap();
+    let app = http::ApiBuilder::new(registry, authorizer.clone())
+        .queries(adapter.clone(), pagination)
+        .build();
+    let response = app
+        .oneshot(read_request("/ports?include=owner"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn base_mutations_are_denied_when_resource_write_capabilities_are_disabled() {
+    let registry = Arc::new(
+        ResourceRegistry::new([
+            ResourceDefinition::new("ports", "port_id").attribute("name", "title")
+        ])
+        .unwrap(),
+    );
+    let adapter = Arc::new(TestMutationAdapter::default());
+    let authorizer = Arc::new(TestAuthorizer {
+        allowed: true,
+        calls: AtomicUsize::new(0),
+    });
+    let app = http::ApiBuilder::new(registry, authorizer.clone())
+        .mutations(adapter.clone())
+        .build();
+    let response = app
+        .oneshot(mutation_request(
+            "POST",
+            "/ports",
+            r#"{"data":{"type":"ports","attributes":{"name":"Denied"}}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(adapter.commands.lock().unwrap().is_empty());
+    assert_eq!(authorizer.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

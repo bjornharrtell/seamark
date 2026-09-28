@@ -16,7 +16,10 @@ use seamark::atomic::{
 };
 use seamark::atomic_http;
 use seamark::document::ResourceIdentifier;
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
+    ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -456,10 +459,10 @@ impl AtomicOperationHandler for TestHandler {
 fn registry() -> Arc<ResourceRegistry> {
     Arc::new(
         ResourceRegistry::new([
-            ResourceDefinition::new("authors", "id").attribute("name", "name", false, false),
-            ResourceDefinition::new("articles", "id")
-                .attribute("title", "title", false, false)
-                .relationship("author", "author_id", "authors"),
+            atomic_resource("authors", "id").mapped_attribute(atomic_attribute("name", "name")),
+            atomic_resource("articles", "id")
+                .mapped_attribute(atomic_attribute("title", "title"))
+                .mapped_relationship(atomic_relationship("author", "author_id", "authors", true)),
         ])
         .unwrap(),
     )
@@ -467,9 +470,9 @@ fn registry() -> Arc<ResourceRegistry> {
 
 fn update_result_registry() -> Arc<ResourceRegistry> {
     Arc::new(
-        ResourceRegistry::new([ResourceDefinition::new("authors", "id")
-            .attribute("name", "name", false, false)
-            .attribute("revision", "revision", false, false)])
+        ResourceRegistry::new([atomic_resource("authors", "id")
+            .mapped_attribute(atomic_attribute("name", "name"))
+            .mapped_attribute(atomic_attribute("revision", "revision"))])
         .unwrap(),
     )
 }
@@ -477,11 +480,44 @@ fn update_result_registry() -> Arc<ResourceRegistry> {
 fn relationship_add_registry() -> Arc<ResourceRegistry> {
     Arc::new(
         ResourceRegistry::new([
-            ResourceDefinition::new("articles", "id").relationship("tags", "tag_ids", "tags"),
-            ResourceDefinition::new("tags", "id"),
+            atomic_resource("articles", "id")
+                .mapped_relationship(atomic_relationship("tags", "tag_ids", "tags", false)),
+            atomic_resource("tags", "id"),
         ])
         .unwrap(),
     )
+}
+
+fn atomic_resource(type_name: &str, identifier: &str) -> ResourceDefinition {
+    ResourceDefinition::new(type_name, identifier)
+        .allow(ResourcePermission::AtomicCreate)
+        .allow(ResourcePermission::AtomicUpdate)
+        .allow(ResourcePermission::AtomicDelete)
+}
+
+fn atomic_attribute(public_name: &str, model_field: &str) -> AttributeMapping {
+    AttributeMapping::new(public_name, model_field)
+        .allow(AttributePermission::AtomicCreate)
+        .allow(AttributePermission::AtomicUpdate)
+}
+
+fn atomic_relationship(
+    public_name: &str,
+    model_field: &str,
+    target_type: &str,
+    to_one: bool,
+) -> RelationshipMapping {
+    let mapping = RelationshipMapping::new(public_name, model_field, target_type)
+        .allow(RelationshipPermission::AtomicResourceCreate)
+        .allow(RelationshipPermission::AtomicResourceUpdate)
+        .allow(RelationshipPermission::AtomicReplace)
+        .allow(RelationshipPermission::AtomicAdd)
+        .allow(RelationshipPermission::AtomicRemove);
+    if to_one {
+        mapping.to_one()
+    } else {
+        mapping.to_many()
+    }
 }
 
 async fn database() -> DatabaseConnection {
@@ -1265,11 +1301,11 @@ async fn atomic_http_rejects_invalid_reference_identity_combinations() {
 async fn atomic_http_rejects_relationship_cardinality_mismatch_before_authorization() {
     let database = database().await;
     let registry = ResourceRegistry::new([
-        ResourceDefinition::new("authors", "author_id"),
-        ResourceDefinition::new("articles", "article_id")
-            .to_one_relationship("author", "author_id", "authors")
-            .to_many_relationship("tags", "tag_ids", "tags"),
-        ResourceDefinition::new("tags", "tag_id"),
+        atomic_resource("authors", "author_id"),
+        atomic_resource("articles", "article_id")
+            .mapped_relationship(atomic_relationship("author", "author_id", "authors", true))
+            .mapped_relationship(atomic_relationship("tags", "tag_ids", "tags", false)),
+        atomic_resource("tags", "tag_id"),
     ])
     .unwrap();
     let guard = Arc::new(CountingGuard {
@@ -2454,7 +2490,7 @@ async fn deferred_constraint_commit_failure_returns_server_error_and_rolls_back_
 
     for table in [&parent_table, &child_table] {
         let row = database
-            .query_one(Statement::from_string(
+            .query_one_raw(Statement::from_string(
                 DatabaseBackend::Postgres,
                 format!("SELECT COUNT(*) AS count FROM {table}"),
             ))

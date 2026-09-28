@@ -25,8 +25,8 @@ use seamark::document::ResourceIdentifier;
 use seamark::registry::{ResourceDefinition, ResourceRegistry};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
-    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
-    SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
+    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmResourceMutationHandler,
+    SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
 use tower::ServiceExt;
@@ -168,14 +168,30 @@ impl AtomicOperationsGuard for TestGuard {
 
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
-        ResourceDefinition::new("authors", "author_id")
-            .attribute("name", "name", false, false)
-            .relationship("articles", "article_links", "articles"),
-        ResourceDefinition::new("articles", "article_id")
-            .attribute("title", "title", false, false)
-            .relationship("author", "author_id", "authors")
-            .relationship("tags", "tag_links", "tags"),
-        ResourceDefinition::new("tags", "tag_id").attribute("name", "name", false, false),
+        atomic_cases::enabled_resource("authors", "author_id")
+            .mapped_attribute(atomic_cases::enabled_attribute("name", "name"))
+            .mapped_relationship(
+                atomic_cases::enabled_relationship("articles", "article_links", "articles", false)
+                    .to_many_foreign_key(
+                        "author_id",
+                        true,
+                        seamark::registry::RelationshipReassignment::Deny,
+                    ),
+            ),
+        atomic_cases::enabled_resource("articles", "article_id")
+            .mapped_attribute(atomic_cases::enabled_attribute("title", "title"))
+            .mapped_relationship(atomic_cases::enabled_relationship(
+                "author",
+                "author_id",
+                "authors",
+                true,
+            ))
+            .mapped_relationship(
+                atomic_cases::enabled_relationship("tags", "tag_links", "tags", false)
+                    .to_many_join_table("article_id", "tag_id"),
+            ),
+        atomic_cases::enabled_resource("tags", "tag_id")
+            .mapped_attribute(atomic_cases::enabled_attribute("name", "name")),
     ])
     .unwrap()
 }
@@ -321,10 +337,7 @@ async fn create_tables(database: &DatabaseConnection) {
         schema.create_table_from_entity(tag::Entity),
         schema.create_table_from_entity(article_tag::Entity),
     ] {
-        database
-            .execute(database.get_database_backend().build(&statement))
-            .await
-            .unwrap();
+        database.execute(&statement).await.unwrap();
     }
 }
 
@@ -775,7 +788,7 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
         &document(json!({
             "atomic:operations": [
                 {"op": "add", "data": {"type": "articles", "lid": "article", "attributes": {"title": "X"}}},
-                {"op": "add", "ref": {"type": "articles", "lid": "article", "relationship": "author"}, "data": [{"type": "authors", "id": "1"}]}
+                {"op": "add", "ref": {"type": "articles", "lid": "article", "relationship": "tags"}, "data": [{"type": "tags", "id": "1"}]}
             ]
         })),
     )
@@ -783,8 +796,8 @@ fn typed_executor_declines_to_many_relationships_for_application_dispatch() {
     assert!(matches!(
         &operations[1].operation,
         PlannedOperation::AddRelationshipMembers { model_field, data, .. }
-            if model_field == "author_id" && data == &[ResourceIdentifier {
-                type_name: "authors".to_owned(),
+            if model_field == "tag_links" && data == &[ResourceIdentifier {
+                type_name: "tags".to_owned(),
                 id: Some("1".to_owned()),
                 ..ResourceIdentifier::default()
             }]
@@ -799,7 +812,6 @@ fn nullable_foreign_key_executor_supports_add_remove_and_replacement() {
         &registry,
         "authors",
         "articles",
-        "author_id",
         MutationCodec,
     )
     .unwrap();
@@ -833,20 +845,20 @@ fn nullable_foreign_key_executor_supports_add_remove_and_replacement() {
 }
 
 #[test]
-fn join_table_handler_rejects_reused_source_and_target_columns() {
-    let registry = registry();
-    let error = match SeaOrmJoinTableMutationHandler::<article_tag::Entity, _>::new(
-        &registry,
-        "articles",
-        "tags",
-        "article_id",
-        "article_id",
-        MutationCodec,
-    ) {
-        Ok(_) => panic!("a join table must use distinct source and target columns"),
-        Err(error) => error,
-    };
-    assert!(error.contains("must be different"));
+fn registry_rejects_reused_join_table_columns() {
+    let error = ResourceRegistry::new([
+        ResourceDefinition::new("articles", "article_id").mapped_relationship(
+            atomic_cases::enabled_relationship("tags", "tag_links", "tags", false)
+                .to_many_join_table("article_id", "article_id"),
+        ),
+        ResourceDefinition::new("tags", "tag_id"),
+    ])
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("join-table columns must be non-empty and distinct")
+    );
 }
 
 #[tokio::test]

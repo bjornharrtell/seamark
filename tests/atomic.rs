@@ -12,18 +12,53 @@ use seamark::atomic::{
     execute_atomic_operations, plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
 use seamark::document::{RelationshipData, ResourceIdentifier};
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
+    ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use serde_json::{Value, json};
 
 fn registry() -> ResourceRegistry {
     let authors =
-        ResourceDefinition::new("authors", "author_id").attribute("name", "name", false, false);
-    let articles = ResourceDefinition::new("articles", "article_id")
-        .attribute("title", "title", false, false)
-        .relationship("author", "author_id", "authors")
-        .relationship("tags", "tag_ids", "tags");
-    let tags = ResourceDefinition::new("tags", "tag_id").attribute("name", "name", false, false);
+        atomic_resource("authors", "author_id").mapped_attribute(atomic_attribute("name", "name"));
+    let articles = atomic_resource("articles", "article_id")
+        .mapped_attribute(atomic_attribute("title", "title"))
+        .mapped_relationship(atomic_relationship("author", "author_id", "authors", true))
+        .mapped_relationship(atomic_relationship("tags", "tag_ids", "tags", false));
+    let tags = atomic_resource("tags", "tag_id").mapped_attribute(atomic_attribute("name", "name"));
     ResourceRegistry::new([authors, articles, tags]).unwrap()
+}
+
+fn atomic_resource(type_name: &str, identifier: &str) -> ResourceDefinition {
+    ResourceDefinition::new(type_name, identifier)
+        .allow(ResourcePermission::AtomicCreate)
+        .allow(ResourcePermission::AtomicUpdate)
+        .allow(ResourcePermission::AtomicDelete)
+}
+
+fn atomic_attribute(public_name: &str, model_field: &str) -> AttributeMapping {
+    AttributeMapping::new(public_name, model_field)
+        .allow(AttributePermission::AtomicCreate)
+        .allow(AttributePermission::AtomicUpdate)
+}
+
+fn atomic_relationship(
+    public_name: &str,
+    model_field: &str,
+    target_type: &str,
+    to_one: bool,
+) -> RelationshipMapping {
+    let mapping = RelationshipMapping::new(public_name, model_field, target_type)
+        .allow(RelationshipPermission::AtomicResourceCreate)
+        .allow(RelationshipPermission::AtomicResourceUpdate)
+        .allow(RelationshipPermission::AtomicReplace)
+        .allow(RelationshipPermission::AtomicAdd)
+        .allow(RelationshipPermission::AtomicRemove);
+    if to_one {
+        mapping.to_one()
+    } else {
+        mapping.to_many()
+    }
 }
 
 fn document(value: Value) -> AtomicOperationsDocument {
@@ -141,6 +176,25 @@ fn plans_ordered_resource_and_relationship_operations_with_local_ids() {
     assert!(matches!(
         planned[6].operation,
         PlannedOperation::RemoveResource { .. }
+    ));
+}
+
+#[test]
+fn atomic_writes_require_separate_resource_field_and_relationship_permissions() {
+    let registry = ResourceRegistry::new([
+        ResourceDefinition::new("authors", "author_id").attribute("name", "name")
+    ])
+    .unwrap();
+    let request = document(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "data": {"type": "authors", "attributes": {"name": "Ada"}}
+        }]
+    }));
+    let error = plan_atomic_operations(&registry, &request).unwrap_err();
+    assert!(matches!(
+        error,
+        AtomicOperationsError::Forbidden { index: 0, .. }
     ));
 }
 
@@ -1077,11 +1131,11 @@ fn validates_operation_specific_request_data_shapes() {
 #[test]
 fn atomic_relationship_data_must_match_registered_cardinality() {
     let registry = ResourceRegistry::new([
-        ResourceDefinition::new("authors", "author_id"),
-        ResourceDefinition::new("articles", "article_id")
-            .to_one_relationship("author", "author_id", "authors")
-            .to_many_relationship("tags", "tag_ids", "tags"),
-        ResourceDefinition::new("tags", "tag_id"),
+        atomic_resource("authors", "author_id"),
+        atomic_resource("articles", "article_id")
+            .mapped_relationship(atomic_relationship("author", "author_id", "authors", true))
+            .mapped_relationship(atomic_relationship("tags", "tag_ids", "tags", false)),
+        atomic_resource("tags", "tag_id"),
     ])
     .unwrap();
 
@@ -1468,10 +1522,8 @@ fn local_ids_must_come_from_a_preceding_resource_add() {
 
 #[test]
 fn rejects_local_ids_referenced_by_their_own_add_operation() {
-    let categories = ResourceDefinition::new("categories", "category_id").relationship(
-        "parent",
-        "parent_id",
-        "categories",
+    let categories = atomic_resource("categories", "category_id").mapped_relationship(
+        atomic_relationship("parent", "parent_id", "categories", true),
     );
     let registry = ResourceRegistry::new([categories]).unwrap();
     let request = document(json!({
@@ -1622,7 +1674,7 @@ impl AtomicOperationHandler for LogHandler {
                     _ => return Err("unexpected resource type".to_owned()),
                 };
                 transaction
-                    .execute(Statement::from_sql_and_values(
+                    .execute_raw(Statement::from_sql_and_values(
                         DbBackend::Postgres,
                         "INSERT INTO seamark_atomic_log (event, related_id) VALUES ($1, $2)",
                         [event.into(), related_id.into()],
@@ -1723,7 +1775,7 @@ async fn rolls_back_add_when_result_identity_disagrees_with_local_id_mapping() {
         Err(AtomicExecutionError::InvalidResult { index: 0, .. })
     ));
     let count = database
-        .query_one(Statement::from_string(
+        .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
             "SELECT COUNT(*) AS count FROM seamark_atomic_mismatched_local_id_log",
         ))
@@ -1774,7 +1826,7 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
     assert_eq!(results.len(), 2);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 2);
     let rows = database
-        .query_all(Statement::from_string(
+        .query_all_raw(Statement::from_string(
             DbBackend::Postgres,
             "SELECT event, related_id FROM seamark_atomic_log ORDER BY id",
         ))
@@ -1817,7 +1869,7 @@ async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
         Err(AtomicExecutionError::Operation { index: 1, .. })
     ));
     let count = database
-        .query_one(Statement::from_string(
+        .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
             "SELECT COUNT(*) AS count FROM seamark_atomic_log",
         ))

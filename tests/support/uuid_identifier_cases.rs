@@ -13,7 +13,9 @@ use seamark::atomic::{
 };
 use seamark::http::AdapterResource;
 use seamark::query::{PaginationConfig, ReadQuery, plan_read, plan_resource_read};
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use seamark::seaorm::{
     SeaOrmFilterValueCodec, SeaOrmMutationValueCodec, SeaOrmQueryExecutor, SeaOrmReadGuard,
 };
@@ -57,7 +59,7 @@ fn parse_uuid(value: &str) -> Result<Uuid, String> {
 impl SeaOrmFilterValueCodec for UuidCodec {
     fn encode_filter_value(&self, model_field: &str, value: &str) -> Result<Value, String> {
         match model_field {
-            "lookup_key" => parse_uuid(value).map(|value| Value::Uuid(Some(Box::new(value)))),
+            "lookup_key" => parse_uuid(value).map(|value| Value::Uuid(Some(value))),
             _ => Err(format!(
                 "unsupported filter value `{value}` for `{model_field}`"
             )),
@@ -66,7 +68,7 @@ impl SeaOrmFilterValueCodec for UuidCodec {
 
     fn encode_resource_identifier(&self, model_field: &str, value: &str) -> Result<Value, String> {
         match model_field {
-            "record_id" => parse_uuid(value).map(|value| Value::Uuid(Some(Box::new(value)))),
+            "record_id" => parse_uuid(value).map(|value| Value::Uuid(Some(value))),
             _ => Err(format!(
                 "unsupported resource identifier `{value}` for `{model_field}`"
             )),
@@ -78,7 +80,7 @@ impl SeaOrmMutationValueCodec for UuidCodec {
     fn encode_mutation_value(&self, model_field: &str, value: &JsonValue) -> Result<Value, String> {
         match (model_field, value) {
             ("record_id" | "lookup_key", JsonValue::String(value)) => {
-                parse_uuid(value).map(|value| Value::Uuid(Some(Box::new(value))))
+                parse_uuid(value).map(|value| Value::Uuid(Some(value)))
             }
             ("label", JsonValue::String(value)) => Ok(Value::from(value.clone())),
             _ => Err(format!(
@@ -129,8 +131,20 @@ impl AtomicOperationsGuard for AllowOperations {
 
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([ResourceDefinition::new("records", "record_id")
-        .attribute("lookup_key", "lookup_key", true, false)
-        .attribute("label", "label", false, false)])
+        .allow(ResourcePermission::AtomicCreate)
+        .allow(ResourcePermission::AtomicUpdate)
+        .allow(ResourcePermission::AtomicDelete)
+        .mapped_attribute(
+            AttributeMapping::new("lookup_key", "lookup_key")
+                .allow(AttributePermission::Filter)
+                .allow(AttributePermission::AtomicCreate)
+                .allow(AttributePermission::AtomicUpdate),
+        )
+        .mapped_attribute(
+            AttributeMapping::new("label", "label")
+                .allow(AttributePermission::AtomicCreate)
+                .allow(AttributePermission::AtomicUpdate),
+        )])
     .unwrap()
 }
 
@@ -178,7 +192,7 @@ pub async fn run(database: &DatabaseConnection) {
         .unwrap();
     let schema = Schema::new(backend);
     database
-        .execute(backend.build(&schema.create_table_from_entity(record::Entity)))
+        .execute(&schema.create_table_from_entity(record::Entity))
         .await
         .unwrap();
 

@@ -15,7 +15,10 @@ use crate::document::{
     deserialize_metadata, deserialize_relationships, is_at_member, is_valid_uri_reference,
     validate_links,
 };
-use crate::registry::{RelationshipCardinality, ResourceRegistry};
+use crate::registry::{
+    AttributePermission, RelationshipCardinality, RelationshipPermission, ResourcePermission,
+    ResourceRegistry,
+};
 
 /// The extension URI required for JSON:API Atomic Operations.
 pub const ATOMIC_OPERATIONS_EXTENSION: &str = "https://jsonapi.org/ext/atomic";
@@ -708,6 +711,15 @@ pub enum AtomicOperationsError {
         /// A concise validation explanation.
         message: String,
     },
+    /// An operation targets a capability that is not enabled by the registry.
+    Forbidden {
+        /// Zero-based operation index.
+        index: usize,
+        /// A JSON Pointer into the operations document.
+        pointer: String,
+        /// A concise permission explanation.
+        message: String,
+    },
 }
 
 impl fmt::Display for AtomicOperationsError {
@@ -734,6 +746,14 @@ impl fmt::Display for AtomicOperationsError {
             } => write!(
                 formatter,
                 "invalid operation {index} at `{pointer}`: {message}"
+            ),
+            Self::Forbidden {
+                index,
+                pointer,
+                message,
+            } => write!(
+                formatter,
+                "operation {index} is forbidden at `{pointer}`: {message}"
             ),
         }
     }
@@ -860,6 +880,12 @@ fn plan_atomic_operations_inner(
                     let target = registry
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
+                    require_relationship_permission(
+                        target,
+                        RelationshipPermission::AtomicAdd,
+                        index,
+                        &format!("{path}/ref/relationship"),
+                    )?;
                     validate_declared_cardinality(
                         target.cardinality(),
                         RelationshipCardinality::ToMany,
@@ -929,6 +955,12 @@ fn plan_atomic_operations_inner(
                     let target = registry
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
+                    require_relationship_permission(
+                        target,
+                        RelationshipPermission::AtomicReplace,
+                        index,
+                        &format!("{path}/ref/relationship"),
+                    )?;
                     let model_field = target.model_field().to_owned();
                     validate_relationship_cardinality(
                         target.cardinality(),
@@ -996,6 +1028,12 @@ fn plan_atomic_operations_inner(
                     let target = registry
                         .relationship(&reference.type_name, relationship)
                         .expect("relationship reference was checked");
+                    require_relationship_permission(
+                        target,
+                        RelationshipPermission::AtomicRemove,
+                        index,
+                        &format!("{path}/ref/relationship"),
+                    )?;
                     validate_declared_cardinality(
                         target.cardinality(),
                         RelationshipCardinality::ToMany,
@@ -1034,6 +1072,20 @@ fn plan_atomic_operations_inner(
                         operation_target(operation)
                             .ok_or_else(|| fail("remove requires `ref` or `href`".to_owned()))?
                     };
+                    if let AtomicTarget::Reference(reference) = &target {
+                        let definition = registry.resource(&reference.type_name).map_err(|_| {
+                            fail(format!(
+                                "resource type `{}` is not registered",
+                                reference.type_name
+                            ))
+                        })?;
+                        require_resource_permission(
+                            definition,
+                            ResourcePermission::AtomicDelete,
+                            index,
+                            &format!("{path}/ref"),
+                        )?;
+                    }
                     PlannedOperation::RemoveResource { target }
                 }
             }
@@ -1205,6 +1257,16 @@ fn validate_resource_data(
             data.type_name
         ))
     })?;
+    require_resource_permission(
+        definition,
+        if is_add {
+            ResourcePermission::AtomicCreate
+        } else {
+            ResourcePermission::AtomicUpdate
+        },
+        index,
+        &format!("{path}/data/type"),
+    )?;
     let mut mapped_attributes = None;
     if let Some(attributes) = &data.attributes {
         let mut mapped = BTreeMap::new();
@@ -1226,6 +1288,18 @@ fn validate_resource_data(
                     ),
                 )
             })?;
+            let permission = if is_add {
+                AttributePermission::AtomicCreate
+            } else {
+                AttributePermission::AtomicUpdate
+            };
+            if !mapping.allows(permission) {
+                return Err(forbidden_operation(
+                    index,
+                    &attribute_pointer,
+                    &format!("attribute `{name}` is not enabled for this Atomic operation"),
+                ));
+            }
             mapped.insert(mapping.model_field().to_owned(), value.clone());
         }
         mapped_attributes = Some(mapped);
@@ -1258,6 +1332,18 @@ fn validate_resource_data(
                     ),
                 )
             })?;
+            let permission = if is_add {
+                RelationshipPermission::AtomicResourceCreate
+            } else {
+                RelationshipPermission::AtomicResourceUpdate
+            };
+            if !mapping.allows(permission) {
+                return Err(forbidden_operation(
+                    index,
+                    &relationship_pointer,
+                    &format!("relationship `{name}` is not enabled for this Atomic operation"),
+                ));
+            }
             if let Some(linkage) = &relationship.data {
                 validate_relationship_cardinality(
                     mapping.cardinality(),
@@ -1291,6 +1377,44 @@ fn validate_resource_data(
         attributes: mapped_attributes,
         relationships: mapped_relationships,
     })
+}
+
+fn require_resource_permission(
+    definition: &crate::registry::ResourceDefinition,
+    permission: ResourcePermission,
+    index: usize,
+    pointer: &str,
+) -> Result<(), AtomicOperationsError> {
+    if definition.allows(permission) {
+        return Ok(());
+    }
+    Err(forbidden_operation(
+        index,
+        pointer,
+        &format!(
+            "resource `{}` is not enabled for {permission:?}",
+            definition.type_name()
+        ),
+    ))
+}
+
+fn require_relationship_permission(
+    mapping: &crate::registry::RelationshipMapping,
+    permission: RelationshipPermission,
+    index: usize,
+    pointer: &str,
+) -> Result<(), AtomicOperationsError> {
+    if mapping.allows(permission) {
+        return Ok(());
+    }
+    Err(forbidden_operation(
+        index,
+        pointer,
+        &format!(
+            "relationship `{}` is not enabled for {permission:?}",
+            mapping.public_name()
+        ),
+    ))
 }
 
 fn validate_relationship_data(
@@ -1467,6 +1591,14 @@ fn invalid_operation(index: usize, path: &str, message: &str) -> AtomicOperation
     }
 }
 
+fn forbidden_operation(index: usize, path: &str, message: &str) -> AtomicOperationsError {
+    AtomicOperationsError::Forbidden {
+        index,
+        pointer: path.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
 fn escape_json_pointer_segment(segment: &str) -> String {
     segment.replace('~', "~0").replace('/', "~1")
 }
@@ -1561,6 +1693,12 @@ impl LocalIdMap {
 /// Application-defined execution of one planned operation.
 #[async_trait]
 pub trait AtomicOperationHandler: Send + Sync {
+    /// Validates this handler against the resource registry before serving.
+    /// Dynamic application handlers may use the default implementation.
+    fn validate_registry(&self, _registry: &ResourceRegistry) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Executes one operation using the executor's shared transaction.
     ///
     /// The handler must resolve any `lid` values through `local_ids` before
@@ -1636,7 +1774,9 @@ pub trait AtomicOperationsGuard: Send + Sync {
     /// # Errors
     ///
     /// Returns a description when the request exceeds an application limit.
-    fn validate_limits(&self, operations: &[PlannedAtomicOperation]) -> Result<(), String>;
+    fn validate_limits(&self, _operations: &[PlannedAtomicOperation]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// A failure while executing an Atomic Operations transaction.

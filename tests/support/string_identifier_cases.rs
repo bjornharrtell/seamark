@@ -15,7 +15,10 @@ use seamark::atomic::{
 use seamark::document::{Relationship, RelationshipData, ResourceIdentifier};
 use seamark::http::AdapterResource;
 use seamark::query::{PaginationConfig, ReadQuery, plan_read, plan_resource_read};
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
+    ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use seamark::seaorm::{
     IncludedResource, SeaOrmFilterValueCodec, SeaOrmIncludeLoader, SeaOrmMutationValueCodec,
     SeaOrmQueryExecutor, SeaOrmReadGuard,
@@ -139,8 +142,10 @@ impl SeaOrmIncludeLoader<vessel::Entity> for OwnerLoader {
         &self,
         database: &DatabaseConnection,
         roots: &[vessel::Model],
+        _root_resources: &mut [seamark::http::AdapterResource],
         _includes: &[seamark::query::IncludeNode],
         _fieldsets: &BTreeMap<String, Vec<seamark::query::PlannedField>>,
+        _runtime_budget: Option<&seamark::seaorm::SeaOrmRuntimeBudget>,
     ) -> Result<Vec<IncludedResource>, String> {
         let owner_codes = roots
             .iter()
@@ -171,14 +176,26 @@ impl SeaOrmIncludeLoader<vessel::Entity> for OwnerLoader {
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
         ResourceDefinition::new("vessels", "vessel_code")
-            .attribute("name", "title", true, true)
-            .relationship("owner", "owner_code", "people"),
-        ResourceDefinition::new("people", "person_code").attribute(
-            "name",
-            "display_name",
-            false,
-            false,
-        ),
+            .allow(ResourcePermission::AtomicCreate)
+            .allow(ResourcePermission::AtomicUpdate)
+            .allow(ResourcePermission::AtomicDelete)
+            .mapped_attribute(
+                AttributeMapping::new("name", "title")
+                    .allow(AttributePermission::Filter)
+                    .allow(AttributePermission::Sort)
+                    .allow(AttributePermission::AtomicCreate)
+                    .allow(AttributePermission::AtomicUpdate),
+            )
+            .mapped_relationship(
+                RelationshipMapping::new("owner", "owner_code", "people")
+                    .to_one()
+                    .allow(RelationshipPermission::Include)
+                    .allow(RelationshipPermission::AtomicReplace)
+                    .allow(RelationshipPermission::AtomicResourceCreate)
+                    .allow(RelationshipPermission::AtomicResourceUpdate),
+            ),
+        ResourceDefinition::new("people", "person_code")
+            .mapped_attribute(AttributeMapping::new("name", "display_name")),
     ])
     .unwrap()
 }
@@ -214,7 +231,7 @@ pub async fn run(database: &DatabaseConnection) {
         schema.create_table_from_entity(person::Entity),
         schema.create_table_from_entity(vessel::Entity),
     ] {
-        database.execute(backend.build(&statement)).await.unwrap();
+        database.execute(&statement).await.unwrap();
     }
 
     for (person_code, display_name) in [("captain-1", "Avery"), ("captain-2", "Blake")] {
