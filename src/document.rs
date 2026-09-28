@@ -1177,12 +1177,11 @@ fn is_valid_link(link: &Value) -> bool {
         Value::Null => true,
         Value::String(href) => is_valid_uri_reference(href),
         Value::Object(link_object) => {
-            let has_href_or_meta =
-                link_object.contains_key("href") || link_object.contains_key("meta");
+            let has_href = link_object.contains_key("href");
             let valid_href = link_object
                 .get("href")
-                .is_none_or(|value| value.as_str().is_some_and(is_valid_uri_reference));
-            if !has_href_or_meta || !valid_href {
+                .is_some_and(|value| value.as_str().is_some_and(is_valid_uri_reference));
+            if !has_href || !valid_href {
                 return false;
             }
             link_object
