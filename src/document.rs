@@ -11,6 +11,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use uriparse::URIReference;
 
+// IANA registry snapshot; refresh when updating relation validation coverage.
+const IANA_LINK_RELATIONS: &str = include_str!("iana_link_relations.txt");
+
 /// A JSON:API top-level document.
 ///
 /// The document may contain primary data, errors, or metadata. This type
@@ -1306,27 +1309,9 @@ fn is_valid_link_relation_type(value: &str) -> bool {
 }
 
 fn is_registered_link_relation_type(value: &str) -> bool {
-    !value.is_empty()
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
+    IANA_LINK_RELATIONS
+        .split_ascii_whitespace()
+        .any(|relation| relation.eq_ignore_ascii_case(value))
 }
 
 fn is_globally_allowed_member_character(character: char) -> bool {

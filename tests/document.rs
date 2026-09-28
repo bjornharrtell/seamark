@@ -570,8 +570,8 @@ fn link_objects_require_href_and_reject_meta_only_objects() {
     let valid: JsonApiDocument = serde_json::from_value(json!({
         "data": null,
         "links": {
-            "href-only": {"href": "/ports"},
-            "href-and-meta": {"href": "/ports", "meta": {"count": 1}}
+            "alternate": {"href": "/ports"},
+            "related": {"href": "/ports", "meta": {"count": 1}}
         }
     }))
     .unwrap();
@@ -822,6 +822,7 @@ fn validates_uri_references_and_registered_or_extension_link_relations() {
             "data": null,
             "links": {
                 "alternate": href,
+                "related": {"href": "/ports/1", "rel": "ALTERNATE"},
                 "https://example.test/rels/related": {
                     "href": "/ports/1",
                     "rel": "https://example.test/rels/related"
@@ -830,6 +831,20 @@ fn validates_uri_references_and_registered_or_extension_link_relations() {
         }))
         .unwrap();
         document.validate().unwrap();
+    }
+
+    for document in [
+        json!({"data": null, "links": {"not-registered": "/ports"}}),
+        json!({
+            "data": null,
+            "links": {"related": {"href": "/ports", "rel": "not-registered"}}
+        }),
+    ] {
+        let document: JsonApiDocument = serde_json::from_value(document).unwrap();
+        assert_eq!(
+            document.validate(),
+            Err(DocumentValidationError::InvalidLinkObject)
+        );
     }
 }
 

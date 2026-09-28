@@ -50,7 +50,7 @@ and document unsupported inputs and application-dispatch boundaries. A
 | Automatic support for every ORM association shape and ordered relationship persistence | ORM shape and relationship ordering are application concerns, not a JSON:API wire-format requirement. The explicit typed handlers cover supported mappings; other shapes and ordered storage use custom application executors. |
 | Exhaustive optional/conditional endpoint combinations and the complete line-by-line conformance matrix | The first release covers the documented endpoint profile and all applicable MUSTs. Optional capabilities not advertised by that profile, unusual combinations, and exhaustive re-testing of unsupported endpoint forms are a follow-up; unsupported requests must still receive the specified response. |
 | Full parity for uncommon identifier types, engine-specific schema behavior, and concurrency/locking | Current shared fixtures establish parity for core identifiers and transactions. These broader backend-specific matrices do not block the bounded profile and must not be presented as verified until tested. |
-| Ongoing IANA/BCP 47 registry freshness beyond current syntax and supported relation checks | Registry contents change independently of this crate. Current syntax and supported relation validation remain in scope; continuously tracking every registry update is maintenance follow-up. |
+| Ongoing IANA/BCP 47 registry freshness beyond current snapshots | Registry contents change independently of this crate. Registered link relations use the IANA snapshot updated 2026-06-12, and language tags receive syntax/registry validation; continuously tracking future registry updates is maintenance follow-up. |
 
 ### M4 pagination overflow route evidence
 
