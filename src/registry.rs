@@ -278,6 +278,11 @@ impl ResourceDefinition {
                 {
                     Some("join tables require to-many cardinality".to_owned())
                 }
+                RelationshipStorage::OrderedJoinTable { .. }
+                    if relationship.cardinality != Some(RelationshipCardinality::ToMany) =>
+                {
+                    Some("ordered join tables require to-many cardinality".to_owned())
+                }
                 RelationshipStorage::ToManyForeignKey {
                     foreign_key_field, ..
                 } if foreign_key_field.is_empty() => {
@@ -291,6 +296,19 @@ impl ResourceDefinition {
                     || source_column == target_column =>
                 {
                     Some("join-table columns must be non-empty and distinct".to_owned())
+                }
+                RelationshipStorage::OrderedJoinTable {
+                    source_column,
+                    target_column,
+                    position_column,
+                } if source_column.is_empty()
+                    || target_column.is_empty()
+                    || position_column.is_empty()
+                    || source_column == target_column
+                    || position_column == source_column
+                    || position_column == target_column =>
+                {
+                    Some("ordered join-table columns must be non-empty and distinct".to_owned())
                 }
                 _ => None,
             };
@@ -436,6 +454,15 @@ pub enum RelationshipStorage {
         /// The join-table column containing the related resource's identifier.
         target_column: String,
     },
+    /// A join table with a position column that orders relationship members.
+    OrderedJoinTable {
+        /// The join-table column containing this resource's identifier.
+        source_column: String,
+        /// The join-table column containing the related resource's identifier.
+        target_column: String,
+        /// The join-table column storing the member's position.
+        position_column: String,
+    },
     /// Persistence is application-defined and requires a custom executor.
     Custom,
 }
@@ -551,6 +578,24 @@ impl RelationshipMapping {
         self.storage = RelationshipStorage::JoinTable {
             source_column: source_column.into(),
             target_column: target_column.into(),
+        };
+        self
+    }
+
+    /// Declares a join-table mapping with a position column that orders
+    /// relationship members.
+    #[must_use]
+    pub fn to_many_ordered_join_table(
+        mut self,
+        source_column: impl Into<String>,
+        target_column: impl Into<String>,
+        position_column: impl Into<String>,
+    ) -> Self {
+        self.cardinality = Some(RelationshipCardinality::ToMany);
+        self.storage = RelationshipStorage::OrderedJoinTable {
+            source_column: source_column.into(),
+            target_column: target_column.into(),
+            position_column: position_column.into(),
         };
         self
     }
