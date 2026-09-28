@@ -234,6 +234,13 @@ fn validate_operation_shape(request_document: &Value) -> Result<(), AtomicOperat
                 message: "operation must contain a string `op` member".to_owned(),
             });
         }
+        if operation.get("href").is_some_and(|href| !href.is_string()) {
+            return Err(AtomicOperationsError::InvalidOperation {
+                index,
+                pointer: format!("/atomic:operations/{index}/href"),
+                message: "`href` must be a string".to_owned(),
+            });
+        }
         if let Some(reference_value) = operation.get("ref") {
             let reference_pointer = format!("/atomic:operations/{index}/ref");
             let Some(reference) = reference_value.as_object() else {
