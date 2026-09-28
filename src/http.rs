@@ -1140,9 +1140,9 @@ async fn get_related(
     if !relationship.allows(RelationshipPermission::RelatedRead) {
         return forbidden_error();
     }
-    let Some(cardinality) = relationship.cardinality() else {
+    if relationship.cardinality().is_none() {
         return relationship_cardinality_required(&relationship_name);
-    };
+    }
     let (Some(query_adapter), Some(pagination)) =
         (state.query_adapter.as_ref(), state.pagination.as_ref())
     else {
@@ -1154,14 +1154,9 @@ async fn get_related(
     };
     let include_requested = !read_query.includes.is_empty();
     let target_type = relationship.target_type();
-    let plan = match cardinality {
-        RelationshipCardinality::ToOne => {
-            plan_resource_read(&state.registry, target_type, &read_query, pagination)
-        }
-        RelationshipCardinality::ToMany => {
-            plan_read(&state.registry, target_type, &read_query, pagination)
-        }
-    };
+    // Related collections do not yet execute filter/sort/page; a resource plan
+    // rejects those controls so they are never silently ignored.
+    let plan = plan_resource_read(&state.registry, target_type, &read_query, pagination);
     let plan = match plan {
         Ok(plan) => plan,
         Err(error) => return read_plan_error(error),
