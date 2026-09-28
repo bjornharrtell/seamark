@@ -2526,3 +2526,35 @@ async fn jsonapi_fallback_returns_structured_errors_for_unmatched_routes() {
     assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
     assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI_MEDIA_TYPE);
 }
+
+#[tokio::test]
+async fn self_links_are_opt_in_for_reads() {
+    let adapter = Arc::new(TestAdapter::default());
+    *adapter.collection_result.lock().unwrap() = vec![port_record()];
+    let ports = ResourceDefinition::new("ports", "port_key")
+        .attribute("name", "title")
+        .relationship("owner", "owner", "people");
+    let people = ResourceDefinition::new("people", "id").attribute("name", "full_name");
+    let registry = Arc::new(ResourceRegistry::new([ports, people]).unwrap());
+    let authorizer = Arc::new(TestAuthorizer {
+        allowed: true,
+        calls: AtomicUsize::new(0),
+    });
+
+    let app = http::ApiBuilder::new(registry.clone(), authorizer.clone())
+        .reads(adapter.clone())
+        .try_build()
+        .unwrap();
+    let response = app.oneshot(request("/ports", None)).await.unwrap();
+    assert!(document(response).await.links.is_none());
+
+    let app = http::ApiBuilder::new(registry, authorizer)
+        .reads(adapter)
+        .links()
+        .try_build()
+        .unwrap();
+    let response = app.oneshot(request("/ports", None)).await.unwrap();
+    let value = serde_json::to_value(document(response).await).unwrap();
+    assert_eq!(value["links"]["self"], "/ports");
+    assert_eq!(value["data"][0]["links"]["self"], "/ports/1");
+}

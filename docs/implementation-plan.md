@@ -154,6 +154,11 @@ Extend sorting, pagination, and filtering parity to related-resource and
 relationship collections.
 
 - Depends on: **PR1** (link builder), **A1**, **A3**.
+- Progress: **B1/B2/B5 partial** — opt-in `ApiBuilder::links` emits document
+  `self`, resource `self`, and pagination (`first`/`prev`/`next`/`last`)
+  links. B3 (related routes), B4 (relationship-endpoint queries), and B6
+  (related-collection queries) remain planned. Related links are not emitted
+  until B3 exists, because the spec requires advertised links to resolve.
 - Exit criteria: links resolve to working GETs; relationship and related
   endpoints pass include/fieldset/sort/page fixtures on PostgreSQL and SQLite;
   unsupported query controls are rejected with the specified status.
@@ -253,7 +258,7 @@ on them.
 | Milestone | Status | Depends on | Exit criteria |
 | --- | --- | --- | --- |
 | Phase 0 — Base protocol closure | In progress | PR2, PR4, PR5 | Workstream A exit criteria met |
-| Phase 1 — Fetch surface | Planned | PR1, Phase 0 | Workstream B exit criteria met |
+| Phase 1 — Fetch surface | In progress | PR1, Phase 0 | Workstream B exit criteria met |
 | Phase 2 — Extensions and profiles | Blocked | Phase 0, PR2 | Workstream C extension/profile framework met; profile catalog gated by decision |
 | Phase 3 — Association breadth | Blocked | PR3, Phase 0 | Workstream D exit criteria met |
 | Phase 4 — Verification closure | Planned | Phase 0–3 | Workstream E exit criteria met |
