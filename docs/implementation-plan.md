@@ -59,8 +59,8 @@ PostgreSQL and shared SQLite checks, and document unsupported inputs and
 application-dispatch boundaries. The conformance matrix records those
 requirements and evidence.
 
-Latest verified suite: **231 integration tests** (including **11 SQLite test
-functions**), **6 unit tests**, and **1 doctest**. The isolated PostgreSQL-backed
+Latest verified suite: **242 integration tests** (including **16 SQLite test
+functions**), **13 unit tests**, and **1 doctest**. The isolated PostgreSQL-backed
 all-feature suite, Clippy with warnings denied, rustdoc with warnings denied,
 formatting, and diff checks pass; both PR CI jobs passed on the code-identical
 head before this documentation-only cleanup.
@@ -72,6 +72,11 @@ RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps
 cargo fmt --check
 git diff --check
 ```
+
+PostgreSQL-backed tests skip with a skip message when
+`SEAMARK_TEST_DATABASE_URL` is unset, so `cargo test` passes without a database.
+CI sets the variable so the full suite runs; SQLite tests run under
+`--all-features`.
 
 Continue development in reviewable commits on the issue-tracking PR. Update
 this roadmap only when milestone status, profile boundaries, or a design

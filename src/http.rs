@@ -242,7 +242,7 @@ pub trait ResourceAdapter: Send + Sync + 'static {
 }
 
 /// Executes validated collection and single-resource plans produced by
-/// [`router_with_query`].
+/// [`ApiBuilder::queries`].
 ///
 /// Authorization and execution-limit failures should use their corresponding
 /// [`QueryAdapterError`] variants so the router can return client-appropriate
@@ -402,98 +402,8 @@ struct ApiState {
     execution_limits: Option<crate::limits::ExecutionLimits>,
 }
 
-/// Builds the collection and single-resource GET routes without query support.
-///
-/// The routes reject all non-empty query strings. Filtering, sorting,
-/// pagination, includes, and persistence implementations are outside this
-/// adapter boundary.
-pub fn router(
-    registry: Arc<ResourceRegistry>,
-    adapter: Arc<dyn ResourceAdapter>,
-    authorizer: Arc<dyn RequestAuthorizer>,
-) -> Router {
-    build_router(ApiState {
-        registry,
-        adapter: Some(adapter),
-        authorizer,
-        query_adapter: None,
-        mutation_adapter: None,
-        pagination: None,
-        execution_limits: None,
-    })
-}
-
-/// Builds the GET routes together with base resource and relationship
-/// mutation routes.
-///
-/// Mutations use the conventional collection, resource, and relationship
-/// linkage paths. Applications can compose a custom router instead when they
-/// need different paths; this function does not register Atomic Operations.
-pub fn router_with_mutations(
-    registry: Arc<ResourceRegistry>,
-    adapter: Arc<dyn ResourceAdapter>,
-    authorizer: Arc<dyn RequestAuthorizer>,
-    mutation_adapter: Arc<dyn MutationResourceAdapter>,
-) -> Router {
-    build_router(ApiState {
-        registry,
-        adapter: Some(adapter),
-        authorizer,
-        query_adapter: None,
-        mutation_adapter: Some(mutation_adapter),
-        pagination: None,
-        execution_limits: None,
-    })
-}
-
-/// Builds collection and single-resource GET routes with planned queries.
-///
-/// Query support is opt-in. The supplied pagination policy is explicit, and
-/// the query adapter is called only after parsing, planning, resource lookup,
-/// and request authorization. Collection filters, sorting, and pagination are
-/// supported only on collections; single-resource reads support includes and
-/// sparse fieldsets.
-pub fn router_with_query(
-    registry: Arc<ResourceRegistry>,
-    adapter: Arc<dyn ResourceAdapter>,
-    authorizer: Arc<dyn RequestAuthorizer>,
-    query_adapter: Arc<dyn QueryResourceAdapter>,
-    pagination: PaginationConfig,
-) -> Router {
-    build_router(ApiState {
-        registry,
-        adapter: Some(adapter),
-        authorizer,
-        query_adapter: Some(query_adapter),
-        mutation_adapter: None,
-        pagination: Some(pagination),
-        execution_limits: None,
-    })
-}
-
-/// Builds planned GET routes together with base resource and relationship
-/// mutation routes.
-pub fn router_with_query_and_mutations(
-    registry: Arc<ResourceRegistry>,
-    adapter: Arc<dyn ResourceAdapter>,
-    authorizer: Arc<dyn RequestAuthorizer>,
-    query_adapter: Arc<dyn QueryResourceAdapter>,
-    mutation_adapter: Arc<dyn MutationResourceAdapter>,
-    pagination: PaginationConfig,
-) -> Router {
-    build_router(ApiState {
-        registry,
-        adapter: Some(adapter),
-        authorizer,
-        query_adapter: Some(query_adapter),
-        mutation_adapter: Some(mutation_adapter),
-        pagination: Some(pagination),
-        execution_limits: None,
-    })
-}
-
-/// A composable router builder with separate opt-ins for queries, ordinary
-/// mutations, and Atomic Operations.
+/// A composable router builder with separate opt-ins for simple reads,
+/// queries, ordinary mutations, and Atomic Operations.
 ///
 /// Every capability is disabled by default. Query-only consumers can provide
 /// a [`QueryResourceAdapter`] without writing a forwarding

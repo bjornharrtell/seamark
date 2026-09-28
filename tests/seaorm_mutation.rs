@@ -317,10 +317,14 @@ fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatcher {
     SeaOrmAtomicOperationDispatcher::new(executors)
 }
 
-async fn database() -> DatabaseConnection {
-    let url = std::env::var("SEAMARK_TEST_DATABASE_URL")
-        .expect("set SEAMARK_TEST_DATABASE_URL to a dedicated PostgreSQL test database");
-    Database::connect(url).await.unwrap()
+async fn database() -> Option<DatabaseConnection> {
+    let Ok(url) = std::env::var("SEAMARK_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping PostgreSQL test: set SEAMARK_TEST_DATABASE_URL to a dedicated database to run it"
+        );
+        return None;
+    };
+    Some(Database::connect(url).await.unwrap())
 }
 
 async fn create_tables(database: &DatabaseConnection) {
@@ -384,7 +388,9 @@ async fn execute_with_href_resolver(
 
 #[tokio::test]
 async fn persists_resource_crud_and_to_one_linkage_atomically() {
-    let database = database().await;
+    let Some(database) = database().await else {
+        return;
+    };
     create_tables(&database).await;
     let registry = registry();
 
@@ -863,7 +869,9 @@ fn registry_rejects_reused_join_table_columns() {
 
 #[tokio::test]
 async fn postgres_atomic_result_document_matches_shared_backend_case() {
-    let database = database().await;
+    let Some(database) = database().await else {
+        return;
+    };
     atomic_cases::create_tables(&database).await;
     atomic_cases::assert_orphan_owner_foreign_key_is_rejected(&database).await;
 

@@ -5,6 +5,21 @@ use std::fmt;
 
 use crate::registry::{RegistryError, RelationshipPermission, ResourceRegistry};
 
+/// Maximum filter nesting depth accepted before parsing stops.
+///
+/// This structural bound stops malformed or hostile input before it can drive
+/// unbounded recursion. [`crate::limits::ExecutionLimits`] can still impose a
+/// smaller application limit.
+pub const MAX_FILTER_DEPTH: usize = 64;
+
+/// Maximum include path depth accepted before planning stops.
+///
+/// This structural bound stops malformed or hostile input before it can drive
+/// unbounded recursion while the include tree is frozen or expanded.
+/// [`crate::limits::ExecutionLimits`] can still impose a smaller application
+/// limit.
+pub const MAX_INCLUDE_DEPTH: usize = 64;
+
 /// A filter expression with public attributes resolved to internal model fields.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilterExpression {
@@ -123,7 +138,7 @@ pub fn parse_filter(
         registry,
         resource_type,
     };
-    let expression = parser.parse_expression()?;
+    let expression = parser.parse_expression(0)?;
     parser.skip_whitespace();
     if !parser.is_at_end() {
         return Err(parser.malformed("unexpected trailing input"));
@@ -779,6 +794,9 @@ fn plan_includes(
             {
                 return Err(ReadPlanError::InvalidIncludePath(path.to_owned()));
             }
+            if segments.len() > MAX_INCLUDE_DEPTH {
+                return Err(ReadPlanError::InvalidIncludePath(path.to_owned()));
+            }
             let mut definition = registry
                 .resource(root_type)
                 .map_err(|_| ReadPlanError::UnknownResourceType(root_type.to_owned()))?;
@@ -838,7 +856,10 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn parse_expression(&mut self) -> Result<FilterExpression, FilterError> {
+    fn parse_expression(&mut self, depth: usize) -> Result<FilterExpression, FilterError> {
+        if depth > MAX_FILTER_DEPTH {
+            return Err(self.malformed("filter expression nesting is too deep"));
+        }
         self.skip_whitespace();
         let operator = self.parse_identifier()?;
         self.skip_whitespace();
@@ -846,9 +867,9 @@ impl Parser<'_> {
 
         match operator.as_str() {
             "equals" => self.parse_equals(),
-            "and" => self.parse_group(true),
-            "or" => self.parse_group(false),
-            "not" => self.parse_not(),
+            "and" => self.parse_group(true, depth),
+            "or" => self.parse_group(false, depth),
+            "not" => self.parse_not(depth),
             _ => Err(FilterError::UnsupportedOperator(operator)),
         }
     }
@@ -874,12 +895,12 @@ impl Parser<'_> {
         Ok(FilterExpression::Equals { model_field, value })
     }
 
-    fn parse_group(&mut self, is_and: bool) -> Result<FilterExpression, FilterError> {
+    fn parse_group(&mut self, is_and: bool, depth: usize) -> Result<FilterExpression, FilterError> {
         let mut children = Vec::new();
         self.skip_whitespace();
         if self.peek_byte() != Some(b')') {
             loop {
-                children.push(self.parse_expression()?);
+                children.push(self.parse_expression(depth + 1)?);
                 self.skip_whitespace();
                 match self.peek_byte() {
                     Some(b',') => {
@@ -902,12 +923,12 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_not(&mut self) -> Result<FilterExpression, FilterError> {
+    fn parse_not(&mut self, depth: usize) -> Result<FilterExpression, FilterError> {
         self.skip_whitespace();
         if self.peek_byte() == Some(b')') {
             return Err(self.malformed("not requires exactly one expression"));
         }
-        let child = self.parse_expression()?;
+        let child = self.parse_expression(depth + 1)?;
         self.skip_whitespace();
         if self.peek_byte() == Some(b',') {
             return Err(self.malformed("not requires exactly one expression"));

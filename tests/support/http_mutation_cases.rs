@@ -348,7 +348,15 @@ struct EmptyIdPortMutationExecutor;
 #[async_trait]
 impl SeaOrmBaseMutationExecutor for EmptyIdPortMutationExecutor {
     fn supports(&self, resource: &ResourceDefinition, command: &MutationCommand) -> bool {
-        resource.type_name() == "ports" && matches!(command, MutationCommand::Create { .. })
+        resource.type_name() == "ports"
+            && matches!(
+                command,
+                MutationCommand::Create { .. }
+                    | MutationCommand::Update { .. }
+                    | MutationCommand::Delete { .. }
+                    | MutationCommand::ReadRelationship { .. }
+                    | MutationCommand::ModifyRelationship { .. }
+            )
     }
 
     async fn execute(
@@ -665,12 +673,11 @@ pub async fn run_case(database: &DatabaseConnection) {
         database.clone(),
         vec![executor],
     ));
-    let router = http::router_with_mutations(
-        registry.clone(),
-        Arc::new(NoReads),
-        Arc::new(AllowAll),
-        adapter,
-    );
+    let router = http::ApiBuilder::new(registry.clone(), Arc::new(AllowAll))
+        .reads(Arc::new(NoReads))
+        .mutations(adapter)
+        .try_build()
+        .unwrap();
 
     let response = router
         .clone()
@@ -702,12 +709,11 @@ pub async fn run_case(database: &DatabaseConnection) {
         database.clone(),
         vec![invalid_executor],
     ));
-    let invalid_router = http::router_with_mutations(
-        registry.clone(),
-        Arc::new(NoReads),
-        Arc::new(AllowAll),
-        invalid_adapter,
-    );
+    let invalid_router = http::ApiBuilder::new(registry.clone(), Arc::new(AllowAll))
+        .reads(Arc::new(NoReads))
+        .mutations(invalid_adapter)
+        .try_build()
+        .unwrap();
     let response = invalid_router
         .oneshot(mutation_request(
             "POST",

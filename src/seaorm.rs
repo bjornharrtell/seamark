@@ -1067,7 +1067,7 @@ where
     M: SeaOrmModelMapper<E>,
     C: SeaOrmFilterValueCodec,
 {
-    registry: ResourceRegistry,
+    registry: Arc<ResourceRegistry>,
     resource_type: String,
     mapper: M,
     filter_value_codec: C,
@@ -1093,11 +1093,12 @@ where
     /// Returns an error when the resource is not registered or one of its
     /// required entity-column mappings does not exist.
     pub fn new(
-        registry: ResourceRegistry,
+        registry: impl Into<Arc<ResourceRegistry>>,
         resource_type: impl Into<String>,
         mapper: M,
         filter_value_codec: C,
     ) -> Result<Self, SeaOrmExecutionError> {
+        let registry = registry.into();
         let resource_type = resource_type.into();
         let definition = registry
             .resource(&resource_type)
@@ -1557,10 +1558,11 @@ where
     /// Returns an error when an attribute or relationship mapping is invalid
     /// for the entity, or when a computed mapping does not match the registry.
     pub fn mapped_with_computed(
-        registry: ResourceRegistry,
+        registry: impl Into<Arc<ResourceRegistry>>,
         resource_type: impl Into<String>,
         computed: Vec<SeaOrmComputedAttribute<E>>,
     ) -> Result<Self, SeaOrmExecutionError> {
+        let registry = registry.into();
         let resource_type = resource_type.into();
         let definition = registry
             .resource(&resource_type)
@@ -2002,7 +2004,7 @@ where
 #[derive(Default)]
 pub struct SeaOrmQueryAdapter {
     executors: BTreeMap<String, Arc<dyn BoundSeaOrmQueryExecutor>>,
-    registry: Option<ResourceRegistry>,
+    registry: Option<Arc<ResourceRegistry>>,
     join_table_queries: BTreeMap<(String, String), Arc<dyn BoundJoinTableQuery>>,
 }
 
@@ -2337,7 +2339,7 @@ impl SeaOrmQueryAdapter {
 #[async_trait]
 impl QueryResourceAdapter for SeaOrmQueryAdapter {
     fn validate_registry(&self, registry: &ResourceRegistry) -> Result<(), String> {
-        if self.registry.as_ref() != Some(registry) {
+        if self.registry.as_deref() != Some(registry) {
             return Err("query adapter executors do not share the supplied registry".to_owned());
         }
         for resource_type in self.executors.keys() {

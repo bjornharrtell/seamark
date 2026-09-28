@@ -19,13 +19,13 @@ Optimistic concurrency is application-defined initially. Built-in version, ETag,
 
 ## Base HTTP resource and relationship operations
 
-`http::router_with_mutations` adds ordinary JSON:API HTTP methods to the
-existing collection and resource GET routes. Its canonical paths are
+`ApiBuilder::mutations` adds ordinary JSON:API HTTP methods to the existing
+collection and resource GET routes. Its canonical paths are
 `POST /{type}`, `PATCH|DELETE /{type}/{id}`, and
 `GET|PATCH|POST|DELETE /{type}/{id}/relationships/{name}`. It deliberately
-does not register related-resource GET URLs. `router_with_query_and_mutations`
-composes these routes with the opt-in query router. The default `router`
-remains GET-only.
+does not register related-resource GET URLs. `ApiBuilder::queries` composes
+these routes with the opt-in query router. Without `reads` or `queries`, the
+router is GET-only.
 
 `ResourceDefinition::to_one_relationship` and
 `ResourceDefinition::to_many_relationship` declare the cardinality needed to
@@ -33,7 +33,7 @@ validate relationship linkage and method shape. Existing
 `ResourceDefinition::relationship` declarations remain cardinality-unspecified;
 they can be used for reads but mutation endpoints reject writes until
 cardinality is declared. Applications can use their own Axum routes with the
-read-only router to choose alternative URL shapes; the framework does not
+read-only component router to choose alternative URL shapes; the framework does not
 provide a path-template DSL.
 
 Resource POST accepts a primary resource object whose `type` matches the

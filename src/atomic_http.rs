@@ -354,22 +354,18 @@ fn atomic_execution_error(error: AtomicExecutionError, request_document: &Value)
             message,
             Some(format!("/atomic:operations/{index}")),
         ),
-        AtomicExecutionError::Rollback {
-            index,
-            operation,
-            rollback,
-        } => (
+        AtomicExecutionError::Rollback { index, .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "rollback_failed",
             "Atomic transaction rollback failed",
-            format!("{operation}; rollback failed: {rollback}"),
+            "The Atomic Operations transaction could not be rolled back.".to_owned(),
             Some(format!("/atomic:operations/{index}")),
         ),
-        AtomicExecutionError::Database(error) => (
+        AtomicExecutionError::Database(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "database_error",
             "Atomic transaction failed",
-            error.to_string(),
+            "The Atomic Operations transaction could not be completed.".to_owned(),
             None,
         ),
     };
