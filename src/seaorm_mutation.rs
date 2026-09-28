@@ -24,8 +24,8 @@ use crate::http::{
     MutationResourceAdapter, RelationshipMutation, ResourceMutationChangeset,
 };
 use crate::registry::{
-    RelationshipCardinality, RelationshipPermission, RelationshipReassignment, RelationshipStorage,
-    ResourceDefinition, ResourcePermission, ResourceRegistry,
+    RelationshipCardinality, RelationshipMapping, RelationshipPermission, RelationshipReassignment,
+    RelationshipStorage, ResourceDefinition, ResourcePermission, ResourceRegistry,
 };
 use crate::seaorm::{
     SeaOrmComputedAttribute, SeaOrmMutationValueCodec, map_registered_model_with_computed,
@@ -69,6 +69,12 @@ pub trait SeaOrmBaseMutationExecutor: Send + Sync {
     ) -> Result<MutationOutcome, MutationAdapterError>;
 }
 
+type ResolvedBaseMutationCommand<'a> = (
+    &'a dyn SeaOrmBaseMutationExecutor,
+    MutationCommand,
+    Vec<(RelationshipMapping, RelationshipData)>,
+);
+
 /// Runs each base HTTP mutation through one SeaORM transaction.
 ///
 /// Exactly one matching typed executor handles a command. Resource create and
@@ -99,14 +105,7 @@ impl SeaOrmBaseMutationAdapter {
         &'a self,
         resource: &ResourceDefinition,
         command: &MutationCommand,
-    ) -> Result<
-        (
-            &'a dyn SeaOrmBaseMutationExecutor,
-            MutationCommand,
-            Vec<(crate::registry::RelationshipMapping, RelationshipData)>,
-        ),
-        MutationAdapterError,
-    > {
+    ) -> Result<ResolvedBaseMutationCommand<'a>, MutationAdapterError> {
         let mut matching = self
             .executors
             .iter()

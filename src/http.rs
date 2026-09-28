@@ -602,7 +602,6 @@ impl ApiBuilder {
     }
 
     /// Builds the configured component router.
-    #[must_use]
     pub fn build(self) -> Router {
         self.try_build()
             .unwrap_or_else(|error| panic!("invalid Seamark API configuration: {error}"))

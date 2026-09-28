@@ -33,6 +33,11 @@ use crate::registry::{
     RelationshipStorage, ResourceDefinition, ResourceRegistry,
 };
 
+type SeaOrmResourceMapper<Model> =
+    Arc<dyn Fn(&Model) -> Result<AdapterResource, String> + Send + Sync>;
+type SeaOrmComputedValueMapper<Model> =
+    Arc<dyn Fn(&Model) -> Result<JsonValue, String> + Send + Sync>;
+
 /// Encodes parsed query string literals as typed SeaORM values.
 ///
 /// Implementations should validate values for the mapped entity field and
@@ -319,10 +324,7 @@ where
     }
 }
 
-impl<E> SeaOrmModelMapper<E>
-    for FallibleSeaOrmModelMapper<
-        Arc<dyn Fn(&E::Model) -> Result<AdapterResource, String> + Send + Sync>,
-    >
+impl<E> SeaOrmModelMapper<E> for FallibleSeaOrmModelMapper<SeaOrmResourceMapper<E::Model>>
 where
     E: EntityTrait,
 {
@@ -501,7 +503,7 @@ where
     E: EntityTrait,
 {
     mapping: AttributeMapping,
-    mapper: Arc<dyn Fn(&E::Model) -> Result<JsonValue, String> + Send + Sync>,
+    mapper: SeaOrmComputedValueMapper<E::Model>,
     entity: PhantomData<fn() -> E>,
 }
 
@@ -868,6 +870,19 @@ pub struct SeaOrmResourceReadResult {
     pub resource: AdapterResource,
     /// Included resources after applying their sparse fieldsets.
     pub included: Vec<IncludedResource>,
+}
+
+pub(crate) struct SeaOrmResourceReadOptions<'a, E>
+where
+    E: EntityTrait,
+{
+    database: &'a DatabaseConnection,
+    id: &'a str,
+    plan: &'a ReadPlan,
+    guard: &'a dyn SeaOrmReadGuard,
+    include_loader: Option<&'a dyn SeaOrmIncludeLoader<E>>,
+    runtime_budget: Option<&'a SeaOrmRuntimeBudget>,
+    standard_include_loader: Option<&'a dyn StandardIncludeLoader>,
 }
 
 /// A failure while validating or executing a SeaORM read plan.
@@ -1324,23 +1339,34 @@ where
     where
         E::Column: ColumnTrait,
     {
-        self.resource_with_runtime_budget(database, id, plan, guard, include_loader, None, None)
-            .await
+        self.resource_with_runtime_budget(SeaOrmResourceReadOptions {
+            database,
+            id,
+            plan,
+            guard,
+            include_loader,
+            runtime_budget: None,
+            standard_include_loader: None,
+        })
+        .await
     }
 
     pub(crate) async fn resource_with_runtime_budget(
         &self,
-        database: &DatabaseConnection,
-        id: &str,
-        plan: &ReadPlan,
-        guard: &dyn SeaOrmReadGuard,
-        include_loader: Option<&dyn SeaOrmIncludeLoader<E>>,
-        runtime_budget: Option<&SeaOrmRuntimeBudget>,
-        standard_include_loader: Option<&dyn StandardIncludeLoader>,
+        options: SeaOrmResourceReadOptions<'_, E>,
     ) -> Result<Option<SeaOrmResourceReadResult>, SeaOrmExecutionError>
     where
         E::Column: ColumnTrait,
     {
+        let SeaOrmResourceReadOptions {
+            database,
+            id,
+            plan,
+            guard,
+            include_loader,
+            runtime_budget,
+            standard_include_loader,
+        } = options;
         let definition = self
             .registry
             .resource(&self.resource_type)
@@ -1567,10 +1593,9 @@ where
             }
             column::<E>(relationship.model_field())?;
         }
-        let mapper: Arc<dyn Fn(&E::Model) -> Result<AdapterResource, String> + Send + Sync> =
-            Arc::new(move |model| {
-                map_registered_model_with_computed::<E>(model, &definition, &computed)
-            });
+        let mapper: SeaOrmResourceMapper<E::Model> = Arc::new(move |model| {
+            map_registered_model_with_computed::<E>(model, &definition, &computed)
+        });
         Self::new(
             registry,
             resource_type,
@@ -1744,7 +1769,7 @@ where
         if let Some(budget) = budget {
             budget.consume_related_queries(1)?;
         }
-        let mut select = E::find().filter(self.source_column.clone().is_in(values));
+        let mut select = E::find().filter(self.source_column.is_in(values));
         if let Some(limit) = budget.and_then(SeaOrmRuntimeBudget::related_resource_query_limit) {
             select = select.limit(limit);
         }
@@ -1754,10 +1779,8 @@ where
             .map_err(|error| error.to_string())?;
         let mut targets = BTreeMap::<String, Vec<String>>::new();
         for row in rows {
-            let source_id =
-                scalar_identifier_json(value_to_json(&row.get(self.source_column.clone()))?)?;
-            let target_id =
-                scalar_identifier_json(value_to_json(&row.get(self.target_column.clone()))?)?;
+            let source_id = scalar_identifier_json(value_to_json(&row.get(self.source_column))?)?;
+            let target_id = scalar_identifier_json(value_to_json(&row.get(self.target_column))?)?;
             targets.entry(source_id).or_default().push(target_id);
         }
         Ok(targets)
@@ -1849,27 +1872,27 @@ where
         let result = if let Some(limits) = limits {
             let budget = limits.seaorm_runtime_budget();
             self.executor
-                .resource_with_runtime_budget(
-                    &self.database,
+                .resource_with_runtime_budget(SeaOrmResourceReadOptions {
+                    database: &self.database,
                     id,
                     plan,
-                    self.guard.as_ref(),
-                    self.include_loader.as_deref(),
-                    Some(&budget),
+                    guard: self.guard.as_ref(),
+                    include_loader: self.include_loader.as_deref(),
+                    runtime_budget: Some(&budget),
                     standard_include_loader,
-                )
+                })
                 .await
         } else {
             self.executor
-                .resource_with_runtime_budget(
-                    &self.database,
+                .resource_with_runtime_budget(SeaOrmResourceReadOptions {
+                    database: &self.database,
                     id,
                     plan,
-                    self.guard.as_ref(),
-                    self.include_loader.as_deref(),
-                    None,
+                    guard: self.guard.as_ref(),
+                    include_loader: self.include_loader.as_deref(),
+                    runtime_budget: None,
                     standard_include_loader,
-                )
+                })
                 .await
         }
         .map_err(query_adapter_error)?;
@@ -1951,7 +1974,7 @@ where
         if let Some(budget) = budget {
             budget.consume_related_queries(1)?;
         }
-        let mut select = E::find().filter(field_column.clone().is_in(query_values));
+        let mut select = E::find().filter(field_column.is_in(query_values));
         if let Some(limit) = budget.and_then(SeaOrmRuntimeBudget::related_resource_query_limit) {
             select = select.limit(limit);
         }
@@ -1965,8 +1988,7 @@ where
         models
             .into_iter()
             .map(|model| {
-                let group_id =
-                    scalar_identifier_json(value_to_json(&model.get(field_column.clone()))?)?;
+                let group_id = scalar_identifier_json(value_to_json(&model.get(field_column))?)?;
                 let resource = self.executor.mapper.map(&model)?;
                 Ok((group_id, resource))
             })
@@ -2125,10 +2147,9 @@ impl SeaOrmQueryAdapter {
                         })?;
                     if let Some(crate::document::RelationshipData::One(identifier)) =
                         relation.data.as_ref()
+                        && let Some(id) = &identifier.id
                     {
-                        if let Some(id) = &identifier.id {
-                            requested.push(id.clone());
-                        }
+                        requested.push(id.clone());
                     }
                 }
                 let requested_set = requested.iter().cloned().collect::<BTreeSet<_>>();
