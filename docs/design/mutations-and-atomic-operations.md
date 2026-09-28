@@ -69,10 +69,11 @@ rules.
 layer resolves public names through the registry but does not translate
 commands into Atomic `PlannedOperation`s or use Atomic result documents.
 `SeaOrmBaseMutationAdapter` starts one `DatabaseTransaction` per command,
-dispatches to the first matching `SeaOrmBaseMutationExecutor`, and commits or
-rolls back that command. Applications provide typed executors for their
-entities and relationship shapes. These are application hooks, not a generic
-automatic mapping from registry strings to database relationships.
+dispatches to one unambiguous `SeaOrmBaseMutationExecutor`, and commits or
+rolls back that command. Standard resource and relationship handlers share
+persistence with Atomic Operations; base create/update composes configured
+to-many handlers in the same transaction. Other entity and association shapes
+remain available to custom executors.
 
 The focused PostgreSQL/SQLite route cases in
 `tests/support/http_mutation_cases.rs` verify create/update/delete persistence,
@@ -89,7 +90,7 @@ The complete JSON:API Atomic Operations extension is a target for the first comp
 
 Atomic Operations requires correct extension negotiation as well as complete operation behavior. Other third-party extensions and profiles are deferred beyond the initial target.
 
-## Current Atomic Operations prototype
+## Atomic Operations behavior
 
 `AtomicOperationsDocument` models `atomic:operations` and `atomic:results`
 separately from base primary data. The planner validates add/update/remove
@@ -131,10 +132,9 @@ executor in the same transaction. The same composition applies to resource
 `add`: the typed resource handler creates the source first, then the dispatcher
 uses its persistent identity to apply each to-many replacement. If the add
 does not declare a local ID, the identity is read from the typed add result.
-A failure in either part rolls back the whole operation batch. Custom
-executors that directly support the original operation retain first-match
-precedence. Unsupported association shapes remain available to custom handlers
-or dedicated typed relationship executors.
+A failure in either part rolls back the whole operation batch. Dispatch rejects ambiguous matching executors. Unsupported association
+shapes remain available to custom handlers or dedicated typed relationship
+executors.
 
 The typed resource handler constructs updates from registered operation
 changesets and omits result `data` for resource updates. Per the Atomic

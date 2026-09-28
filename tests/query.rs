@@ -7,23 +7,27 @@ use seamark::query::{
     ReadPlanError, ReadQuery, SortDirection, SortField, parse_filter, plan_filters, plan_read,
     plan_resource_read,
 };
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    RelationshipMapping, RelationshipPermission, ResourceDefinition, ResourceRegistry,
+};
 
 fn registry() -> ResourceRegistry {
     let ports = ResourceDefinition::new("ports", "port_id")
-        .attribute("name", "title", true, true)
-        .attribute("capacity", "berth_count", false, false)
-        .attribute("depth", "depth_m", false, true)
-        .relationship("owner", "owner_id", "people");
+        .filterable_and_sortable_attribute("name", "title")
+        .attribute("capacity", "berth_count")
+        .sortable_attribute("depth", "depth_m")
+        .mapped_relationship(
+            RelationshipMapping::new("owner", "owner_id", "people")
+                .allow(RelationshipPermission::Include),
+        );
     let people = ResourceDefinition::new("people", "person_id")
-        .attribute("name", "display_name", true, true)
-        .relationship("organization", "organization_id", "organizations");
-    let organizations = ResourceDefinition::new("organizations", "organization_id").attribute(
-        "name",
-        "legal_name",
-        false,
-        true,
-    );
+        .filterable_and_sortable_attribute("name", "display_name")
+        .mapped_relationship(
+            RelationshipMapping::new("organization", "organization_id", "organizations")
+                .allow(RelationshipPermission::Include),
+        );
+    let organizations = ResourceDefinition::new("organizations", "organization_id")
+        .sortable_attribute("name", "legal_name");
     ResourceRegistry::new([ports, people, organizations]).unwrap()
 }
 

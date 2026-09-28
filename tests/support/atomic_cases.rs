@@ -16,7 +16,10 @@ use seamark::atomic::{
     plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
 use seamark::atomic_http;
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
+    RelationshipReassignment, ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
@@ -262,16 +265,71 @@ impl AtomicHrefResolver for ParityHrefResolver {
 
 pub fn registry() -> ResourceRegistry {
     ResourceRegistry::new([
-        ResourceDefinition::new("people", "person_id")
-            .attribute("name", "display_name", false, false)
-            .relationship("ports", "owned_ports", "ports"),
-        ResourceDefinition::new("ports", "port_id")
-            .attribute("name", "title", false, false)
-            .relationship("owner", "owner_id", "people")
-            .relationship("tags", "tag_links", "tags"),
-        ResourceDefinition::new("tags", "tag_id").attribute("name", "tag_name", false, false),
+        enabled_resource("people", "person_id")
+            .mapped_attribute(enabled_attribute("name", "display_name"))
+            .mapped_relationship(
+                enabled_relationship("ports", "owned_ports", "ports", false).to_many_foreign_key(
+                    "owner_id",
+                    true,
+                    RelationshipReassignment::Deny,
+                ),
+            ),
+        enabled_resource("ports", "port_id")
+            .mapped_attribute(enabled_attribute("name", "title"))
+            .mapped_relationship(enabled_relationship("owner", "owner_id", "people", true))
+            .mapped_relationship(
+                enabled_relationship("tags", "tag_links", "tags", false)
+                    .to_many_join_table("port_id", "tag_id"),
+            ),
+        enabled_resource("tags", "tag_id").mapped_attribute(enabled_attribute("name", "tag_name")),
     ])
     .unwrap()
+}
+
+pub fn enabled_resource(type_name: &str, identifier: &str) -> ResourceDefinition {
+    ResourceDefinition::new(type_name, identifier)
+        .allow(ResourcePermission::Create)
+        .allow(ResourcePermission::Update)
+        .allow(ResourcePermission::Delete)
+        .allow(ResourcePermission::AtomicCreate)
+        .allow(ResourcePermission::AtomicUpdate)
+        .allow(ResourcePermission::AtomicDelete)
+}
+
+pub fn enabled_attribute(public_name: &str, model_field: &str) -> AttributeMapping {
+    AttributeMapping::new(public_name, model_field)
+        .allow(AttributePermission::Filter)
+        .allow(AttributePermission::Sort)
+        .allow(AttributePermission::Create)
+        .allow(AttributePermission::Update)
+        .allow(AttributePermission::AtomicCreate)
+        .allow(AttributePermission::AtomicUpdate)
+}
+
+pub fn enabled_relationship(
+    public_name: &str,
+    model_field: &str,
+    target_type: &str,
+    to_one: bool,
+) -> RelationshipMapping {
+    let mapping = RelationshipMapping::new(public_name, model_field, target_type)
+        .allow(RelationshipPermission::Include)
+        .allow(RelationshipPermission::LinkageRead)
+        .allow(RelationshipPermission::BaseReplace)
+        .allow(RelationshipPermission::BaseAdd)
+        .allow(RelationshipPermission::BaseRemove)
+        .allow(RelationshipPermission::AtomicReplace)
+        .allow(RelationshipPermission::AtomicAdd)
+        .allow(RelationshipPermission::AtomicRemove)
+        .allow(RelationshipPermission::ResourceCreate)
+        .allow(RelationshipPermission::ResourceUpdate)
+        .allow(RelationshipPermission::AtomicResourceCreate)
+        .allow(RelationshipPermission::AtomicResourceUpdate);
+    if to_one {
+        mapping.to_one_foreign_key(true)
+    } else {
+        mapping.to_many()
+    }
 }
 
 pub async fn create_tables(database: &DatabaseConnection) {
@@ -300,7 +358,7 @@ pub async fn create_tables(database: &DatabaseConnection) {
         schema.create_table_from_entity(port::Entity),
         schema.create_table_from_entity(port_tag::Entity),
     ] {
-        database.execute(backend.build(&statement)).await.unwrap();
+        database.execute(&statement).await.unwrap();
     }
 }
 
@@ -415,8 +473,6 @@ pub fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatche
         registry,
         "ports",
         "tags",
-        "port_id",
-        "tag_id",
         Arc::new(MutationCodec),
     )
     .unwrap();
@@ -424,7 +480,6 @@ pub fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatche
         registry,
         "people",
         "ports",
-        "owner_id",
         Arc::new(MutationCodec),
     )
     .unwrap();

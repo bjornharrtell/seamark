@@ -13,7 +13,9 @@ use seamark::atomic::{
 };
 use seamark::http::AdapterResource;
 use seamark::query::{PaginationConfig, ReadQuery, plan_read, plan_resource_read};
-use seamark::registry::{ResourceDefinition, ResourceRegistry};
+use seamark::registry::{
+    AttributeMapping, AttributePermission, ResourceDefinition, ResourcePermission, ResourceRegistry,
+};
 use seamark::seaorm::{
     SeaOrmFilterValueCodec, SeaOrmMutationValueCodec, SeaOrmQueryExecutor, SeaOrmReadGuard,
 };
@@ -132,8 +134,20 @@ impl AtomicOperationsGuard for AllowOperations {
 
 fn registry() -> ResourceRegistry {
     ResourceRegistry::new([ResourceDefinition::new("records", "record_id")
-        .attribute("score", "score", true, false)
-        .attribute("label", "label", false, false)])
+        .allow(ResourcePermission::AtomicCreate)
+        .allow(ResourcePermission::AtomicUpdate)
+        .allow(ResourcePermission::AtomicDelete)
+        .mapped_attribute(
+            AttributeMapping::new("score", "score")
+                .allow(AttributePermission::Filter)
+                .allow(AttributePermission::AtomicCreate)
+                .allow(AttributePermission::AtomicUpdate),
+        )
+        .mapped_attribute(
+            AttributeMapping::new("label", "label")
+                .allow(AttributePermission::AtomicCreate)
+                .allow(AttributePermission::AtomicUpdate),
+        )])
     .unwrap()
 }
 
@@ -181,7 +195,7 @@ pub async fn run(database: &DatabaseConnection) {
         .unwrap();
     let schema = Schema::new(backend);
     database
-        .execute(backend.build(&schema.create_table_from_entity(record::Entity)))
+        .execute(&schema.create_table_from_entity(record::Entity))
         .await
         .unwrap();
 

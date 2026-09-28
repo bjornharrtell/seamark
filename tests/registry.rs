@@ -4,13 +4,13 @@ use seamark::registry::{RegistryError, ResourceDefinition, ResourceRegistry};
 
 fn ports() -> ResourceDefinition {
     ResourceDefinition::new("ports", "id")
-        .attribute("name", "title", true, true)
-        .attribute("capacity", "berth_count", false, false)
+        .filterable_and_sortable_attribute("name", "title")
+        .attribute("capacity", "berth_count")
         .relationship("owner", "owner", "people")
 }
 
 fn people() -> ResourceDefinition {
-    ResourceDefinition::new("people", "person_id").attribute("name", "full_name", true, false)
+    ResourceDefinition::new("people", "person_id").filterable_attribute("name", "full_name")
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn rejects_duplicate_resource_types_and_public_fields() {
     );
 
     let duplicate_field = ResourceDefinition::new("ports", "id")
-        .attribute("name", "title", false, false)
+        .attribute("name", "title")
         .relationship("name", "owner", "people");
     assert_eq!(
         ResourceRegistry::new([duplicate_field, people()]),
@@ -93,8 +93,8 @@ fn rejects_duplicate_resource_types_and_public_fields() {
     );
 
     let duplicate_attributes = ResourceDefinition::new("ports", "id")
-        .attribute("name", "title", false, false)
-        .attribute("name", "label", false, false);
+        .attribute("name", "title")
+        .attribute("name", "label");
     assert_eq!(
         ResourceRegistry::new([duplicate_attributes]),
         Err(RegistryError::DuplicateFieldName {
@@ -119,18 +119,18 @@ fn rejects_duplicate_resource_types_and_public_fields() {
 fn rejects_colliding_internal_field_mappings() {
     let collisions = [
         (
-            ResourceDefinition::new("ports", "id").attribute("key", "id", false, false),
+            ResourceDefinition::new("ports", "id").attribute("key", "id"),
             "id",
         ),
         (
             ResourceDefinition::new("ports", "id")
-                .attribute("name", "title", false, false)
-                .attribute("label", "title", false, false),
+                .attribute("name", "title")
+                .attribute("label", "title"),
             "title",
         ),
         (
             ResourceDefinition::new("ports", "id")
-                .attribute("ownerName", "owner", false, false)
+                .attribute("ownerName", "owner")
                 .relationship("owner", "owner", "people"),
             "owner",
         ),
@@ -172,18 +172,14 @@ fn rejects_invalid_fields_identifiers_and_relationship_targets() {
         })
     );
     assert_eq!(
-        ResourceRegistry::new([
-            ResourceDefinition::new("ports", "id").attribute("type", "kind", false, false)
-        ]),
+        ResourceRegistry::new([ResourceDefinition::new("ports", "id").attribute("type", "kind")]),
         Err(RegistryError::ReservedFieldName {
             resource_type: "ports".to_owned(),
             field_name: "type".to_owned()
         })
     );
     assert_eq!(
-        ResourceRegistry::new([
-            ResourceDefinition::new("ports", "id").attribute("id", "key", false, false)
-        ]),
+        ResourceRegistry::new([ResourceDefinition::new("ports", "id").attribute("id", "key")]),
         Err(RegistryError::ReservedFieldName {
             resource_type: "ports".to_owned(),
             field_name: "id".to_owned()
@@ -200,16 +196,14 @@ fn rejects_invalid_fields_identifiers_and_relationship_targets() {
         })
     );
     assert_eq!(
-        ResourceRegistry::new([
-            ResourceDefinition::new("ports", "id").attribute("", "field", false, false)
-        ]),
+        ResourceRegistry::new([ResourceDefinition::new("ports", "id").attribute("", "field")]),
         Err(RegistryError::EmptyFieldName {
             resource_type: "ports".to_owned()
         })
     );
     assert_eq!(
         ResourceRegistry::new([
-            ResourceDefinition::new("ports", "id").attribute("bad/name", "field", false, false)
+            ResourceDefinition::new("ports", "id").attribute("bad/name", "field")
         ]),
         Err(RegistryError::InvalidFieldName {
             resource_type: "ports".to_owned(),
@@ -217,9 +211,7 @@ fn rejects_invalid_fields_identifiers_and_relationship_targets() {
         })
     );
     assert_eq!(
-        ResourceRegistry::new([
-            ResourceDefinition::new("ports", "id").attribute("name", "", false, false)
-        ]),
+        ResourceRegistry::new([ResourceDefinition::new("ports", "id").attribute("name", "")]),
         Err(RegistryError::EmptyModelField {
             resource_type: "ports".to_owned(),
             field_name: "name".to_owned()

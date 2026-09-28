@@ -280,10 +280,20 @@ fn validate_operation_shape(request_document: &Value) -> Result<(), AtomicOperat
 
 fn atomic_request_error(error: AtomicOperationsError, request_document: &Value) -> Response {
     let pointer = match &error {
-        AtomicOperationsError::InvalidOperation { pointer, .. } => Some(pointer.clone()),
+        AtomicOperationsError::InvalidOperation { pointer, .. }
+        | AtomicOperationsError::Forbidden { pointer, .. } => Some(pointer.clone()),
         AtomicOperationsError::MissingOperations => Some("/atomic:operations".to_owned()),
         _ => None,
     };
+    if matches!(&error, AtomicOperationsError::Forbidden { .. }) {
+        return atomic_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Access denied",
+            &error.to_string(),
+            existing_request_pointer(pointer, request_document),
+        );
+    }
     atomic_error(
         StatusCode::BAD_REQUEST,
         "invalid_atomic_operation",
@@ -734,6 +744,32 @@ mod tests {
             ),
         );
         assert!(!accepts_atomic_media_type(&headers));
+    }
+
+    #[tokio::test]
+    async fn disabled_atomic_permissions_map_to_forbidden_errors() {
+        let request_document = serde_json::json!({
+            "atomic:operations": [{"op": "add", "data": {"type": "authors"}}]
+        });
+        let response = atomic_request_error(
+            AtomicOperationsError::Forbidden {
+                index: 0,
+                pointer: "/atomic:operations/0/data/type".to_owned(),
+                message: "Atomic create is disabled".to_owned(),
+            },
+            &request_document,
+        );
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let document: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            document["errors"][0]["source"]["pointer"],
+            "/atomic:operations/0/data/type"
+        );
     }
 
     #[tokio::test]

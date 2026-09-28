@@ -11,7 +11,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde_json::{Map, Value};
+use sea_orm::DatabaseConnection;
+use serde_json::Value;
 
 use crate::document::{
     ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship, RelationshipData,
@@ -19,12 +20,15 @@ use crate::document::{
 };
 use crate::json::parse_unique_members;
 use crate::media::{is_valid_accept_extension, unquote_http_quoted_string};
+pub use crate::projection::{ProjectionError, project_resource};
+use crate::projection::{include_relationships_by_type, project_resource_with_includes};
 use crate::query::{
     IncludeNode, PaginationConfig, PlannedField, ReadPlan, ReadPlanError, ReadQuery, plan_read,
     plan_resource_read,
 };
 use crate::registry::{
-    RelationshipCardinality, RelationshipMapping, ResourceDefinition, ResourceRegistry,
+    AttributePermission, RelationshipCardinality, RelationshipMapping, RelationshipPermission,
+    ResourceDefinition, ResourcePermission, ResourceRegistry,
 };
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -165,6 +169,13 @@ pub trait MutationResourceAdapter: Send + Sync + 'static {
         resource: &ResourceDefinition,
         command: MutationCommand,
     ) -> Result<MutationOutcome, MutationAdapterError>;
+
+    /// Validates this adapter against the complete registry before routes are
+    /// served. Custom adapters may use the default when they dispatch
+    /// dynamically.
+    fn validate_registry(&self, _registry: &ResourceRegistry) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The category of a base HTTP action presented to authorization policy.
@@ -246,6 +257,27 @@ pub trait QueryResourceAdapter: Send + Sync + 'static {
         plan: &ReadPlan,
     ) -> Result<QueryCollectionResult, QueryAdapterError>;
 
+    /// Executes a collection plan with the router's shared execution limits.
+    ///
+    /// Adapters that expand includes during execution can override this
+    /// method to consume runtime budgets. The default keeps custom adapters
+    /// working and the router checks their returned include count afterward.
+    async fn collection_with_limits(
+        &self,
+        resource: &ResourceDefinition,
+        plan: &ReadPlan,
+        _limits: &crate::limits::ExecutionLimits,
+    ) -> Result<QueryCollectionResult, QueryAdapterError> {
+        self.collection(resource, plan).await
+    }
+
+    /// Validates this adapter against the complete registry before routes are
+    /// served. Custom adapters may use the default when they dispatch
+    /// dynamically.
+    fn validate_registry(&self, _registry: &ResourceRegistry) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Executes the plan for one resource addressed by its persistent ID.
     ///
     /// The default reports the unsupported operation explicitly so existing
@@ -258,6 +290,21 @@ pub trait QueryResourceAdapter: Send + Sync + 'static {
         _plan: &ReadPlan,
     ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
         Err(QueryAdapterError::ResourceReadUnsupported)
+    }
+
+    /// Executes a resource plan with the router's shared execution limits.
+    ///
+    /// Adapters that expand includes during execution can override this
+    /// method to consume runtime budgets. The default keeps custom adapters
+    /// working and the router checks their returned include count afterward.
+    async fn resource_with_limits(
+        &self,
+        resource: &ResourceDefinition,
+        id: &str,
+        plan: &ReadPlan,
+        _limits: &crate::limits::ExecutionLimits,
+    ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
+        self.resource(resource, id, plan).await
     }
 }
 
@@ -272,19 +319,49 @@ pub trait RequestAuthorizer: Send + Sync + 'static {
         headers: &HeaderMap,
     ) -> bool;
 
+    /// Authorizes a complete validated query plan, including filters, sort
+    /// fields, fieldsets, and requested relationships. Implementations that
+    /// distinguish access to includes or query capabilities should override
+    /// this method.
+    async fn authorize_query(
+        &self,
+        resource: &ResourceDefinition,
+        resource_id: Option<&str>,
+        _plan: &ReadPlan,
+        headers: &HeaderMap,
+    ) -> bool {
+        self.authorize(resource.type_name(), resource_id, headers)
+            .await
+    }
+
     /// Authorizes a base mutation or relationship action.
     ///
-    /// Existing read-only authorizers retain their previous behavior. An
-    /// application that needs distinct mutation policy should override this
-    /// method.
+    /// The default denies the mutation. Applications must explicitly provide
+    /// a mutation policy; successful read authorization grants no write access.
     async fn authorize_mutation(
         &self,
         _action: MutationAction,
-        resource_type: &str,
-        resource_id: Option<&str>,
+        _resource: &ResourceDefinition,
+        _resource_id: Option<&str>,
+        _command: &MutationCommand,
         headers: &HeaderMap,
     ) -> bool {
-        self.authorize(resource_type, resource_id, headers).await
+        let _ = headers;
+        false
+    }
+
+    /// Checks request-specific mutation limits before adapter execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a concise explanation if a configured limit is exceeded.
+    fn validate_mutation_limits(
+        &self,
+        _action: MutationAction,
+        _resource: &ResourceDefinition,
+        _command: &MutationCommand,
+    ) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -302,15 +379,27 @@ impl RequestAuthorizer for AllowAllAuthorizer {
     ) -> bool {
         true
     }
+
+    async fn authorize_mutation(
+        &self,
+        _action: MutationAction,
+        _resource: &ResourceDefinition,
+        _resource_id: Option<&str>,
+        _command: &MutationCommand,
+        _headers: &HeaderMap,
+    ) -> bool {
+        true
+    }
 }
 
 struct ApiState {
     registry: Arc<ResourceRegistry>,
-    adapter: Arc<dyn ResourceAdapter>,
+    adapter: Option<Arc<dyn ResourceAdapter>>,
     authorizer: Arc<dyn RequestAuthorizer>,
     query_adapter: Option<Arc<dyn QueryResourceAdapter>>,
     mutation_adapter: Option<Arc<dyn MutationResourceAdapter>>,
     pagination: Option<PaginationConfig>,
+    execution_limits: Option<crate::limits::ExecutionLimits>,
 }
 
 /// Builds the collection and single-resource GET routes without query support.
@@ -325,11 +414,12 @@ pub fn router(
 ) -> Router {
     build_router(ApiState {
         registry,
-        adapter,
+        adapter: Some(adapter),
         authorizer,
         query_adapter: None,
         mutation_adapter: None,
         pagination: None,
+        execution_limits: None,
     })
 }
 
@@ -347,11 +437,12 @@ pub fn router_with_mutations(
 ) -> Router {
     build_router(ApiState {
         registry,
-        adapter,
+        adapter: Some(adapter),
         authorizer,
         query_adapter: None,
         mutation_adapter: Some(mutation_adapter),
         pagination: None,
+        execution_limits: None,
     })
 }
 
@@ -371,11 +462,12 @@ pub fn router_with_query(
 ) -> Router {
     build_router(ApiState {
         registry,
-        adapter,
+        adapter: Some(adapter),
         authorizer,
         query_adapter: Some(query_adapter),
         mutation_adapter: None,
         pagination: Some(pagination),
+        execution_limits: None,
     })
 }
 
@@ -391,18 +483,227 @@ pub fn router_with_query_and_mutations(
 ) -> Router {
     build_router(ApiState {
         registry,
-        adapter,
+        adapter: Some(adapter),
         authorizer,
         query_adapter: Some(query_adapter),
         mutation_adapter: Some(mutation_adapter),
         pagination: Some(pagination),
+        execution_limits: None,
     })
 }
 
+/// A composable router builder with separate opt-ins for queries, ordinary
+/// mutations, and Atomic Operations.
+///
+/// Every capability is disabled by default. Query-only consumers can provide
+/// a [`QueryResourceAdapter`] without writing a forwarding
+/// [`ResourceAdapter`] implementation.
+pub struct ApiBuilder {
+    registry: Arc<ResourceRegistry>,
+    authorizer: Arc<dyn RequestAuthorizer>,
+    adapter: Option<Arc<dyn ResourceAdapter>>,
+    query_adapter: Option<Arc<dyn QueryResourceAdapter>>,
+    mutation_adapter: Option<Arc<dyn MutationResourceAdapter>>,
+    pagination: Option<PaginationConfig>,
+    execution_limits: Option<crate::limits::ExecutionLimits>,
+    atomic: Option<AtomicApiConfig>,
+}
+
+struct AtomicApiConfig {
+    database: DatabaseConnection,
+    guard: Arc<dyn crate::atomic::AtomicOperationsGuard>,
+    handler: Arc<dyn crate::atomic::AtomicOperationHandler>,
+    href_resolver: Option<Arc<dyn crate::atomic::AtomicHrefResolver>>,
+}
+
+impl ApiBuilder {
+    /// Creates a read-disabled builder. Add a read adapter or query support
+    /// explicitly before building the router.
+    #[must_use]
+    pub fn new(registry: Arc<ResourceRegistry>, authorizer: Arc<dyn RequestAuthorizer>) -> Self {
+        Self {
+            registry,
+            authorizer,
+            adapter: None,
+            query_adapter: None,
+            mutation_adapter: None,
+            pagination: None,
+            execution_limits: None,
+            atomic: None,
+        }
+    }
+
+    /// Enables simple collection/resource reads without query planning.
+    #[must_use]
+    pub fn reads(mut self, adapter: Arc<dyn ResourceAdapter>) -> Self {
+        self.adapter = Some(adapter);
+        self
+    }
+
+    /// Enables validated collection queries and single-resource query plans.
+    #[must_use]
+    pub fn queries(
+        mut self,
+        adapter: Arc<dyn QueryResourceAdapter>,
+        pagination: PaginationConfig,
+    ) -> Self {
+        self.query_adapter = Some(adapter);
+        self.pagination = Some(pagination);
+        self
+    }
+
+    /// Enables ordinary JSON:API resource and relationship mutations.
+    #[must_use]
+    pub fn mutations(mut self, adapter: Arc<dyn MutationResourceAdapter>) -> Self {
+        self.mutation_adapter = Some(adapter);
+        self
+    }
+
+    /// Applies reusable include, filter, relationship, and Atomic batch limits.
+    #[must_use]
+    pub fn limits(mut self, limits: crate::limits::ExecutionLimits) -> Self {
+        self.execution_limits = Some(limits);
+        self
+    }
+
+    /// Enables the Atomic Operations endpoint as an independent capability.
+    #[must_use]
+    pub fn atomic_operations(
+        mut self,
+        database: DatabaseConnection,
+        guard: Arc<dyn crate::atomic::AtomicOperationsGuard>,
+        handler: Arc<dyn crate::atomic::AtomicOperationHandler>,
+    ) -> Self {
+        self.atomic = Some(AtomicApiConfig {
+            database,
+            guard,
+            handler,
+            href_resolver: None,
+        });
+        self
+    }
+
+    /// Enables Atomic Operations with an application `href` resolver.
+    #[must_use]
+    pub fn atomic_operations_with_href_resolver(
+        mut self,
+        database: DatabaseConnection,
+        guard: Arc<dyn crate::atomic::AtomicOperationsGuard>,
+        handler: Arc<dyn crate::atomic::AtomicOperationHandler>,
+        href_resolver: Arc<dyn crate::atomic::AtomicHrefResolver>,
+    ) -> Self {
+        self.atomic = Some(AtomicApiConfig {
+            database,
+            guard,
+            handler,
+            href_resolver: Some(href_resolver),
+        });
+        self
+    }
+
+    /// Builds the configured component router.
+    #[must_use]
+    pub fn build(self) -> Router {
+        self.try_build()
+            .unwrap_or_else(|error| panic!("invalid Seamark API configuration: {error}"))
+    }
+
+    /// Validates standard adapters and builds the configured component router.
+    ///
+    /// # Errors
+    ///
+    /// Returns an actionable error when an adapter reports missing or
+    /// conflicting registrations for the resource registry.
+    pub fn try_build(self) -> Result<Router, ApiConfigurationError> {
+        if let Some(adapter) = &self.query_adapter {
+            adapter
+                .validate_registry(&self.registry)
+                .map_err(ApiConfigurationError::QueryAdapter)?;
+        }
+        if let Some(adapter) = &self.mutation_adapter {
+            adapter
+                .validate_registry(&self.registry)
+                .map_err(ApiConfigurationError::MutationAdapter)?;
+        }
+        if let Some(atomic) = &self.atomic {
+            atomic
+                .handler
+                .validate_registry(&self.registry)
+                .map_err(ApiConfigurationError::AtomicHandler)?;
+        }
+        Ok(self.build_unchecked())
+    }
+
+    fn build_unchecked(self) -> Router {
+        let limits = self.execution_limits.clone();
+        let atomic_registry = self.registry.clone();
+        let query_adapter = match (self.query_adapter, limits.as_ref()) {
+            (Some(adapter), Some(limits)) => Some(limits.wrap_query_adapter(adapter)),
+            (adapter, _) => adapter,
+        };
+        let mut router = build_router(ApiState {
+            registry: self.registry,
+            adapter: self.adapter,
+            authorizer: self.authorizer,
+            query_adapter,
+            mutation_adapter: self.mutation_adapter,
+            pagination: self.pagination,
+            execution_limits: limits.clone(),
+        });
+        if let Some(atomic) = self.atomic {
+            let guard = limits.as_ref().map_or(atomic.guard.clone(), |limits| {
+                limits.wrap_atomic_guard(atomic.guard.clone())
+            });
+            let atomic_router = if let Some(href_resolver) = atomic.href_resolver {
+                crate::atomic_http::router_with_href_resolver(
+                    atomic_registry,
+                    atomic.database,
+                    guard,
+                    atomic.handler,
+                    href_resolver,
+                )
+            } else {
+                crate::atomic_http::router(atomic_registry, atomic.database, guard, atomic.handler)
+            };
+            router = router.merge(atomic_router);
+        }
+        router
+    }
+}
+
+/// An invalid adapter registration detected while assembling an API router.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApiConfigurationError {
+    /// The configured query adapter is inconsistent with the resource registry.
+    QueryAdapter(String),
+    /// The configured base mutation adapter is inconsistent with the registry.
+    MutationAdapter(String),
+    /// The configured Atomic Operations handler is inconsistent with the registry.
+    AtomicHandler(String),
+}
+
+impl std::fmt::Display for ApiConfigurationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QueryAdapter(message) => write!(formatter, "invalid query adapter: {message}"),
+            Self::MutationAdapter(message) => {
+                write!(formatter, "invalid mutation adapter: {message}")
+            }
+            Self::AtomicHandler(message) => {
+                write!(formatter, "invalid Atomic Operations handler: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ApiConfigurationError {}
+
 fn build_router(state: ApiState) -> Router {
     let mutation_routes = state.mutation_adapter.is_some();
-    let router = if mutation_routes {
-        Router::new()
+    let read_routes = state.adapter.is_some() || state.query_adapter.is_some();
+    let mut router = Router::new();
+    if read_routes && mutation_routes {
+        router = router
             .route(
                 "/{resource_type}",
                 get(get_collection)
@@ -415,17 +716,9 @@ fn build_router(state: ApiState) -> Router {
                     .patch(update_resource)
                     .delete(delete_resource)
                     .fallback(method_not_allowed),
-            )
-            .route(
-                "/{resource_type}/{id}/relationships/{relationship}",
-                get(get_relationship)
-                    .patch(replace_relationship)
-                    .post(add_relationship_members)
-                    .delete(remove_relationship_members)
-                    .fallback(method_not_allowed),
-            )
-    } else {
-        Router::new()
+            );
+    } else if read_routes {
+        router = router
             .route(
                 "/{resource_type}",
                 get(get_collection).fallback(method_not_allowed),
@@ -433,8 +726,30 @@ fn build_router(state: ApiState) -> Router {
             .route(
                 "/{resource_type}/{id}",
                 get(get_resource).fallback(method_not_allowed),
+            );
+    } else if mutation_routes {
+        router = router
+            .route(
+                "/{resource_type}",
+                axum::routing::post(create_resource).fallback(method_not_allowed),
             )
-    };
+            .route(
+                "/{resource_type}/{id}",
+                axum::routing::patch(update_resource)
+                    .delete(delete_resource)
+                    .fallback(method_not_allowed),
+            );
+    }
+    if mutation_routes {
+        router = router.route(
+            "/{resource_type}/{id}/relationships/{relationship}",
+            get(get_relationship)
+                .patch(replace_relationship)
+                .post(add_relationship_members)
+                .delete(remove_relationship_members)
+                .fallback(method_not_allowed),
+        );
+    }
     router.with_state(Arc::new(state))
 }
 
@@ -506,7 +821,7 @@ async fn get_collection(
             );
         }
     };
-    let (plan, include_requested) = if has_query {
+    let (plan, include_requested) = if state.query_adapter.is_some() {
         let Some(pagination) = state.pagination.as_ref() else {
             return request_error_response(RequestValidationError::UnsupportedQuery(
                 query.as_deref().and_then(first_query_parameter),
@@ -518,17 +833,31 @@ async fn get_collection(
         };
         let include_requested = !query.includes.is_empty();
         match plan_read(&state.registry, &resource_type, &query, pagination) {
-            Ok(plan) => (Some(plan), include_requested),
+            Ok(plan) => {
+                if let Some(limits) = &state.execution_limits
+                    && let Err(message) = limits.validate_read(&plan)
+                {
+                    return limit_exceeded_error(message);
+                }
+                (Some(plan), include_requested)
+            }
             Err(error) => return read_plan_error(error),
         }
     } else {
         (None, false)
     };
-    if !state
-        .authorizer
-        .authorize(&resource_type, None, &headers)
-        .await
-    {
+    let allowed = if let Some(plan) = plan.as_ref() {
+        state
+            .authorizer
+            .authorize_query(definition, None, plan, &headers)
+            .await
+    } else {
+        state
+            .authorizer
+            .authorize(&resource_type, None, &headers)
+            .await
+    };
+    if !allowed {
         return forbidden_error();
     }
 
@@ -539,14 +868,29 @@ async fn get_collection(
                 Err(error) => return query_adapter_error(error),
             }
         } else {
-            match state.adapter.collection(definition).await {
+            let Some(adapter) = state.adapter.as_ref() else {
+                return read_not_configured_error();
+            };
+            match adapter.collection(definition).await {
                 Ok(records) => (records, Vec::new()),
                 Err(_) => return adapter_error(),
             }
         };
+    let included_relationships = plan
+        .as_ref()
+        .map(include_relationships_by_type)
+        .unwrap_or_default();
     let resources = match records
         .iter()
-        .map(|record| project_resource(definition, record))
+        .map(|record| {
+            project_resource_with_includes(
+                definition,
+                record,
+                included_relationships
+                    .get(definition.type_name())
+                    .unwrap_or(&std::collections::BTreeSet::new()),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(resources) => resources,
@@ -558,8 +902,14 @@ async fn get_collection(
             let definition = state
                 .registry
                 .resource(&included.resource_type)
-                .map_err(|_| AdapterError)?;
-            project_resource(definition, &included.resource)
+                .map_err(|_| ProjectionError::UnknownResourceType)?;
+            project_resource_with_includes(
+                definition,
+                &included.resource,
+                included_relationships
+                    .get(&included.resource_type)
+                    .unwrap_or(&std::collections::BTreeSet::new()),
+            )
         })
         .collect::<Result<Vec<_>, _>>()
     {
@@ -632,7 +982,7 @@ async fn get_resource(
             );
         }
     };
-    let (plan, include_requested) = if has_query {
+    let (plan, include_requested) = if state.query_adapter.is_some() {
         let Some(pagination) = state.pagination.as_ref() else {
             return request_error_response(RequestValidationError::UnsupportedQuery(
                 query.as_deref().and_then(first_query_parameter),
@@ -644,17 +994,31 @@ async fn get_resource(
         };
         let include_requested = !query.includes.is_empty();
         match plan_resource_read(&state.registry, &resource_type, &query, pagination) {
-            Ok(plan) => (Some(plan), include_requested),
+            Ok(plan) => {
+                if let Some(limits) = &state.execution_limits
+                    && let Err(message) = limits.validate_read(&plan)
+                {
+                    return limit_exceeded_error(message);
+                }
+                (Some(plan), include_requested)
+            }
             Err(error) => return read_plan_error(error),
         }
     } else {
         (None, false)
     };
-    if !state
-        .authorizer
-        .authorize(&resource_type, Some(&id), &headers)
-        .await
-    {
+    let allowed = if let Some(plan) = plan.as_ref() {
+        state
+            .authorizer
+            .authorize_query(definition, Some(&id), plan, &headers)
+            .await
+    } else {
+        state
+            .authorizer
+            .authorize(&resource_type, Some(&id), &headers)
+            .await
+    };
+    if !allowed {
         return forbidden_error();
     }
 
@@ -674,7 +1038,10 @@ async fn get_resource(
                 Err(error) => return query_adapter_error(error),
             }
         } else {
-            match state.adapter.resource(definition, &id).await {
+            let Some(adapter) = state.adapter.as_ref() else {
+                return read_not_configured_error();
+            };
+            match adapter.resource(definition, &id).await {
                 Ok(Some(record)) => (record, Vec::new()),
                 Ok(None) => {
                     return protocol_error(
@@ -688,7 +1055,17 @@ async fn get_resource(
                 Err(_) => return adapter_error(),
             }
         };
-    let resource = match project_resource(definition, &record) {
+    let included_relationships = plan
+        .as_ref()
+        .map(include_relationships_by_type)
+        .unwrap_or_default();
+    let resource = match project_resource_with_includes(
+        definition,
+        &record,
+        included_relationships
+            .get(definition.type_name())
+            .unwrap_or(&std::collections::BTreeSet::new()),
+    ) {
         Ok(resource) => resource,
         Err(_) => return adapter_error(),
     };
@@ -698,8 +1075,14 @@ async fn get_resource(
             let definition = state
                 .registry
                 .resource(&included.resource_type)
-                .map_err(|_| AdapterError)?;
-            project_resource(definition, &included.resource)
+                .map_err(|_| ProjectionError::UnknownResourceType)?;
+            project_resource_with_includes(
+                definition,
+                &included.resource,
+                included_relationships
+                    .get(&included.resource_type)
+                    .unwrap_or(&std::collections::BTreeSet::new()),
+            )
         })
         .collect::<Result<Vec<_>, _>>()
     {
@@ -783,7 +1166,7 @@ async fn create_resource(
             Some("/data/id"),
         );
     }
-    let changeset = match map_resource_changeset(definition, &resource) {
+    let changeset = match map_resource_changeset(definition, &resource, true) {
         Ok(changeset) => changeset,
         Err(response) => return response,
     };
@@ -867,7 +1250,7 @@ async fn update_resource(
             Some("/data/id"),
         );
     }
-    let changeset = match map_resource_changeset(definition, &resource) {
+    let changeset = match map_resource_changeset(definition, &resource, false) {
         Ok(changeset) => changeset,
         Err(response) => return response,
     };
@@ -942,6 +1325,9 @@ async fn get_relationship(
         Ok(relationship) => relationship,
         Err(response) => return response,
     };
+    if !relationship.allows(RelationshipPermission::LinkageRead) {
+        return forbidden_error();
+    }
     let Some(cardinality) = relationship.cardinality() else {
         return relationship_cardinality_required(&relationship_name);
     };
@@ -1063,6 +1449,14 @@ async fn mutate_relationship(
     let Some(cardinality) = relationship.cardinality() else {
         return relationship_cardinality_required(&relationship_name);
     };
+    let permission = match method {
+        RelationshipHttpMethod::Replace => RelationshipPermission::BaseReplace,
+        RelationshipHttpMethod::Add => RelationshipPermission::BaseAdd,
+        RelationshipHttpMethod::Remove => RelationshipPermission::BaseRemove,
+    };
+    if !relationship.allows(permission) {
+        return forbidden_error();
+    }
     if !matches!(method, RelationshipHttpMethod::Replace)
         && cardinality != RelationshipCardinality::ToMany
     {
@@ -1252,7 +1646,15 @@ fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
 fn map_resource_changeset(
     definition: &ResourceDefinition,
     resource: &ResourceObject,
+    create: bool,
 ) -> Result<ResourceMutationChangeset, Response> {
+    if !definition.allows(if create {
+        ResourcePermission::Create
+    } else {
+        ResourcePermission::Update
+    }) {
+        return Err(forbidden_error());
+    }
     let mut changeset = ResourceMutationChangeset::default();
     if let Some(attributes) = &resource.attributes {
         for (public_name, value) in attributes {
@@ -1262,6 +1664,13 @@ fn map_resource_changeset(
                     &format!("/data/attributes/{}", escape_json_pointer(public_name)),
                 ));
             };
+            if !mapping.allows(if create {
+                AttributePermission::Create
+            } else {
+                AttributePermission::Update
+            }) {
+                return Err(forbidden_error());
+            }
             changeset
                 .attributes
                 .insert(mapping.model_field().to_owned(), value.clone());
@@ -1275,6 +1684,13 @@ fn map_resource_changeset(
                     &format!("/data/relationships/{}", escape_json_pointer(public_name)),
                 ));
             };
+            if !mapping.allows(if create {
+                RelationshipPermission::ResourceCreate
+            } else {
+                RelationshipPermission::ResourceUpdate
+            }) {
+                return Err(forbidden_error());
+            }
             let Some(data) = relationship.data.clone() else {
                 return Err(mutation_error(
                     StatusCode::BAD_REQUEST,
@@ -1524,9 +1940,30 @@ async fn execute_mutation(
     headers: &HeaderMap,
     command: MutationCommand,
 ) -> Result<MutationOutcome, Response> {
+    let permission = match action {
+        MutationAction::Create => Some(ResourcePermission::Create),
+        MutationAction::Update => Some(ResourcePermission::Update),
+        MutationAction::Delete => Some(ResourcePermission::Delete),
+        MutationAction::ReadRelationship
+        | MutationAction::ReplaceRelationship
+        | MutationAction::AddRelationshipMembers
+        | MutationAction::RemoveRelationshipMembers => None,
+    };
+    if permission.is_some_and(|permission| !definition.allows(permission)) {
+        return Err(forbidden_error());
+    }
+    state
+        .authorizer
+        .validate_mutation_limits(action, definition, &command)
+        .map_err(limit_exceeded_error)?;
+    if let Some(limits) = &state.execution_limits {
+        limits
+            .validate_mutation(&command)
+            .map_err(limit_exceeded_error)?;
+    }
     if !state
         .authorizer
-        .authorize_mutation(action, definition.type_name(), resource_id, headers)
+        .authorize_mutation(action, definition, resource_id, &command, headers)
         .await
     {
         return Err(forbidden_error());
@@ -1783,6 +2220,9 @@ fn query_parse_error(error: QueryParseError) -> Response {
 }
 
 fn read_plan_error(error: ReadPlanError) -> Response {
+    if matches!(&error, ReadPlanError::IncludeNotEnabled { .. }) {
+        return forbidden_error();
+    }
     let parameter = match &error {
         ReadPlanError::UnsupportedQueryParameters(parameters) => parameters.first().cloned(),
         ReadPlanError::Filter(_) => Some("filter".to_owned()),
@@ -1794,9 +2234,9 @@ fn read_plan_error(error: ReadPlanError) -> Response {
         | ReadPlanError::InvalidFieldset { resource_type, .. } => {
             Some(format!("fields[{resource_type}]"))
         }
-        ReadPlanError::InvalidIncludePath(_) | ReadPlanError::UnknownRelationship { .. } => {
-            Some("include".to_owned())
-        }
+        ReadPlanError::InvalidIncludePath(_)
+        | ReadPlanError::UnknownRelationship { .. }
+        | ReadPlanError::IncludeNotEnabled { .. } => Some("include".to_owned()),
         ReadPlanError::InvalidPageParameter { parameter, .. } => Some((*parameter).to_owned()),
         ReadPlanError::PageSizeExceedsMaximum { .. } => Some("page[size]".to_owned()),
         ReadPlanError::PageOffsetOverflow => Some("page[number]".to_owned()),
@@ -1985,48 +2425,6 @@ fn split_quoted(value: &str, delimiter: char) -> Vec<&str> {
     segments
 }
 
-fn project_resource(
-    definition: &ResourceDefinition,
-    record: &AdapterResource,
-) -> Result<ResourceObject, AdapterError> {
-    let attributes: Map<String, Value> = definition
-        .attributes()
-        .iter()
-        .filter_map(|mapping| {
-            record
-                .attributes
-                .get(mapping.model_field())
-                .map(|value| (mapping.public_name().to_owned(), value.clone()))
-        })
-        .collect();
-    let relationships = definition
-        .relationships()
-        .iter()
-        .filter_map(|mapping| {
-            record
-                .relationships
-                .get(mapping.model_field())
-                .map(|relationship| (mapping, relationship))
-        })
-        .map(|(mapping, relationship)| {
-            if !relationship_matches_target(relationship, mapping.target_type()) {
-                return Err(AdapterError);
-            }
-            Ok((mapping.public_name().to_owned(), relationship.clone()))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-
-    Ok(ResourceObject {
-        type_name: definition.type_name().to_owned(),
-        id: Some(record.id.clone()),
-        lid: None,
-        attributes: (!attributes.is_empty()).then_some(attributes),
-        relationships: (!relationships.is_empty()).then_some(relationships),
-        links: None,
-        meta: None,
-    })
-}
-
 fn apply_fieldset(resource: &mut ResourceObject, fieldset: &[PlannedField]) {
     let attributes = fieldset
         .iter()
@@ -2080,16 +2478,6 @@ fn has_sparse_fieldset_include_relationship(plan: &ReadPlan) -> bool {
     has_hidden_relationship(&plan.resource_type, &plan.includes, &plan.fieldsets)
 }
 
-fn relationship_matches_target(relationship: &Relationship, target_type: &str) -> bool {
-    match relationship.data.as_ref() {
-        None | Some(RelationshipData::Null) => true,
-        Some(RelationshipData::One(identifier)) => identifier.type_name == target_type,
-        Some(RelationshipData::Many(identifiers)) => identifiers
-            .iter()
-            .all(|identifier| identifier.type_name == target_type),
-    }
-}
-
 fn respond_with_validated_document(status: StatusCode, document: JsonApiDocument) -> Response {
     let mut response = (status, Json(document)).into_response();
     set_jsonapi_headers(&mut response);
@@ -2106,12 +2494,32 @@ fn forbidden_error() -> Response {
     )
 }
 
+fn limit_exceeded_error(message: String) -> Response {
+    protocol_error(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "resource_limit",
+        "Mutation exceeds configured limits",
+        Some(message),
+        None,
+    )
+}
+
 fn adapter_error() -> Response {
     protocol_error(
         StatusCode::INTERNAL_SERVER_ERROR,
         "read_failed",
         "Resource read failed",
         Some("The resource could not be loaded.".to_owned()),
+        None,
+    )
+}
+
+fn read_not_configured_error() -> Response {
+    protocol_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "read_not_supported",
+        "Reads are not configured",
+        Some("Enable a read or query adapter before serving read routes.".to_owned()),
         None,
     )
 }

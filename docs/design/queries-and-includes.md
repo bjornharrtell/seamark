@@ -1,82 +1,92 @@
 # Queries, includes, and limits
 
-**Status: partial implementation.** The adapter-independent parser/read
-planner and a focused SeaORM/PostgreSQL collection executor are implemented.
-The default Axum router continues to reject query strings. The opt-in
-`router_with_query` routes parse collection and single-resource query
-parameters and pass validated plans to an application-provided query adapter
-after authorization. Collections support filters, sorting, pagination,
-includes, and sparse fieldsets; single-resource reads support includes and
-sparse fieldsets, while filters, sorting, and pagination remain unsupported.
-PostgreSQL and SQLite integrations connect both routes to the SeaORM executor
-and verify root and included-resource output.
+**Status: partial implementation.** The adapter-independent read planner,
+composable query routes, and standard SeaORM query adapter support collection
+queries and single-resource reads. Collections support filters, sorting,
+pagination, includes, and sparse fieldsets. Single-resource reads support
+includes and sparse fieldsets; filters, sorting, and pagination are
+collection-only.
 
 ## Filters, sorting, and pagination
 
-JSON:API does not define a universal filter grammar or pagination contract. Seamark's initial filter syntax uses a function-style form, with JsonApiDotNetCore as a reference. The parser supports `equals(field,'literal')`, `equals(field,null)`, `and`, `or`, and `not`; repeated filters at one scope combine with OR. Apostrophes in string literals are doubled. Range comparisons, text functions, relationship-path filters, `has`, and `count` are outside the initial scope.
+JSON:API does not define a universal filter grammar or pagination contract.
+Seamark's initial filter syntax uses `equals(field,'literal')`,
+`equals(field,null)`, and the `and`, `or`, and `not` operators. Repeated filters
+at one scope combine with OR. Apostrophes in string literals are doubled.
+Range comparisons, text functions, relationship-path filters, `has`, and
+`count` are outside the current scope.
 
-Filters apply only to public resource attributes explicitly registered as filterable. Sort fields are likewise explicitly opted in per field. Planning resolves public attribute and relationship names to their registered internal model-field names and rejects unknown operators, fields, relationship paths, malformed values, and unsupported query-parameter names.
+Filters and sort expressions apply only to explicitly registered attributes
+with the corresponding `AttributePermission`. Planning resolves public names
+to their registered internal fields and rejects unknown operators, fields,
+relationship paths, malformed values, and unsupported query parameters.
 
-Pagination is a server contract using one-based page number and positive page size, translated to offset and limit. `PaginationConfig` requires the application to supply page defaults and any maximum page-size/offset policy; the library invents no defaults or caps. Requested values, multiplication overflow, and configured boundaries are validated before execution.
+Pagination uses a one-based page number and positive page size, translated to
+offset and limit. `PaginationConfig` requires the application to provide page
+defaults and any maximum page-size or offset policy; Seamark supplies no
+implicit caps. Requested values, multiplication overflow, and configured
+boundaries are validated before execution. Because `ReadPlan` and `Page` are
+publicly constructible, the SeaORM executor revalidates page consistency at
+the execution boundary.
 
-Because `ReadPlan` and `Page` are publicly constructible, the SeaORM executor
-also checks that manually supplied page numbers, sizes, limits, and offsets
-form a consistent page before invoking the read guard. It then applies the
-guard's explicitly configured limits before authorization and SQL. Negative
-values cannot be represented by `Page`'s unsigned fields. This executor check
-adds no default page values or maximums.
-
-`ReadQuery` is the decoded input boundary for filters, sort, pagination,
+`ReadQuery` is the decoded input boundary for filters, sorting, pagination,
 fieldsets, includes, and unsupported parameter names. `plan_read` produces an
 adapter-independent `ReadPlan` with ordered sort terms, per-resource sparse
 fieldsets, and a merged include tree. Unsupported parameter names are
 de-duplicated and sorted in errors for stable reporting.
 
-## Includes and execution
+## Includes and projection
 
-Includes are part of JSON:API. The planner validates nested relationship paths
-and merges duplicates. The SeaORM executor accepts an explicit include-loader
-hook because relation traversal and authorization rules depend on application
-entities; it passes the include tree and fieldsets to that hook and projects
-the returned resources to declared fields. The required read guard applies
-application-specific page/include limits before authorization and database
-work. Applications remain responsible for authorizing included records in
-their loader.
+The planner validates nested relationship paths and merges duplicate include
+paths. Before authorization, custom loaders, or SQL, the SeaORM executor
+revalidates each include node against the registry's exact public name,
+internal mapping, and target type. Fieldset mappings and filter/sort fields
+receive the same execution-boundary validation because callers can construct
+plans directly.
 
-Because `ReadPlan` is publicly constructible, the executor recursively
-revalidates every include node against the registered relationship's exact
-public name, internal mapping, and target resource type before authorization,
-the include loader, or SQL. Invalid nodes return
-`InvalidIncludeRelationship`, including mismapped nested nodes. Valid nested
-include trees remain application-loaded; this validation neither infers ORM
-relations nor replaces the loader with in-memory traversal.
+The standard SeaORM loader batches the registered to-one foreign-key,
+to-many foreign-key, and two-column join-table shapes. Join tables are
+registered with a typed SeaORM entity. Nested includes reuse the same registry
+and projection rules. Custom loaders remain available for application-defined
+association shapes. A relationship declaration does not enable include
+access; `RelationshipPermission::Include` must be granted explicitly, and
+linkage visibility uses its own permission.
 
-Fieldset mappings are checked against the registry again at the executor
-boundary because `ReadPlan` is publicly constructible. Invalid attribute or
-relationship mappings return `InvalidFieldsetField` before authorization or
-database execution. Mapper output is independently intersected with registered
-fields before fieldset projection, preserving the registry allowlist even for
-direct executor callers.
+The HTTP `RequestAuthorizer` receives the full validated query plan, including
+its include tree, so application policy can authorize root fields and related
+resource paths together. `SharedAuthorization` can reuse the same policy for
+ordinary mutations and Atomic Operations. `SeaOrmReadGuard` is a lower-level
+query hook without HTTP headers and can add query-specific checks.
 
-Filter AST fields are also revalidated against registered filterable
-attributes before authorization. A manually constructed plan cannot filter on
-a relationship or mapper-only field; valid string literals still pass through
-the configured value codec and become SeaORM-bound column comparisons, with no
-in-memory filtering fallback.
+Projection intersects mapper output with declared fields before applying a
+sparse fieldset. A mapper cannot expose an undeclared attribute or
+relationship. Read-only computed attributes can be registered with
+`computed_attribute_mapping` and mapped from the entity model; they cannot be
+filtered or sorted because they do not correspond to database columns.
 
-Sort terms are likewise revalidated against the registered public name,
-internal model field, and explicit sortable opt-in before authorization. This
-prevents direct callers from using a mapped relationship column or an
-otherwise non-sortable entity column to bypass `plan_read`.
+## Limits and execution
 
-The SeaORM executor maps internal field names to the entity's `Column` type and executes filter predicates, ordering, offset, and limit in the configured database backend; it has no in-memory fallback. Its fallible constructor validates the identifier and filterable/sortable attribute columns against the entity before serving requests. The `SeaOrmFilterValueCodec` converts string literals to entity value types and reports conversion failures before querying. A model mapper converts typed rows into internal-field-keyed adapter records, after which the executor enforces sparse-field projections. PostgreSQL integration coverage exercises string equality/OR, null predicates, typed numeric equality, sort, pagination, fieldsets, include loading, and pre-query authorization/limit rejection; the fixture also verifies application-encoded boolean equality alongside typed numeric filters. HTTP integration confirms planned parameters reach this executor and serialized fieldsets/included resources are returned. Relationship loaders and value codecs remain explicit application hooks; broader relation and authorization/resource-limit cases remain incomplete. The opt-in SQLite M7 fixture covers the same supported query categories, including typed numeric/boolean and null filters, ordering, pagination, fieldsets, and application-loaded includes. Both backends construct the same first/second-page queries from `tests/support/query_cases.rs` and assert the same resource/included identities and visible attributes. Full document serialization equivalence, Atomic result equivalence, and broader type coverage remain incomplete.
+`ExecutionLimits` composes common limits with application checks for include
+depth and breadth, filter complexity, relationship member counts, and Atomic
+batch size. It can also set runtime maximums for included resources and include
+queries. Standard SeaORM loading applies those budgets while querying and
+expanding relationships. Custom SeaORM loaders receive the same per-request
+budget and can consume row budget before accepting results and query budget
+before database calls. Other query adapters are checked against the returned
+included-resource count.
 
-Single-resource `GET` uses the same adapter-independent `ReadPlan` for
-registered includes and sparse fieldsets, then invokes the query adapter's
-single-resource operation. The SeaORM executor validates those mappings
-before guards or SQL, looks up the typed persistent ID, calls the explicit
-include loader, and applies per-resource fieldsets. Filters, sorting, page
-number, and page size are collection-only; `plan_resource_read` rejects them
-deterministically along with unknown fields/relationships before
-authorization or adapter execution. The base `router` without a query adapter
-continues to reject all non-empty query strings.
+The SeaORM executor converts filter literals through the configured typed
+codec and builds database-bound column predicates. Sorting, offset, and limit
+are also executed by the database; there is no in-memory filtering or sorting
+fallback. Unsupported conversions and mismapped plan fields fail explicitly.
+
+Single-resource `GET` uses the same validated `ReadPlan` model for includes and
+sparse fieldsets, then dispatches to the query adapter's resource operation.
+`plan_resource_read` rejects filters, sorting, and pagination before
+authorization or adapter execution. The default router without a query
+adapter continues to reject non-empty query strings.
+
+SQLite integration tests exercise the standard foreign-key and join-table
+include paths, sparse fieldsets, filters, sorting, pagination, authorization,
+limits, and single-resource reads. PostgreSQL integration tests use the same
+shared query fixtures and require `SEAMARK_TEST_DATABASE_URL`.
