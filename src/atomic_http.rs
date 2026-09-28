@@ -225,7 +225,11 @@ fn validate_operation_shape(request_document: &Value) -> Result<(), AtomicOperat
 
     for (index, operation) in operations.iter().enumerate() {
         let Some(operation) = operation.as_object() else {
-            continue;
+            return Err(AtomicOperationsError::InvalidOperation {
+                index,
+                pointer: format!("/atomic:operations/{index}"),
+                message: "each operation must be an object".to_owned(),
+            });
         };
         if !operation.get("op").is_some_and(Value::is_string) {
             return Err(AtomicOperationsError::InvalidOperation {
