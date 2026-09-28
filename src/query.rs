@@ -644,24 +644,24 @@ fn plan_page(query: &ReadQuery, config: &PaginationConfig) -> Result<Page, ReadP
         .unwrap_or(config.default_page_number);
     let size = parse_page_value(query.page_size.as_deref(), "page[size]")?
         .unwrap_or(config.default_page_size);
-    if let Some(maximum) = config.maximum_page_size {
-        if size > maximum {
-            return Err(ReadPlanError::PageSizeExceedsMaximum {
-                requested: size,
-                maximum,
-            });
-        }
+    if let Some(maximum) = config.maximum_page_size
+        && size > maximum
+    {
+        return Err(ReadPlanError::PageSizeExceedsMaximum {
+            requested: size,
+            maximum,
+        });
     }
     let offset = (number - 1)
         .checked_mul(size)
         .ok_or(ReadPlanError::PageOffsetOverflow)?;
-    if let Some(maximum) = config.maximum_offset {
-        if offset > maximum {
-            return Err(ReadPlanError::PageOffsetExceedsMaximum {
-                requested: offset,
-                maximum,
-            });
-        }
+    if let Some(maximum) = config.maximum_offset
+        && offset > maximum
+    {
+        return Err(ReadPlanError::PageOffsetExceedsMaximum {
+            requested: offset,
+            maximum,
+        });
     }
     Ok(Page {
         number,

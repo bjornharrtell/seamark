@@ -303,30 +303,28 @@ impl AtomicOperationHandler for SeaOrmAtomicOperationDispatcher {
             data,
             changeset,
         } = operation
+            && has_to_many_relationships(changeset)
         {
-            if has_to_many_relationships(changeset) {
-                return self
-                    .execute_composed_resource_add(transaction, href, data, changeset, local_ids)
-                    .await;
-            }
+            return self
+                .execute_composed_resource_add(transaction, href, data, changeset, local_ids)
+                .await;
         }
         if let PlannedOperation::UpdateResource {
             target: AtomicTarget::Reference(reference),
             data,
             changeset,
         } = operation
+            && has_to_many_relationships(changeset)
         {
-            if has_to_many_relationships(changeset) {
-                return self
-                    .execute_composed_resource_update(
-                        transaction,
-                        reference,
-                        data,
-                        changeset,
-                        local_ids,
-                    )
-                    .await;
-            }
+            return self
+                .execute_composed_resource_update(
+                    transaction,
+                    reference,
+                    data,
+                    changeset,
+                    local_ids,
+                )
+                .await;
         }
         Err(AtomicOperationFailure::Operation(
             "no SeaORM mutation executor supports this operation".to_owned(),
@@ -1090,14 +1088,12 @@ where
         local_ids: &LocalIdMap,
         include_identifier: bool,
     ) -> Result<(), String> {
-        if include_identifier {
-            if let Some(id) = &changeset.id {
-                self.set_field(
-                    active_model,
-                    &changeset.identifier_field,
-                    &JsonValue::String(id.clone()),
-                )?;
-            }
+        if include_identifier && let Some(id) = &changeset.id {
+            self.set_field(
+                active_model,
+                &changeset.identifier_field,
+                &JsonValue::String(id.clone()),
+            )?;
         }
         if let Some(attributes) = &changeset.attributes {
             for (model_field, value) in attributes {

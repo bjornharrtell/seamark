@@ -279,10 +279,8 @@ impl JsonApiDocument {
             self.included.as_deref().unwrap_or_default(),
             &identities,
         )?;
-        if require_included_reachability {
-            if let Some(included) = &self.included {
-                validate_included_reachability(self.data.as_ref(), included)?;
-            }
+        if require_included_reachability && let Some(included) = &self.included {
+            validate_included_reachability(self.data.as_ref(), included)?;
         }
 
         Ok(())
