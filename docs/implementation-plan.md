@@ -222,11 +222,14 @@ documented application executors. Scope is `Blocked` until target shapes are
 enumerated.
 
 - Depends on: **PR3**, **A5**.
-- Progress: **D2 partial** — `SeaOrmJoinTableMutationHandler::new_with_insert_columns`
+- Progress: **D2 and D3 partial** — `SeaOrmJoinTableMutationHandler::new_with_insert_columns`
   lets applications populate additional required join-table columns on each
   inserted membership row, and the nullable-FK handler now also accepts a
   non-nullable foreign key for add/transfer while rejecting remove and replace.
-  D1 (generic relationship access) and D3 (ordered relationships) remain planned.
+  Ordered join tables (`RelationshipStorage::OrderedJoinTable`) preserve member
+  order through a position column on replacement and append, and return linkage
+  in position order. D1 (generic relationship access) and D4 (other shapes)
+  remain planned or deferred to application executors.
 - Exit criteria: each supported shape has read and write fixtures, idempotency
   and rollback evidence, and parity between PostgreSQL and SQLite; unsupported
   shapes are rejected or delegated explicitly.

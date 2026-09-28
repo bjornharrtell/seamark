@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use sea_orm::entity::prelude::*;
 use sea_orm::{
     ActiveModelTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
-    QueryOrder, Schema, Set, Value,
+    QueryOrder, Schema, Set, TransactionTrait, Value,
 };
 use seamark::atomic::{
     AtomicExecutionError, AtomicHrefResolver, AtomicOperationHandler, AtomicOperationOutcome,
@@ -16,14 +16,17 @@ use seamark::atomic::{
     plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
 use seamark::atomic_http;
+use seamark::document::RelationshipData;
+use seamark::http::{MutationCommand, MutationOutcome};
 use seamark::registry::{
     AttributeMapping, AttributePermission, RelationshipMapping, RelationshipPermission,
     RelationshipReassignment, ResourceDefinition, ResourcePermission, ResourceRegistry,
 };
 use seamark::seaorm::SeaOrmMutationValueCodec;
 use seamark::seaorm_mutation::{
-    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmJoinTableMutationHandler,
-    SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
+    SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmBaseMutationExecutor,
+    SeaOrmJoinTableMutationHandler, SeaOrmResourceMutationHandler,
+    SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::{Value as JsonValue, json};
 use tower::ServiceExt;
@@ -128,6 +131,25 @@ pub mod port_tag {
             Relation::Tag.def()
         }
     }
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod ordered_port_tag {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "seamark_m7_parity_ordered_port_tags")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub port_id: i32,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub tag_id: i32,
+        pub position: i32,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
 }
@@ -280,6 +302,10 @@ pub fn registry() -> ResourceRegistry {
             .mapped_relationship(
                 enabled_relationship("tags", "tag_links", "tags", false)
                     .to_many_join_table("port_id", "tag_id"),
+            )
+            .mapped_relationship(
+                enabled_relationship("ordered_tags", "ordered_tag_links", "tags", false)
+                    .to_many_ordered_join_table("port_id", "tag_id", "position"),
             ),
         enabled_resource("tags", "tag_id").mapped_attribute(enabled_attribute("name", "tag_name")),
     ])
@@ -338,6 +364,10 @@ pub async fn create_tables(database: &DatabaseConnection) {
         .await
         .unwrap();
     database
+        .execute_unprepared("DROP TABLE IF EXISTS seamark_m7_parity_ordered_port_tags")
+        .await
+        .unwrap();
+    database
         .execute_unprepared("DROP TABLE IF EXISTS seamark_m7_parity_ports")
         .await
         .unwrap();
@@ -357,6 +387,7 @@ pub async fn create_tables(database: &DatabaseConnection) {
         schema.create_table_from_entity(tag::Entity),
         schema.create_table_from_entity(port::Entity),
         schema.create_table_from_entity(port_tag::Entity),
+        schema.create_table_from_entity(ordered_port_tag::Entity),
     ] {
         database.execute(&statement).await.unwrap();
     }
@@ -493,9 +524,17 @@ pub fn dispatcher(registry: &ResourceRegistry) -> SeaOrmAtomicOperationDispatche
         Arc::new(MutationCodec),
     )
     .unwrap();
+    let ordered_join_table = SeaOrmJoinTableMutationHandler::<ordered_port_tag::Entity, _>::new(
+        registry,
+        "ports",
+        "ordered_tags",
+        Arc::new(MutationCodec),
+    )
+    .unwrap();
     let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
         Arc::new(owned_ports),
         Arc::new(join_table),
+        Arc::new(ordered_join_table),
         Arc::new(people),
         Arc::new(ports),
         Arc::new(tags),
@@ -2164,4 +2203,125 @@ pub async fn execute_join_table_insert_columns_case(database: &DatabaseConnectio
         port_tag::Entity::find().all(database).await.unwrap().len(),
         1
     );
+}
+
+/// Verifies ordered join-table position assignment.
+pub async fn execute_ordered_join_table_case(database: &DatabaseConnection) {
+    create_tables(database).await;
+    port::ActiveModel {
+        port_id: Set(1),
+        title: Set("Pier".to_owned()),
+        owner_id: Set(None),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    for (id, name) in [(1, "First"), (2, "Second"), (3, "Third")] {
+        tag::ActiveModel {
+            tag_id: Set(id),
+            tag_name: Set(name.to_owned()),
+        }
+        .insert(database)
+        .await
+        .unwrap();
+    }
+
+    let registry = registry();
+    let handler = SeaOrmJoinTableMutationHandler::<ordered_port_tag::Entity, _>::new(
+        &registry,
+        "ports",
+        "ordered_tags",
+        Arc::new(MutationCodec),
+    )
+    .unwrap();
+    let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
+        Arc::new(handler),
+        Arc::new(
+            SeaOrmResourceMutationHandler::<port::Entity, _>::new(
+                &registry,
+                "ports",
+                Arc::new(MutationCodec),
+            )
+            .unwrap(),
+        ),
+        Arc::new(
+            SeaOrmResourceMutationHandler::<tag::Entity, _>::new(
+                &registry,
+                "tags",
+                Arc::new(MutationCodec),
+            )
+            .unwrap(),
+        ),
+    ];
+    let dispatcher = SeaOrmAtomicOperationDispatcher::new(executors);
+    let document: AtomicOperationsDocument = serde_json::from_value(json!({
+        "atomic:operations": [
+            {
+                "op": "update",
+                "ref": {"type": "ports", "id": "1", "relationship": "ordered_tags"},
+                "data": [{"type": "tags", "id": "2"}, {"type": "tags", "id": "1"}]
+            },
+            {
+                "op": "add",
+                "ref": {"type": "ports", "id": "1", "relationship": "ordered_tags"},
+                "data": [{"type": "tags", "id": "3"}]
+            }
+        ]
+    }))
+    .unwrap();
+    let operations = plan_atomic_operations(&registry, &document).unwrap();
+    execute_atomic_operations(
+        database,
+        &operations,
+        &HeaderMap::new(),
+        &AllowGuard,
+        &dispatcher,
+    )
+    .await
+    .unwrap();
+
+    let rows = ordered_port_tag::Entity::find()
+        .order_by_asc(ordered_port_tag::Column::Position)
+        .all(database)
+        .await
+        .unwrap();
+    let order = rows
+        .iter()
+        .map(|row| (row.tag_id, row.position))
+        .collect::<Vec<_>>();
+    assert_eq!(order, vec![(2, 0), (1, 1), (3, 2)]);
+
+    let transaction = database.begin().await.unwrap();
+    let read_handler = SeaOrmJoinTableMutationHandler::<ordered_port_tag::Entity, _>::new(
+        &registry,
+        "ports",
+        "ordered_tags",
+        Arc::new(MutationCodec),
+    )
+    .unwrap();
+    let ports_definition = registry.resource("ports").unwrap().clone();
+    let relationship = ports_definition
+        .relationship_by_name("ordered_tags")
+        .unwrap()
+        .clone();
+    let outcome = SeaOrmBaseMutationExecutor::execute(
+        &read_handler,
+        &transaction,
+        &ports_definition,
+        &MutationCommand::ReadRelationship {
+            id: "1".to_owned(),
+            relationship,
+        },
+    )
+    .await
+    .unwrap();
+    transaction.rollback().await.unwrap();
+    let MutationOutcome::Relationship(RelationshipData::Many(identifiers)) = outcome else {
+        panic!("expected ordered relationship linkage");
+    };
+    let ids = identifiers
+        .iter()
+        .map(|identifier| identifier.id.clone().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["2", "1", "3"]);
 }

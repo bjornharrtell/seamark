@@ -669,6 +669,28 @@ where
         .to_many_join_table(source_column.as_str(), target_column.as_str())
 }
 
+/// Creates an ordered join-table relationship mapping from the join entity's
+/// typed source, target, and position columns.
+#[must_use]
+pub fn ordered_join_table_relationship_mapping<E>(
+    public_name: impl Into<String>,
+    model_field: impl Into<String>,
+    target_type: impl Into<String>,
+    source_column: E::Column,
+    target_column: E::Column,
+    position_column: E::Column,
+) -> RelationshipMapping
+where
+    E: EntityTrait,
+    E::Column: ColumnTrait,
+{
+    RelationshipMapping::new(public_name, model_field, target_type).to_many_ordered_join_table(
+        source_column.as_str(),
+        target_column.as_str(),
+        position_column.as_str(),
+    )
+}
+
 /// An included resource returned by an application-specific relationship loader.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IncludedResource {
@@ -1189,6 +1211,7 @@ where
                     mapping.storage(),
                     RelationshipStorage::ToManyForeignKey { .. }
                         | RelationshipStorage::JoinTable { .. }
+                        | RelationshipStorage::OrderedJoinTable { .. }
                 )
         });
         if (!plan.includes.is_empty() || relationship_linkage_requested)
@@ -1406,6 +1429,7 @@ where
                     mapping.storage(),
                     RelationshipStorage::ToManyForeignKey { .. }
                         | RelationshipStorage::JoinTable { .. }
+                        | RelationshipStorage::OrderedJoinTable { .. }
                 )
         });
         if (!plan.includes.is_empty() || relationship_linkage_requested)
@@ -1581,6 +1605,7 @@ where
                 relationship.storage(),
                 RelationshipStorage::ToManyForeignKey { .. }
                     | RelationshipStorage::JoinTable { .. }
+                    | RelationshipStorage::OrderedJoinTable { .. }
             ) {
                 continue;
             }
@@ -1647,7 +1672,9 @@ where
     for relationship in definition.relationships() {
         if matches!(
             relationship.storage(),
-            RelationshipStorage::ToManyForeignKey { .. } | RelationshipStorage::JoinTable { .. }
+            RelationshipStorage::ToManyForeignKey { .. }
+                | RelationshipStorage::JoinTable { .. }
+                | RelationshipStorage::OrderedJoinTable { .. }
         ) {
             resource.relationships.insert(
                 relationship.model_field().to_owned(),
@@ -1745,6 +1772,7 @@ where
     database: DatabaseConnection,
     source_column: E::Column,
     target_column: E::Column,
+    position_column: Option<E::Column>,
     source_column_name: String,
 }
 
@@ -1772,6 +1800,9 @@ where
             budget.consume_related_queries(1)?;
         }
         let mut select = E::find().filter(self.source_column.is_in(values));
+        if let Some(position_column) = self.position_column {
+            select = select.order_by_asc(position_column);
+        }
         if let Some(limit) = budget.and_then(SeaOrmRuntimeBudget::related_resource_query_limit) {
             select = select.limit(limit);
         }
@@ -2083,25 +2114,49 @@ impl SeaOrmQueryAdapter {
             .map_err(|error| {
                 SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(error.to_string())
             })?;
-        let RelationshipStorage::JoinTable {
-            source_column,
-            target_column,
-        } = relationship.storage()
-        else {
-            return Err(SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(
-                format!("`{source_type}.{relationship_name}` is not mapped through a join table"),
-            ));
-        };
-        let source_column = E::Column::from_str(source_column).map_err(|_| {
+        let (source_column_name, target_column_name, position_column_name) =
+            match relationship.storage() {
+                RelationshipStorage::JoinTable {
+                    source_column,
+                    target_column,
+                } => (source_column.clone(), target_column.clone(), None),
+                RelationshipStorage::OrderedJoinTable {
+                    source_column,
+                    target_column,
+                    position_column,
+                } => (
+                    source_column.clone(),
+                    target_column.clone(),
+                    Some(position_column.clone()),
+                ),
+                _ => {
+                    return Err(SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(
+                        format!(
+                            "`{source_type}.{relationship_name}` is not mapped through a join table"
+                        ),
+                    ));
+                }
+            };
+        let source_column = E::Column::from_str(&source_column_name).map_err(|_| {
             SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(format!(
-                "join source column `{source_column}` is absent from the typed join entity"
+                "join source column `{source_column_name}` is absent from the typed join entity"
             ))
         })?;
-        let target_column = E::Column::from_str(target_column).map_err(|_| {
+        let target_column = E::Column::from_str(&target_column_name).map_err(|_| {
             SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(format!(
-                "join target column `{target_column}` is absent from the typed join entity"
+                "join target column `{target_column_name}` is absent from the typed join entity"
             ))
         })?;
+        let position_column = position_column_name
+            .as_deref()
+            .map(|column| {
+                E::Column::from_str(column).map_err(|_| {
+                    SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(format!(
+                        "join position column `{column}` is absent from the typed join entity"
+                    ))
+                })
+            })
+            .transpose()?;
         let key = (source_type.to_owned(), relationship_name.to_owned());
         if self.join_table_queries.contains_key(&key) {
             return Err(SeaOrmAdapterConfigurationError::InvalidRelationshipMapping(
@@ -2114,10 +2169,8 @@ impl SeaOrmQueryAdapter {
                 database,
                 source_column,
                 target_column,
-                source_column_name: match relationship.storage() {
-                    RelationshipStorage::JoinTable { source_column, .. } => source_column.clone(),
-                    _ => unreachable!(),
-                },
+                position_column,
+                source_column_name,
             }),
         );
         Ok(())
@@ -2193,7 +2246,8 @@ impl SeaOrmQueryAdapter {
                     .resources_by_foreign_key(foreign_key_field, &source_ids, budget)
                     .await
             }
-            RelationshipStorage::JoinTable { .. } => {
+            RelationshipStorage::JoinTable { .. }
+            | RelationshipStorage::OrderedJoinTable { .. } => {
                 let key = (
                     source_type.to_owned(),
                     relationship.public_name().to_owned(),
@@ -2392,7 +2446,8 @@ impl QueryResourceAdapter for SeaOrmQueryAdapter {
                                 )
                             })?;
                     }
-                    RelationshipStorage::JoinTable { .. } => {
+                    RelationshipStorage::JoinTable { .. }
+                    | RelationshipStorage::OrderedJoinTable { .. } => {
                         if !self.join_table_queries.contains_key(&(
                             resource.type_name().to_owned(),
                             relationship.public_name().to_owned(),

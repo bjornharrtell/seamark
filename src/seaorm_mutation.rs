@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
-    IntoActiveModel, ModelTrait, QueryFilter, RuntimeErr, TransactionTrait, Value,
+    IntoActiveModel, ModelTrait, QueryFilter, QueryOrder, RuntimeErr, TransactionTrait, Value,
     sea_query::{Condition, Expr},
 };
 use serde_json::{Value as JsonValue, json};
@@ -1000,6 +1000,7 @@ where
     target_type: String,
     source_column: String,
     target_column: String,
+    position_column: Option<String>,
     value_codec: C,
     insert_columns: Option<JoinTableInsertColumns<E::ActiveModel>>,
     entity: PhantomData<fn() -> E>,
@@ -1068,21 +1069,35 @@ where
         let target = registry
             .resource(relationship.target_type())
             .map_err(|error| error.to_string())?;
-        let RelationshipStorage::JoinTable {
-            source_column,
-            target_column,
-        } = relationship.storage()
-        else {
-            return Err(format!(
-                "relationship `{source_type}.{relationship_name}` is not mapped through a join table"
-            ));
+        let (source_column, target_column, position_column) = match relationship.storage() {
+            RelationshipStorage::JoinTable {
+                source_column,
+                target_column,
+            } => (source_column.clone(), target_column.clone(), None),
+            RelationshipStorage::OrderedJoinTable {
+                source_column,
+                target_column,
+                position_column,
+            } => (
+                source_column.clone(),
+                target_column.clone(),
+                Some(position_column.clone()),
+            ),
+            _ => {
+                return Err(format!(
+                    "relationship `{source_type}.{relationship_name}` is not mapped through a join table"
+                ));
+            }
         };
-        let source_column = source_column.clone();
-        let target_column = target_column.clone();
         E::Column::from_str(&source_column)
             .map_err(|_| format!("join-table field `{source_column}` is not a SeaORM column"))?;
         E::Column::from_str(&target_column)
             .map_err(|_| format!("join-table field `{target_column}` is not a SeaORM column"))?;
+        if let Some(position_column) = &position_column {
+            E::Column::from_str(position_column).map_err(|_| {
+                format!("join-table position field `{position_column}` is not a SeaORM column")
+            })?;
+        }
 
         Ok(Self {
             source_type: source_type.to_owned(),
@@ -1090,6 +1105,7 @@ where
             target_type: target.type_name().to_owned(),
             source_column,
             target_column,
+            position_column,
             value_codec,
             insert_columns,
             entity: PhantomData,
@@ -1236,6 +1252,24 @@ where
                 .map_err(|_| "join-table delete failed".to_owned())?;
         }
 
+        let position_column = match &self.position_column {
+            Some(name) => Some(
+                E::Column::from_str(name)
+                    .map_err(|_| "join-table position column is not a SeaORM column".to_owned())?,
+            ),
+            None => None,
+        };
+        let mut next_position = 0_i32;
+        if position_column.is_some() && matches!(action, JoinTableOperation::Add) {
+            let existing = E::find()
+                .filter(source_column.eq(source_value.clone()))
+                .all(transaction)
+                .await
+                .map_err(|_| "join-table position lookup failed".to_owned())?
+                .len();
+            next_position = i32::try_from(existing).unwrap_or(i32::MAX);
+        }
+
         if matches!(
             action,
             JoinTableOperation::Add | JoinTableOperation::Replace
@@ -1261,6 +1295,12 @@ where
                     .map_err(|_| "could not map join-table target column".to_owned())?;
                 if let Some(insert_columns) = &self.insert_columns {
                     insert_columns(&mut active_model)?;
+                }
+                if let Some(position_column) = position_column {
+                    active_model
+                        .try_set(position_column, next_position.into())
+                        .map_err(|_| "could not map join-table position column".to_owned())?;
+                    next_position = next_position.saturating_add(1);
                 }
                 active_model.insert(transaction).await.map_err(|error| {
                     if is_foreign_key_violation(&error) {
@@ -1387,8 +1427,13 @@ where
         let source_value = self
             .encode_identifier(&self.source_column, source_id)
             .map_err(|_| MutationAdapterError::Failed)?;
-        let links = E::find()
-            .filter(source_column.eq(source_value))
+        let mut select = E::find().filter(source_column.eq(source_value));
+        if let Some(position_column) = &self.position_column {
+            let position_column =
+                E::Column::from_str(position_column).map_err(|_| MutationAdapterError::Failed)?;
+            select = select.order_by_asc(position_column);
+        }
+        let links = select
             .all(transaction)
             .await
             .map_err(|_| MutationAdapterError::Failed)?;
