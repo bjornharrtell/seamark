@@ -1,9 +1,12 @@
 # JSON:API conformance
 
 **Overall status: Partial.** The implementation completes the bounded
-first-useful profile in [`docs/implementation-plan.md`](../implementation-plan.md)
-(M0–M7); it does not claim complete JSON:API or Atomic conformance. This matrix
-is the current requirement-to-test index, not a chronological change log.
+first-useful profile archived in
+[`docs/archive/implementation-plan-first-release.md`](../archive/implementation-plan-first-release.md)
+(M0–M7); it does not claim complete JSON:API or Atomic conformance. The
+workstreams toward fuller conformance are defined in
+[`docs/implementation-plan.md`](../implementation-plan.md). This matrix is the
+current requirement-to-test index, not a chronological change log.
 
 The `Covered` section records representative evidence for applicable MUST
 requirements in the supported profile. In the `Partial / deferred` section,
@@ -39,6 +42,7 @@ Unsupported inputs must still be handled as the specification requires.
 | Parse pointers, media/error, and backend matrices | Malformed/duplicate JSON and typed-deserialization failures omit `source.pointer` when no precise parsed value exists (`tests/http.rs::malformed_base_mutation_json_omits_source_pointer_before_authorization_or_adapter`, `typed_invalid_mutation_document_omits_source_pointer_before_authorization_or_adapter`). Less common Accept/Content-Type combinations, backend driver transport failures, unusual error combinations, uncommon database types/schema constraints, and concurrency/locking remain partial or unverified. |
 | Link media-type hints and registry freshness | `tests/document.rs::validates_link_object_media_type_hints` validates concrete link `type` hints; relation names use the IANA snapshot updated 2026-06-12 and `hreflang` tags receive syntax/registry checks. Broader link semantics and continuous IANA/BCP 47 updates are maintenance follow-up. |
 
-`docs/implementation-plan.md` defines the release gate and current milestone
-status. This matrix remains partial overall and must not be read as a claim of
-complete JSON:API or Atomic conformance.
+[`docs/implementation-plan.md`](../implementation-plan.md) defines the
+conformance workstreams and their status, while the archived first-release plan
+records the original release gate. This matrix remains partial overall and must
+not be read as a claim of complete JSON:API or Atomic conformance.

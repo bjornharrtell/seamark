@@ -63,6 +63,7 @@ the operation.
 
 This is not a claim of complete JSON:API 1.1 or Atomic Operations conformance.
 The [design documents](docs/design/) record supported behavior and known
-limits. Computed attributes are read-only and cannot be filtered or sorted.
-Association shapes outside the standard foreign-key and join-table mappings
-still use custom mappers or executors.
+limits, and the [implementation plan](docs/implementation-plan.md) defines the
+workstreams toward fuller conformance. Computed attributes are read-only and
+cannot be filtered or sorted. Association shapes outside the standard
+foreign-key and join-table mappings still use custom mappers or executors.
