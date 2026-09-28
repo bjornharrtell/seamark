@@ -417,6 +417,7 @@ pub struct ApiBuilder {
     pagination: Option<PaginationConfig>,
     execution_limits: Option<crate::limits::ExecutionLimits>,
     atomic: Option<AtomicApiConfig>,
+    jsonapi_fallback: bool,
 }
 
 struct AtomicApiConfig {
@@ -440,6 +441,7 @@ impl ApiBuilder {
             pagination: None,
             execution_limits: None,
             atomic: None,
+            jsonapi_fallback: false,
         }
     }
 
@@ -473,6 +475,19 @@ impl ApiBuilder {
     #[must_use]
     pub fn limits(mut self, limits: crate::limits::ExecutionLimits) -> Self {
         self.execution_limits = Some(limits);
+        self
+    }
+
+    /// Installs a JSON:API `404`/`405` fallback on the component router.
+    ///
+    /// The fallback responds to unmatched paths beneath the component router
+    /// with structured JSON:API errors. It is opt-in so a Seamark component
+    /// router does not capture unmatched paths belonging to the rest of an
+    /// application; install it only on the router that owns the JSON:API
+    /// surface, or install [`not_found_fallback`] as the application fallback.
+    #[must_use]
+    pub fn jsonapi_fallback(mut self) -> Self {
+        self.jsonapi_fallback = true;
         self
     }
 
@@ -575,6 +590,9 @@ impl ApiBuilder {
                 crate::atomic_http::router(atomic_registry, atomic.database, guard, atomic.handler)
             };
             router = router.merge(atomic_router);
+        }
+        if self.jsonapi_fallback {
+            router = router.fallback(not_found_fallback);
         }
         router
     }

@@ -2497,3 +2497,32 @@ async fn query_router_authorizes_before_calling_query_adapter() {
     assert_eq!(query_adapter.calls.load(Ordering::SeqCst), 0);
     assert_eq!(adapter.resource_calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn jsonapi_fallback_returns_structured_errors_for_unmatched_routes() {
+    let ports = ResourceDefinition::new("ports", "port_key");
+    let registry = Arc::new(ResourceRegistry::new([ports]).unwrap());
+    let app = http::ApiBuilder::new(registry, Arc::new(http::AllowAllAuthorizer))
+        .jsonapi_fallback()
+        .try_build()
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(request("/not/a/route", Some(JSONAPI_MEDIA_TYPE)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI_MEDIA_TYPE);
+    assert_eq!(response.headers()[VARY], "Accept");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["errors"][0]["code"], "route_not_found");
+
+    let response = app
+        .oneshot(request("/not/a/route", Some("text/html")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(response.headers()[CONTENT_TYPE], JSONAPI_MEDIA_TYPE);
+}

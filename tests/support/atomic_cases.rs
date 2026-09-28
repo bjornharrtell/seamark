@@ -435,17 +435,27 @@ pub fn request() -> JsonValue {
 pub fn expected_result_document() -> JsonValue {
     json!({
         "atomic:results": [
-            {"data": {"type": "people", "id": "1"}},
-            {"data": {"type": "people", "id": "2"}},
-            {"data": {"type": "tags", "id": "1"}},
-            {"data": {"type": "tags", "id": "2"}},
-            {"data": {"type": "ports", "id": "1"}},
+            {"data": {"type": "people", "id": "1", "attributes": {"name": "One"}}},
+            {"data": {"type": "people", "id": "2", "attributes": {"name": "Two"}}},
+            {"data": {"type": "tags", "id": "1", "attributes": {"name": "Anchor"}}},
+            {"data": {"type": "tags", "id": "2", "attributes": {"name": "Remaining"}}},
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Pier"},
+                "relationships": {"owner": {"data": {"type": "people", "id": "1"}}}
+            }},
             {},
             {},
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Updated Pier"},
+                "relationships": {"owner": {"data": {"type": "people", "id": "1"}}}
+            }},
             {},
             {},
-            {},
-            {}
+            {"data": {"type": "tags", "id": "1", "attributes": {"name": "Detached"}}}
         ]
     })
 }
@@ -842,8 +852,18 @@ pub async fn execute_http_href_typed_seaorm_case(database: &DatabaseConnection) 
     assert_eq!(
         response_document,
         json!({"atomic:results": [
-            {"data": {"type": "ports", "id": "2"}},
-            {},
+            {"data": {
+                "type": "ports",
+                "id": "2",
+                "attributes": {"name": "Temporary Pier"},
+                "relationships": {"owner": {"data": null}}
+            }},
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Updated Pier"},
+                "relationships": {"owner": {"data": null}}
+            }},
             {},
             {},
             {},
@@ -985,7 +1005,11 @@ pub async fn execute_client_assigned_add_result_http_case(database: &DatabaseCon
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(
         response_document,
-        json!({"atomic:results": [{"data": {"type": "people", "id": "41"}}]})
+        json!({"atomic:results": [{"data": {
+            "type": "people",
+            "id": "41",
+            "attributes": {"name": "Client ID"}
+        }}]})
     );
     let person = person::Entity::find_by_id(41)
         .one(database)
@@ -1202,8 +1226,17 @@ pub async fn execute_local_id_to_one_relationship_case(database: &DatabaseConnec
         result_document,
         json!({
             "atomic:results": [
-                {"data": {"type": "people", "id": "1"}},
-                {"data": {"type": "ports", "id": "1"}}
+                {"data": {
+                    "type": "people",
+                    "id": "1",
+                    "attributes": {"name": "Local Owner"}
+                }},
+                {"data": {
+                    "type": "ports",
+                    "id": "1",
+                    "attributes": {"name": "Local Port"},
+                    "relationships": {"owner": {"data": {"type": "people", "id": "1"}}}
+                }}
             ]
         })
     );
@@ -1282,9 +1315,14 @@ pub async fn execute_to_one_relationship_lifecycle_case(database: &DatabaseConne
     assert_eq!(
         serde_json::to_value(create_results).unwrap(),
         json!([
-            {"data": {"type": "people", "id": "1"}},
-            {"data": {"type": "people", "id": "2"}},
-            {"data": {"type": "ports", "id": "1"}}
+            {"data": {"type": "people", "id": "1", "attributes": {"name": "Owner One"}}},
+            {"data": {"type": "people", "id": "2", "attributes": {"name": "Owner Two"}}},
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Owned Port"},
+                "relationships": {"owner": {"data": {"type": "people", "id": "1"}}}
+            }}
         ])
     );
     let port = port::Entity::find_by_id(1)
@@ -1497,11 +1535,21 @@ pub async fn execute_to_many_relationship_replacement_case(database: &DatabaseCo
     assert_eq!(
         serde_json::to_value(results).unwrap(),
         json!([
-            {"data": {"type": "tags", "id": "1"}},
-            {"data": {"type": "tags", "id": "2"}},
-            {"data": {"type": "ports", "id": "1"}},
+            {"data": {"type": "tags", "id": "1", "attributes": {"name": "First"}}},
+            {"data": {"type": "tags", "id": "2", "attributes": {"name": "Second"}}},
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Replacement Port"},
+                "relationships": {"owner": {"data": null}}
+            }},
             {},
-            {}
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "Updated with relationship"},
+                "relationships": {"owner": {"data": null}}
+            }}
         ])
     );
     let port = port::Entity::find_by_id(1)
@@ -1726,10 +1774,20 @@ pub async fn execute_to_many_foreign_key_relationship_case(database: &DatabaseCo
     assert_eq!(
         serde_json::to_value(results).unwrap(),
         json!([
-            {"data": {"type": "people", "id": "1"}},
-            {"data": {"type": "people", "id": "2"}},
-            {"data": {"type": "ports", "id": "1"}},
-            {"data": {"type": "ports", "id": "2"}},
+            {"data": {"type": "people", "id": "1", "attributes": {"name": "Owner One"}}},
+            {"data": {"type": "people", "id": "2", "attributes": {"name": "Owner Two"}}},
+            {"data": {
+                "type": "ports",
+                "id": "1",
+                "attributes": {"name": "One"},
+                "relationships": {"owner": {"data": null}}
+            }},
+            {"data": {
+                "type": "ports",
+                "id": "2",
+                "attributes": {"name": "Two"},
+                "relationships": {"owner": {"data": null}}
+            }},
             {},
             {}
         ])
@@ -1767,7 +1825,14 @@ pub async fn execute_to_many_foreign_key_relationship_case(database: &DatabaseCo
     )
     .await
     .unwrap();
-    assert_eq!(serde_json::to_value(results).unwrap(), json!([{}]));
+    assert_eq!(
+        serde_json::to_value(results).unwrap(),
+        json!([{"data": {
+            "type": "people",
+            "id": "1",
+            "attributes": {"name": "Owner One Updated"}
+        }}])
+    );
     let owner = person::Entity::find_by_id(1)
         .one(database)
         .await
@@ -1939,7 +2004,11 @@ pub async fn execute_to_many_foreign_key_relationship_case(database: &DatabaseCo
     .unwrap();
     assert_eq!(
         serde_json::to_value(results).unwrap(),
-        json!([{"data": {"type": "people", "id": "3"}}])
+        json!([{"data": {
+            "type": "people",
+            "id": "3",
+            "attributes": {"name": "Owner Three"}
+        }}])
     );
     let ports = port::Entity::find()
         .order_by_asc(port::Column::PortId)

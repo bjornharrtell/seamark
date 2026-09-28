@@ -149,9 +149,14 @@ impl AtomicOperationsDocument {
                 "an operations request must not contain `errors`",
             ));
         }
-        self.operations
+        let operations = self
+            .operations
             .as_deref()
-            .ok_or(AtomicOperationsError::MissingOperations)
+            .ok_or(AtomicOperationsError::MissingOperations)?;
+        if operations.is_empty() {
+            return Err(AtomicOperationsError::EmptyOperations);
+        }
+        Ok(operations)
     }
 
     /// Validates a response document and checks its positional result count.
@@ -684,6 +689,8 @@ pub trait AtomicHrefResolver: Send + Sync {
 pub enum AtomicOperationsError {
     /// A request document is missing its operations array.
     MissingOperations,
+    /// A request document contains an empty operations array.
+    EmptyOperations,
     /// A response document is missing its results array.
     MissingResults,
     /// Top-level Atomic Operations members are inconsistent.
@@ -728,6 +735,8 @@ impl fmt::Display for AtomicOperationsError {
             Self::MissingOperations => {
                 formatter.write_str("an Atomic Operations request must contain `atomic:operations`")
             }
+            Self::EmptyOperations => formatter
+                .write_str("an Atomic Operations request must contain at least one operation"),
             Self::MissingResults => {
                 formatter.write_str("an Atomic Operations response must contain `atomic:results`")
             }

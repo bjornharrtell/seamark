@@ -1003,7 +1003,7 @@ async fn negotiates_and_executes_atomic_http_requests() {
 }
 
 #[tokio::test]
-async fn atomic_http_accepts_empty_operations_as_a_successful_no_op() {
+async fn atomic_http_rejects_empty_operations_before_authorization_or_handler() {
     let Some(database) = database().await else {
         return;
     };
@@ -1026,11 +1026,16 @@ async fn atomic_http_accepts_empty_operations_as_a_successful_no_op() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
-    assert_eq!(document(response).await, json!({"atomic:results": []}));
-    assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+    let error = error_document(response, body).await;
+    assert_eq!(error["errors"][0]["code"], "invalid_atomic_operation");
+    assert_eq!(
+        error["errors"][0]["source"]["pointer"],
+        "/atomic:operations"
+    );
+    assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     database.close().await.unwrap();
 }
@@ -2741,7 +2746,7 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
     let Some(database) = database().await else {
         return;
     };
-    let body = r#"{"atomic:operations":[]}"#;
+    let body = r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#;
     let accepted = [
         ATOMIC_MEDIA_TYPE,
         "application/vnd.api+json",
@@ -2792,9 +2797,9 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
         assert_eq!(response.status(), StatusCode::OK, "{accept}");
         assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
         assert_eq!(response.headers()[VARY], "Accept");
-        assert_eq!(document(response).await, json!({"atomic:results": []}));
+        assert_eq!(document(response).await, json!({"atomic:results": [{}]}));
         assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }
 
     for accept in rejected {
@@ -2838,7 +2843,7 @@ async fn atomic_http_combines_repeated_accept_header_fields() {
         "/operations",
         ATOMIC_MEDIA_TYPE,
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
-        r#"{"atomic:operations":[]}"#,
+        r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#,
     );
     repeated_exact_request.headers_mut().append(
         ACCEPT,
@@ -2852,9 +2857,9 @@ async fn atomic_http_combines_repeated_accept_header_fields() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
     assert_eq!(response.headers()[VARY], "Accept");
-    assert_eq!(document(response).await, json!({"atomic:results": []}));
+    assert_eq!(document(response).await, json!({"atomic:results": [{}]}));
     assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
 
     for (wildcard_quality, exact_quality, expected_status) in [
         ("1", "0", StatusCode::NOT_ACCEPTABLE),
@@ -2871,7 +2876,7 @@ async fn atomic_http_combines_repeated_accept_header_fields() {
             "/operations",
             ATOMIC_MEDIA_TYPE,
             &format!("application/*;ext=\"https://jsonapi.org/ext/atomic\";q={wildcard_quality}"),
-            r#"{"atomic:operations":[]}"#,
+            r#"{"atomic:operations":[{"op":"remove","ref":{"type":"authors","id":"1"}}]}"#,
         );
         request.headers_mut().append(
             ACCEPT,
@@ -2887,14 +2892,15 @@ async fn atomic_http_combines_repeated_accept_header_fields() {
         assert_eq!(response.headers()[VARY], "Accept");
         if expected_status == StatusCode::OK {
             assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
-            assert_eq!(document(response).await, json!({"atomic:results": []}));
+            assert_eq!(document(response).await, json!({"atomic:results": [{}]}));
             assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
         } else {
             let error = error_document(response, r#"{"atomic:operations":[]}"#).await;
             assert_eq!(error["errors"][0]["code"], "not_acceptable");
             assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
         }
-        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     }
     database.close().await.unwrap();
 }

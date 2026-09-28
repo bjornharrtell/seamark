@@ -274,7 +274,11 @@ pub async fn run(database: &DatabaseConnection) {
     .await;
     assert_eq!(
         serde_json::to_value(create_results).unwrap(),
-        json!([{"data": {"type": "records", "id": CREATED_ID}}])
+        json!([{"data": {
+            "type": "records",
+            "id": CREATED_ID,
+            "attributes": {"lookup_key": CREATED_LOOKUP_KEY, "label": "Created"}
+        }}])
     );
     let created_id = parse_uuid(CREATED_ID).unwrap();
     let created = record::Entity::find_by_id(created_id)
@@ -305,7 +309,17 @@ pub async fn run(database: &DatabaseConnection) {
         }),
     )
     .await;
-    assert_eq!(serde_json::to_value(update_results).unwrap(), json!([{}]));
+    assert_eq!(
+        serde_json::to_value(update_results).unwrap(),
+        json!([{"data": {
+            "type": "records",
+            "id": CREATED_ID,
+            "attributes": {
+                "lookup_key": UPDATED_LOOKUP_KEY,
+                "label": "Updated"
+            }
+        }}])
+    );
     let updated = record::Entity::find_by_id(created_id)
         .one(database)
         .await

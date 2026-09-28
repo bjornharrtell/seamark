@@ -2252,7 +2252,7 @@ impl<E, C> SeaOrmAtomicOperationExecutor for SeaOrmResourceMutationHandler<E, C>
 where
     E: EntityTrait,
     E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
-    E::Column: FromStr,
+    E::Column: ColumnTrait + FromStr,
     E::Model: ModelTrait<Entity = E> + IntoActiveModel<E::ActiveModel> + Send,
     C: SeaOrmMutationValueCodec,
 {
@@ -2287,34 +2287,9 @@ where
         operation: &PlannedOperation,
         local_ids: &LocalIdMap,
     ) -> Result<AtomicOperationOutcome, String> {
-        match operation {
-            PlannedOperation::AddResource { changeset, .. } => self
-                .add(transaction, changeset, local_ids)
-                .await
-                .map_err(|failure| failure.to_string()),
-            PlannedOperation::UpdateResource {
-                target, changeset, ..
-            } => self
-                .update(transaction, target, changeset, local_ids)
-                .await
-                .map_err(|failure| failure.to_string()),
-            PlannedOperation::RemoveResource { target } => self
-                .remove(transaction, target, local_ids)
-                .await
-                .map_err(|failure| failure.to_string()),
-            PlannedOperation::UpdateRelationship {
-                reference,
-                model_field,
-                data,
-            } => self
-                .update_relationship(transaction, reference, model_field, data, local_ids)
-                .await
-                .map_err(|failure| failure.to_string()),
-            PlannedOperation::AddRelationshipMembers { .. }
-            | PlannedOperation::RemoveRelationshipMembers { .. } => {
-                Err("to-many relationship operations require an application executor".to_owned())
-            }
-        }
+        self.execute_with_failure(transaction, operation, local_ids)
+            .await
+            .map_err(|failure| failure.to_string())
     }
 
     async fn execute_with_failure(
@@ -2325,11 +2300,31 @@ where
     ) -> Result<AtomicOperationOutcome, AtomicOperationFailure> {
         match operation {
             PlannedOperation::AddResource { changeset, .. } => {
-                self.add(transaction, changeset, local_ids).await
+                let mut outcome = self.add(transaction, changeset, local_ids).await?;
+                let id = outcome
+                    .result
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("id"))
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_owned);
+                if let Some(id) = id {
+                    outcome.result.data = Some(self.representation_result(transaction, &id).await?);
+                }
+                Ok(outcome)
             }
             PlannedOperation::UpdateResource {
                 target, changeset, ..
-            } => self.update(transaction, target, changeset, local_ids).await,
+            } => {
+                let mut outcome = self
+                    .update(transaction, target, changeset, local_ids)
+                    .await?;
+                let identity = self.target_identity(target, local_ids)?;
+                if let Some(id) = identity.id {
+                    outcome.result.data = Some(self.representation_result(transaction, &id).await?);
+                }
+                Ok(outcome)
+            }
             PlannedOperation::RemoveResource { target } => {
                 self.remove(transaction, target, local_ids).await
             }
@@ -2341,9 +2336,12 @@ where
                 self.update_relationship(transaction, reference, model_field, data, local_ids)
                     .await
             }
-            _ => SeaOrmAtomicOperationExecutor::execute(self, transaction, operation, local_ids)
-                .await
-                .map_err(AtomicOperationFailure::Operation),
+            PlannedOperation::AddRelationshipMembers { .. }
+            | PlannedOperation::RemoveRelationshipMembers { .. } => {
+                Err(AtomicOperationFailure::Operation(
+                    "to-many relationship operations require an application executor".to_owned(),
+                ))
+            }
         }
     }
 }
@@ -2551,6 +2549,42 @@ where
             .ok_or(MutationAdapterError::NotFound)?;
         map_registered_model_with_computed::<E>(&model, &self.definition, &self.computed_attributes)
             .map_err(|_| MutationAdapterError::Failed)
+    }
+
+    /// Loads the public representation returned by resource add/update results.
+    ///
+    /// To-many relationships are omitted: the standard mutation mapper cannot
+    /// load their linkage, and omitting a field is preferable to reporting an
+    /// inaccurate empty relationship.
+    async fn representation_result(
+        &self,
+        transaction: &DatabaseTransaction,
+        id: &str,
+    ) -> Result<JsonValue, AtomicOperationFailure> {
+        let mut resource = self
+            .load_adapter_resource(transaction, id)
+            .await
+            .map_err(|_| {
+                AtomicOperationFailure::Operation(
+                    "could not load the resource representation".to_owned(),
+                )
+            })?;
+        for relationship in self.definition.relationships() {
+            if relationship.cardinality() == Some(RelationshipCardinality::ToMany) {
+                resource.relationships.remove(relationship.model_field());
+            }
+        }
+        let projected =
+            crate::projection::project_resource(&self.definition, &resource).map_err(|_| {
+                AtomicOperationFailure::Operation(
+                    "could not project the resource representation".to_owned(),
+                )
+            })?;
+        serde_json::to_value(projected).map_err(|_| {
+            AtomicOperationFailure::Operation(
+                "could not serialize the resource representation".to_owned(),
+            )
+        })
     }
 }
 
