@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.85"
 description = "A Rust framework for building JSON:API servers with SeaORM"
 readme = "README.md"
+license = "MIT"
+repository = "https://github.com/bjornharrtell/seamark"
+exclude = ["/.github/**", "/AGENTS.md"]
 
 [features]
 sqlite = ["sea-orm/sqlx-sqlite"]
