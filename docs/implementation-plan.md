@@ -158,7 +158,9 @@ relationship collections.
   `self`, resource `self`, and pagination (`first`/`prev`/`next`/`last`)
   links. Related-resource `GET /{type}/{id}/{relationship}` is served when the
   relationship grants `RelationshipPermission::RelatedRead` and a query adapter
-  is configured. B4 (relationship-endpoint queries) and B6 (related-collection
+  is configured. Related collections currently support includes and sparse
+  fieldsets; filter/sort/page are rejected with `400` rather than ignored until
+  B6 executes them. B4 (relationship-endpoint queries) and B6 (related-collection
   queries) remain planned, as do `related` links (deferred until B3 coverage is
   complete on both backends).
 - Exit criteria: links resolve to working GETs; relationship and related
