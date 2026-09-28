@@ -348,10 +348,11 @@ fn test_app(adapter: Arc<TestAdapter>, allowed: bool) -> (Router, Arc<TestAuthor
         allowed,
         calls: AtomicUsize::new(0),
     });
-    (
-        http::router(registry, adapter, authorizer.clone()),
-        authorizer,
-    )
+    let app = http::ApiBuilder::new(registry, authorizer.clone())
+        .reads(adapter)
+        .try_build()
+        .unwrap();
+    (app, authorizer)
 }
 
 fn query_test_app(
@@ -374,16 +375,12 @@ fn query_test_app(
     });
     let pagination =
         PaginationConfig::new(1, 10, Some(QUERY_TEST_MAX_PAGE_SIZE), Some(1000)).unwrap();
-    (
-        http::router_with_query(
-            registry,
-            adapter,
-            authorizer.clone(),
-            query_adapter,
-            pagination,
-        ),
-        authorizer,
-    )
+    let app = http::ApiBuilder::new(registry, authorizer.clone())
+        .reads(adapter)
+        .queries(query_adapter, pagination)
+        .try_build()
+        .unwrap();
+    (app, authorizer)
 }
 
 fn mutation_test_app(allowed: bool) -> (Router, Arc<TestMutationAdapter>, Arc<TestAuthorizer>) {
@@ -421,12 +418,11 @@ fn mutation_test_app(allowed: bool) -> (Router, Arc<TestMutationAdapter>, Arc<Te
         calls: AtomicUsize::new(0),
     });
     let mutation_adapter = Arc::new(TestMutationAdapter::default());
-    let app = http::router_with_mutations(
-        registry,
-        Arc::new(TestAdapter::default()),
-        authorizer.clone(),
-        mutation_adapter.clone(),
-    );
+    let app = http::ApiBuilder::new(registry, authorizer.clone())
+        .reads(Arc::new(TestAdapter::default()))
+        .mutations(mutation_adapter.clone())
+        .try_build()
+        .unwrap();
     (app, mutation_adapter, authorizer)
 }
 

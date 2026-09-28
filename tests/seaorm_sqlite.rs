@@ -1686,17 +1686,18 @@ async fn executes_sqlite_filters_sort_pagination_fieldsets_and_includes() {
     });
     let authorization_calls = Arc::new(AtomicUsize::new(0));
     let resource_calls = Arc::new(AtomicUsize::new(0));
-    let app = http::router_with_query(
+    let app = http::ApiBuilder::new(
         Arc::new(registry()),
-        Arc::new(SingleResourceProbeAdapter {
-            calls: resource_calls.clone(),
-        }),
         Arc::new(SingleResourceProbeAuthorizer {
             calls: authorization_calls.clone(),
         }),
-        query_adapter,
-        pagination(),
-    );
+    )
+    .reads(Arc::new(SingleResourceProbeAdapter {
+        calls: resource_calls.clone(),
+    }))
+    .queries(query_adapter, pagination())
+    .try_build()
+    .unwrap();
     let response = app
         .clone()
         .oneshot(
@@ -1967,17 +1968,18 @@ async fn sqlite_single_resource_collection_queries_reject_before_authorization_o
         .unwrap(),
         calls: query_calls.clone(),
     });
-    let app = http::router_with_query(
+    let app = http::ApiBuilder::new(
         Arc::new(registry()),
-        Arc::new(SingleResourceProbeAdapter {
-            calls: resource_calls.clone(),
-        }),
         Arc::new(SingleResourceProbeAuthorizer {
             calls: authorization_calls.clone(),
         }),
-        query_adapter,
-        pagination(),
-    );
+    )
+    .reads(Arc::new(SingleResourceProbeAdapter {
+        calls: resource_calls.clone(),
+    }))
+    .queries(query_adapter, pagination())
+    .try_build()
+    .unwrap();
 
     let response = app
         .oneshot(

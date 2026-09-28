@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use seamark::query::{
-    FilterError, FilterExpression, FilterValue, IncludeNode, Page, PaginationConfig, PlannedField,
-    ReadPlanError, ReadQuery, SortDirection, SortField, parse_filter, plan_filters, plan_read,
-    plan_resource_read,
+    FilterError, FilterExpression, FilterValue, IncludeNode, MAX_FILTER_DEPTH, MAX_INCLUDE_DEPTH,
+    Page, PaginationConfig, PlannedField, ReadPlanError, ReadQuery, SortDirection, SortField,
+    parse_filter, plan_filters, plan_read, plan_resource_read,
 };
 use seamark::registry::{
     RelationshipMapping, RelationshipPermission, ResourceDefinition, ResourceRegistry,
@@ -648,4 +648,30 @@ fn one_read_plan_integrates_filters_sort_pagination_fieldsets_and_includes() {
     );
     assert_eq!(plan.fieldsets["ports"].len(), 2);
     assert_eq!(plan.includes[0].public_name, "owner");
+}
+
+#[test]
+fn rejects_filter_expressions_nested_past_the_structural_depth_cap() {
+    let input = format!(
+        "{}equals(name,'A'){}",
+        "not(".repeat(MAX_FILTER_DEPTH + 1),
+        ")".repeat(MAX_FILTER_DEPTH + 1)
+    );
+    assert!(matches!(
+        parse_filter(&registry(), "ports", &input),
+        Err(FilterError::Malformed { .. })
+    ));
+}
+
+#[test]
+fn rejects_include_paths_nested_past_the_structural_depth_cap() {
+    let path = vec!["owner"; MAX_INCLUDE_DEPTH + 1].join(".");
+    let query = ReadQuery {
+        includes: vec![path.clone()],
+        ..ReadQuery::default()
+    };
+    assert_eq!(
+        plan_read(&registry(), "ports", &query, &pagination_config()),
+        Err(ReadPlanError::InvalidIncludePath(path))
+    );
 }

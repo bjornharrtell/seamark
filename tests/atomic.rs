@@ -1737,15 +1737,21 @@ impl AtomicOperationHandler for MismatchedLocalIdResultHandler {
     }
 }
 
-async fn database() -> DatabaseConnection {
-    let url = std::env::var("SEAMARK_TEST_DATABASE_URL")
-        .expect("set SEAMARK_TEST_DATABASE_URL to a dedicated PostgreSQL test database");
-    Database::connect(url).await.unwrap()
+async fn database() -> Option<DatabaseConnection> {
+    let Ok(url) = std::env::var("SEAMARK_TEST_DATABASE_URL") else {
+        eprintln!(
+            "skipping PostgreSQL test: set SEAMARK_TEST_DATABASE_URL to a dedicated database to run it"
+        );
+        return None;
+    };
+    Some(Database::connect(url).await.unwrap())
 }
 
 #[tokio::test]
 async fn rolls_back_add_when_result_identity_disagrees_with_local_id_mapping() {
-    let database = database().await;
+    let Some(database) = database().await else {
+        return;
+    };
     database
         .execute_unprepared(
             "DROP TABLE IF EXISTS seamark_atomic_mismatched_local_id_log; CREATE TABLE seamark_atomic_mismatched_local_id_log (event TEXT NOT NULL)",
@@ -1790,7 +1796,9 @@ async fn rolls_back_add_when_result_identity_disagrees_with_local_id_mapping() {
 
 #[tokio::test]
 async fn executes_operations_in_order_maps_local_ids_and_rolls_back_failures() {
-    let database = database().await;
+    let Some(database) = database().await else {
+        return;
+    };
     database
         .execute_unprepared(
             "DROP TABLE IF EXISTS seamark_atomic_log; CREATE TABLE seamark_atomic_log (id BIGSERIAL PRIMARY KEY, event TEXT NOT NULL, related_id TEXT)",

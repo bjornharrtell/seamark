@@ -1200,14 +1200,14 @@ where
                 .filter(source_column.eq(source_value.clone()))
                 .exec(transaction)
                 .await
-                .map_err(|error| format!("join-table replacement delete failed: {error}"))?;
+                .map_err(|_| "join-table replacement delete failed".to_owned())?;
         } else if matches!(action, JoinTableOperation::Remove) && !target_values.is_empty() {
             E::delete_many()
                 .filter(source_column.eq(source_value.clone()))
                 .filter(target_column.is_in(target_values.clone()))
                 .exec(transaction)
                 .await
-                .map_err(|error| format!("join-table delete failed: {error}"))?;
+                .map_err(|_| "join-table delete failed".to_owned())?;
         }
 
         if matches!(
@@ -1221,7 +1221,7 @@ where
                         .filter(target_column.eq(target_value.clone()))
                         .one(transaction)
                         .await
-                        .map_err(|error| format!("join-table membership lookup failed: {error}"))?
+                        .map_err(|_| "join-table membership lookup failed".to_owned())?
                         .is_some()
                 {
                     continue;
@@ -1229,19 +1229,17 @@ where
                 let mut active_model = <E::ActiveModel as Default>::default();
                 active_model
                     .try_set(source_column, source_value.clone())
-                    .map_err(|error| format!("could not map join-table source: {error}"))?;
+                    .map_err(|_| "could not map join-table source column".to_owned())?;
                 active_model
                     .try_set(target_column, target_value)
-                    .map_err(|error| format!("could not map join-table target: {error}"))?;
+                    .map_err(|_| "could not map join-table target column".to_owned())?;
                 active_model.insert(transaction).await.map_err(|error| {
                     if is_foreign_key_violation(&error) {
                         AtomicOperationFailure::NotFound(
                             "a referenced relationship resource does not exist".to_owned(),
                         )
                     } else {
-                        AtomicOperationFailure::Operation(format!(
-                            "join-table insert failed: {error}"
-                        ))
+                        AtomicOperationFailure::Operation("join-table insert failed".to_owned())
                     }
                 })?;
             }
@@ -1639,9 +1637,7 @@ where
                 )
                 .exec(transaction)
                 .await
-                .map_err(|error| {
-                    format!("to-many foreign-key replacement clear failed: {error}")
-                })?;
+                .map_err(|_| "to-many foreign-key replacement clear failed".to_owned())?;
         }
 
         for target_value in target_values {
@@ -1651,9 +1647,7 @@ where
                     .filter(foreign_key_column.eq(source_value.clone()))
                     .one(transaction)
                     .await
-                    .map_err(|error| {
-                        format!("to-many foreign-key membership lookup failed: {error}")
-                    })?
+                    .map_err(|_| "to-many foreign-key membership lookup failed".to_owned())?
                     .is_some()
             {
                 continue;
@@ -1684,7 +1678,7 @@ where
                 .col_expr(foreign_key_column, Expr::value(assigned_value))
                 .exec(transaction)
                 .await
-                .map_err(|error| format!("to-many foreign-key update failed: {error}"))?;
+                .map_err(|_| "to-many foreign-key update failed".to_owned())?;
             if matches!(
                 action,
                 ForeignKeyOperation::Add | ForeignKeyOperation::Replace
@@ -1694,7 +1688,7 @@ where
                     .filter(target_identifier_column.eq(target_value.clone()))
                     .one(transaction)
                     .await
-                    .map_err(|error| format!("to-many foreign-key target lookup failed: {error}"))?
+                    .map_err(|_| "to-many foreign-key target lookup failed".to_owned())?
                     .is_some();
                 if !target_exists {
                     return Err(AtomicOperationFailure::NotFound(
@@ -1979,7 +1973,7 @@ where
         let value = self.encode(model_field, value)?;
         active_model
             .try_set(column, value)
-            .map_err(|error| format!("could not map field `{model_field}`: {error}"))
+            .map_err(|_| format!("could not map field `{model_field}`"))
     }
 
     fn set_identifier_field(
@@ -1994,7 +1988,7 @@ where
             .encode_identifier(model_field, identifier)?;
         active_model
             .try_set(column, value)
-            .map_err(|error| format!("could not map identifier field `{model_field}`: {error}"))
+            .map_err(|_| format!("could not map identifier field `{model_field}`"))
     }
 
     fn apply_changeset(
@@ -2090,7 +2084,7 @@ where
                     "a referenced relationship resource does not exist".to_owned(),
                 )
             } else {
-                AtomicOperationFailure::Operation(format!("resource create failed: {error}"))
+                AtomicOperationFailure::Operation("resource create failed".to_owned())
             }
         })?;
         let identifier = self.column(changeset.identifier_field.as_str())?;
@@ -2140,8 +2134,8 @@ where
                 .filter(id_column.eq(id_value))
                 .one(transaction)
                 .await
-                .map_err(|error| {
-                    AtomicOperationFailure::Operation(format!("resource lookup failed: {error}"))
+                .map_err(|_| {
+                    AtomicOperationFailure::Operation("resource lookup failed".to_owned())
                 })?
                 .is_some();
             if !exists {
@@ -2155,7 +2149,7 @@ where
         let mut active_model = <E::ActiveModel as std::default::Default>::default();
         active_model
             .try_set(id_column, id_value)
-            .map_err(|error| format!("could not map identifier field: {error}"))?;
+            .map_err(|_| "could not map identifier field".to_owned())?;
         self.apply_changeset(&mut active_model, changeset, local_ids, false)?;
         active_model.update(transaction).await.map_err(|error| {
             if matches!(&error, DbErr::RecordNotUpdated) {
@@ -2166,7 +2160,7 @@ where
                     "a referenced relationship resource does not exist".to_owned(),
                 )
             } else {
-                AtomicOperationFailure::Operation(format!("resource update failed: {error}"))
+                AtomicOperationFailure::Operation("resource update failed".to_owned())
             }
         })?;
         Ok(AtomicOperationOutcome::default())
@@ -2187,9 +2181,7 @@ where
             .filter(id_column.eq(self.identifier_value(&id)?))
             .exec(transaction)
             .await
-            .map_err(|error| {
-                AtomicOperationFailure::Operation(format!("resource delete failed: {error}"))
-            })?;
+            .map_err(|_| AtomicOperationFailure::Operation("resource delete failed".to_owned()))?;
         if result.rows_affected == 0 {
             return Err(AtomicOperationFailure::NotFound(
                 "resource to remove was not found".to_owned(),
@@ -2239,7 +2231,7 @@ where
         let id_value = self.identifier_value(&id)?;
         active_model
             .try_set(id_column, id_value)
-            .map_err(|error| format!("could not map identifier field: {error}"))?;
+            .map_err(|_| "could not map identifier field".to_owned())?;
         active_model.update(transaction).await.map_err(|error| {
             if matches!(&error, DbErr::RecordNotUpdated) {
                 AtomicOperationFailure::NotFound("relationship owner was not found".to_owned())
@@ -2248,7 +2240,7 @@ where
                     "a referenced relationship resource does not exist".to_owned(),
                 )
             } else {
-                AtomicOperationFailure::Operation(format!("relationship update failed: {error}"))
+                AtomicOperationFailure::Operation("relationship update failed".to_owned())
             }
         })?;
         Ok(AtomicOperationOutcome::default())

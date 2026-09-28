@@ -20,6 +20,10 @@ Filters and sort expressions apply only to explicitly registered attributes
 with the corresponding `AttributePermission`. Planning resolves public names
 to their registered internal fields and rejects unknown operators, fields,
 relationship paths, malformed values, and unsupported query parameters.
+Filter expressions and include paths have fixed structural depth caps
+(`MAX_FILTER_DEPTH` and `MAX_INCLUDE_DEPTH`) so malformed or hostile input is
+rejected before it can drive unbounded recursion. `ExecutionLimits` can still
+impose smaller application limits.
 
 Pagination uses a one-based page number and positive page size, translated to
 offset and limit. `PaginationConfig` requires the application to provide page
@@ -83,8 +87,8 @@ fallback. Unsupported conversions and mismapped plan fields fail explicitly.
 Single-resource `GET` uses the same validated `ReadPlan` model for includes and
 sparse fieldsets, then dispatches to the query adapter's resource operation.
 `plan_resource_read` rejects filters, sorting, and pagination before
-authorization or adapter execution. The default router without a query
-adapter continues to reject non-empty query strings.
+authorization or adapter execution. A router built without `ApiBuilder::queries`
+continues to reject non-empty query strings.
 
 SQLite integration tests exercise the standard foreign-key and join-table
 include paths, sparse fieldsets, filters, sorting, pagination, authorization,
