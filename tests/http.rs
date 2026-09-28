@@ -1181,6 +1181,13 @@ async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
         (
             "PATCH",
             "/ports/1",
+            r#"{"data":{"type":"ports"}}"#,
+            StatusCode::CONFLICT,
+            "resource_id_mismatch",
+        ),
+        (
+            "PATCH",
+            "/ports/1",
             r#"{"data":{"type":"ports","id":"1","relationships":{"owner":{}}}}"#,
             StatusCode::BAD_REQUEST,
             "relationship_data_required",
