@@ -2312,6 +2312,7 @@ async fn sqlite_atomic_result_document_matches_shared_backend_case() {
     atomic_cases::execute_update_missing_resource_not_found_http_case(&database).await;
     atomic_cases::execute_remove_missing_resource_not_found_http_case(&database).await;
     atomic_cases::execute_client_assigned_add_missing_result_rollback_http_case(&database).await;
+    atomic_cases::execute_join_table_insert_columns_case(&database).await;
 
     database.close().await.unwrap();
 }

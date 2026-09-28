@@ -976,6 +976,9 @@ fn resource_add_reference(
     })
 }
 
+/// Populates additional required columns on an inserted join-table row.
+type JoinTableInsertColumns<A> = Arc<dyn Fn(&mut A) -> Result<(), String> + Send + Sync>;
+
 /// Executes to-many relationship add, remove, and replacement operations
 /// against an explicit SeaORM join-table entity.
 ///
@@ -987,7 +990,7 @@ fn resource_add_reference(
 pub struct SeaOrmJoinTableMutationHandler<E, C>
 where
     E: EntityTrait,
-    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send,
+    E::ActiveModel: ActiveModelTrait<Entity = E> + Default + Send + 'static,
     E::Model: IntoActiveModel<E::ActiveModel> + Send,
     E::Column: ColumnTrait + FromStr,
     C: SeaOrmMutationValueCodec,
@@ -998,6 +1001,7 @@ where
     source_column: String,
     target_column: String,
     value_codec: C,
+    insert_columns: Option<JoinTableInsertColumns<E::ActiveModel>>,
     entity: PhantomData<fn() -> E>,
 }
 
@@ -1031,6 +1035,27 @@ where
         source_type: &str,
         relationship_name: &str,
         value_codec: C,
+    ) -> Result<Self, String> {
+        Self::new_with_insert_columns(registry, source_type, relationship_name, value_codec, None)
+    }
+
+    /// Creates a typed join-table executor that populates additional required
+    /// columns on every inserted membership row.
+    ///
+    /// `insert_columns` is called on each new `ActiveModel` after the source
+    /// and target columns are set and before the row is inserted. Use it for
+    /// join tables with extra non-nullable columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resource or relationship is not registered or
+    /// either join-table column is not present on the typed entity.
+    pub fn new_with_insert_columns(
+        registry: &ResourceRegistry,
+        source_type: &str,
+        relationship_name: &str,
+        value_codec: C,
+        insert_columns: Option<JoinTableInsertColumns<E::ActiveModel>>,
     ) -> Result<Self, String> {
         let source = registry
             .resource(source_type)
@@ -1066,6 +1091,7 @@ where
             source_column,
             target_column,
             value_codec,
+            insert_columns,
             entity: PhantomData,
         })
     }
@@ -1233,6 +1259,9 @@ where
                 active_model
                     .try_set(target_column, target_value)
                     .map_err(|_| "could not map join-table target column".to_owned())?;
+                if let Some(insert_columns) = &self.insert_columns {
+                    insert_columns(&mut active_model)?;
+                }
                 active_model.insert(transaction).await.map_err(|error| {
                     if is_foreign_key_violation(&error) {
                         AtomicOperationFailure::NotFound(
