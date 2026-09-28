@@ -6,12 +6,37 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  publish:
+    name: Publish crate to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check tag matches crate version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "seamark"))')"
+          test "$TAG_NAME" = "v$package_version"
+
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: write
     steps:
       - name: Create release
         env:
