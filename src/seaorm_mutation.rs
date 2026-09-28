@@ -1432,6 +1432,7 @@ where
     target_type: String,
     target_identifier_field: String,
     foreign_key_field: String,
+    nullable: bool,
     reassignment: RelationshipReassignment,
     value_codec: C,
     entity: PhantomData<fn() -> E>,
@@ -1486,11 +1487,6 @@ where
                 "relationship `{source_type}.{relationship_name}` is not mapped through a target foreign key"
             ));
         };
-        if !nullable {
-            return Err(format!(
-                "relationship `{source_type}.{relationship_name}` needs a nullable foreign key for removal and replacement"
-            ));
-        }
         let foreign_key_field = foreign_key_field.clone();
         if foreign_key_field == target.identifier_field() {
             return Err(
@@ -1513,6 +1509,7 @@ where
             target_type: target.type_name().to_owned(),
             target_identifier_field: target.identifier_field().to_owned(),
             foreign_key_field,
+            nullable: *nullable,
             reassignment: *reassignment,
             value_codec,
             entity: PhantomData,
@@ -1520,25 +1517,28 @@ where
     }
 
     fn supports_relationship_operation(&self, operation: &PlannedOperation) -> bool {
-        matches!(
-            operation,
+        let owned_relationship = |reference: &AtomicResourceReference, model_field: &String| {
+            reference.type_name == self.source_type && model_field == &self.model_field
+        };
+        match operation {
             PlannedOperation::AddRelationshipMembers {
                 reference,
                 model_field,
                 ..
-            } | PlannedOperation::RemoveRelationshipMembers {
+            } if owned_relationship(reference, model_field) => true,
+            PlannedOperation::RemoveRelationshipMembers {
                 reference,
                 model_field,
                 ..
-            } if reference.type_name == self.source_type && model_field == &self.model_field
-        ) || matches!(
-            operation,
-            PlannedOperation::UpdateRelationship {
+            }
+            | PlannedOperation::UpdateRelationship {
                 reference,
                 model_field,
                 data: RelationshipData::Many(_),
-            } if reference.type_name == self.source_type && model_field == &self.model_field
-        )
+                ..
+            } if owned_relationship(reference, model_field) => self.nullable,
+            _ => false,
+        }
     }
 
     fn encode(&self, model_field: &str, value: &JsonValue) -> Result<Value, String> {

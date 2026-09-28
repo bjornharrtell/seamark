@@ -218,8 +218,9 @@ enumerated.
 - Depends on: **PR3**, **A5**.
 - Progress: **D2 partial** — `SeaOrmJoinTableMutationHandler::new_with_insert_columns`
   lets applications populate additional required join-table columns on each
-  inserted membership row. D1 (generic relationship access), D3 (ordered
-  relationships), and non-nullable direct FKs remain planned.
+  inserted membership row, and the nullable-FK handler now also accepts a
+  non-nullable foreign key for add/transfer while rejecting remove and replace.
+  D1 (generic relationship access) and D3 (ordered relationships) remain planned.
 - Exit criteria: each supported shape has read and write fixtures, idempotency
   and rollback evidence, and parity between PostgreSQL and SQLite; unsupported
   shapes are rejected or delegated explicitly.

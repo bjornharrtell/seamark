@@ -34,10 +34,11 @@ use sea_orm::{
 };
 use seamark::atomic::{
     AtomicExecutionError, AtomicOperationHandler, AtomicOperationOutcome, AtomicOperationsDocument,
-    AtomicOperationsGuard, LocalIdMap, PlannedAtomicOperation, PlannedOperation,
-    execute_atomic_operations, plan_atomic_operations,
+    AtomicOperationsGuard, AtomicResourceReference, LocalIdMap, PlannedAtomicOperation,
+    PlannedOperation, execute_atomic_operations, plan_atomic_operations,
 };
 use seamark::atomic_http;
+use seamark::document::RelationshipData;
 use seamark::http::{
     self, AdapterError, AdapterIncludedResource, AdapterResource, MutationCommand, MutationOutcome,
     QueryAdapterError, QueryCollectionResult, QueryResourceAdapter, QueryResourceResult,
@@ -59,7 +60,7 @@ use seamark::seaorm::{
 };
 use seamark::seaorm_mutation::{
     SeaOrmAtomicOperationDispatcher, SeaOrmAtomicOperationExecutor, SeaOrmBaseMutationExecutor,
-    SeaOrmResourceMutationHandler,
+    SeaOrmResourceMutationHandler, SeaOrmToManyForeignKeyMutationHandler,
 };
 use serde_json::json;
 use tower::ServiceExt;
@@ -2396,4 +2397,51 @@ async fn standard_seaorm_query_adapter_serves_related_resource_routes() {
     assert_eq!(document["data"]["type"], "people");
     assert_eq!(document["data"]["id"], "11");
     assert_eq!(document["data"]["attributes"]["name"], "Mara");
+}
+
+#[test]
+fn non_nullable_foreign_key_handler_supports_add_only() {
+    let ports = ResourceDefinition::new("ports", "port_id");
+    let people = ResourceDefinition::new("people", "person_id").mapped_relationship(
+        to_many_foreign_key_mapping::<port::Entity>(
+            "ports",
+            "ports",
+            "ports",
+            port::Column::OwnerId,
+            false,
+            RelationshipReassignment::Deny,
+        )
+        .allow(RelationshipPermission::AtomicAdd)
+        .allow(RelationshipPermission::AtomicRemove)
+        .allow(RelationshipPermission::AtomicReplace),
+    );
+    let registry = ResourceRegistry::new([ports, people]).unwrap();
+    let handler = SeaOrmToManyForeignKeyMutationHandler::<port::Entity, _>::new(
+        &registry, "people", "ports", PortCodec,
+    )
+    .unwrap();
+    let reference = || AtomicResourceReference {
+        type_name: "people".to_owned(),
+        id: Some("1".to_owned()),
+        lid: None,
+        relationship: Some("ports".to_owned()),
+    };
+    let add = PlannedOperation::AddRelationshipMembers {
+        reference: reference(),
+        model_field: "ports".to_owned(),
+        data: Vec::new(),
+    };
+    let remove = PlannedOperation::RemoveRelationshipMembers {
+        reference: reference(),
+        model_field: "ports".to_owned(),
+        data: Vec::new(),
+    };
+    let replace = PlannedOperation::UpdateRelationship {
+        reference: reference(),
+        model_field: "ports".to_owned(),
+        data: RelationshipData::Many(Vec::new()),
+    };
+    assert!(SeaOrmAtomicOperationExecutor::supports(&handler, &add));
+    assert!(!SeaOrmAtomicOperationExecutor::supports(&handler, &remove));
+    assert!(!SeaOrmAtomicOperationExecutor::supports(&handler, &replace));
 }
