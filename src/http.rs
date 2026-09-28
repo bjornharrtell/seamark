@@ -400,6 +400,7 @@ struct ApiState {
     mutation_adapter: Option<Arc<dyn MutationResourceAdapter>>,
     pagination: Option<PaginationConfig>,
     execution_limits: Option<crate::limits::ExecutionLimits>,
+    links: bool,
 }
 
 /// A composable router builder with separate opt-ins for simple reads,
@@ -418,6 +419,7 @@ pub struct ApiBuilder {
     execution_limits: Option<crate::limits::ExecutionLimits>,
     atomic: Option<AtomicApiConfig>,
     jsonapi_fallback: bool,
+    links: bool,
 }
 
 struct AtomicApiConfig {
@@ -442,6 +444,7 @@ impl ApiBuilder {
             execution_limits: None,
             atomic: None,
             jsonapi_fallback: false,
+            links: false,
         }
     }
 
@@ -488,6 +491,19 @@ impl ApiBuilder {
     #[must_use]
     pub fn jsonapi_fallback(mut self) -> Self {
         self.jsonapi_fallback = true;
+        self
+    }
+
+    /// Emits JSON:API `self` and pagination links in read responses.
+    ///
+    /// Links are opt-in so a default response stays minimal. When enabled,
+    /// collection and single-resource responses carry a document `self` link,
+    /// resource objects carry a `self` link, and paginated collections carry
+    /// `first`/`prev`/`next` and a `last` placeholder. The corresponding GET
+    /// routes must be served by the same router.
+    #[must_use]
+    pub fn links(mut self) -> Self {
+        self.links = true;
         self
     }
 
@@ -573,6 +589,7 @@ impl ApiBuilder {
             mutation_adapter: self.mutation_adapter,
             pagination: self.pagination,
             execution_limits: limits.clone(),
+            links: self.links,
         });
         if let Some(atomic) = self.atomic {
             let guard = limits.as_ref().map_or(atomic.guard.clone(), |limits| {
@@ -823,6 +840,8 @@ async fn get_collection(
         Ok(resources) => resources,
         Err(_) => return adapter_error(),
     };
+    let page = plan.as_ref().map(|plan| plan.page);
+    let returned = resources.len() as u64;
     let included = match included
         .iter()
         .map(|included| {
@@ -876,6 +895,15 @@ async fn get_collection(
                 }
             }
         }
+    }
+    if state.links {
+        apply_collection_links(
+            &mut document,
+            &resource_type,
+            query.as_deref(),
+            page,
+            returned,
+        );
     }
     respond_with_validated_document(StatusCode::OK, document)
 }
@@ -1047,6 +1075,9 @@ async fn get_resource(
                 }
             }
         }
+    }
+    if state.links {
+        apply_resource_links(&mut document, &resource_type, &id, query.as_deref());
     }
     respond_with_validated_document(StatusCode::OK, document)
 }
@@ -2271,6 +2302,110 @@ fn respond_with_validated_document(status: StatusCode, document: JsonApiDocument
     response
 }
 
+fn with_query(path: String, raw_query: Option<&str>) -> String {
+    match raw_query.filter(|query| !query.is_empty()) {
+        Some(query) => format!("{path}?{query}"),
+        None => path,
+    }
+}
+
+fn resource_self_url(resource_type: &str, id: &str) -> String {
+    format!(
+        "/{}/{}",
+        encode_path_segment(resource_type),
+        encode_path_segment(id)
+    )
+}
+
+fn add_resource_self_links(document: &mut JsonApiDocument) {
+    fn add(resource: &mut ResourceObject) {
+        let url = resource_self_url(
+            &resource.type_name,
+            resource.id.as_deref().unwrap_or_default(),
+        );
+        resource
+            .links
+            .get_or_insert_with(serde_json::Map::new)
+            .insert("self".to_owned(), Value::String(url));
+    }
+    match document.data.as_mut() {
+        Some(PrimaryData::One(resource)) => add(resource),
+        Some(PrimaryData::Many(resources)) => resources.iter_mut().for_each(add),
+        Some(PrimaryData::Null) | None => {}
+    }
+    if let Some(included) = document.included.as_mut() {
+        included.iter_mut().for_each(add);
+    }
+}
+
+fn apply_collection_links(
+    document: &mut JsonApiDocument,
+    resource_type: &str,
+    raw_query: Option<&str>,
+    page: Option<crate::query::Page>,
+    returned: u64,
+) {
+    add_resource_self_links(document);
+    let path = format!("/{}", encode_path_segment(resource_type));
+    let mut links = serde_json::Map::new();
+    links.insert(
+        "self".to_owned(),
+        Value::String(with_query(path.clone(), raw_query)),
+    );
+    if let Some(page) = page {
+        links.insert(
+            "first".to_owned(),
+            Value::String(page_url(&path, raw_query, 1, page.size)),
+        );
+        if page.number > 1 {
+            links.insert(
+                "prev".to_owned(),
+                Value::String(page_url(&path, raw_query, page.number - 1, page.size)),
+            );
+        }
+        if returned >= page.size {
+            links.insert(
+                "next".to_owned(),
+                Value::String(page_url(&path, raw_query, page.number + 1, page.size)),
+            );
+        }
+        links.insert("last".to_owned(), Value::Null);
+    }
+    document.links = Some(links);
+}
+
+fn apply_resource_links(
+    document: &mut JsonApiDocument,
+    resource_type: &str,
+    id: &str,
+    raw_query: Option<&str>,
+) {
+    add_resource_self_links(document);
+    let mut links = serde_json::Map::new();
+    links.insert(
+        "self".to_owned(),
+        Value::String(with_query(resource_self_url(resource_type, id), raw_query)),
+    );
+    document.links = Some(links);
+}
+
+fn page_url(path: &str, raw_query: Option<&str>, number: u64, size: u64) -> String {
+    let mut pairs = Vec::new();
+    if let Some(query) = raw_query {
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            let name = pair.split('=').next().unwrap_or_default();
+            let decoded = decode_query_component(name).unwrap_or_else(|_| name.to_owned());
+            if decoded == "page[number]" || decoded == "page[size]" {
+                continue;
+            }
+            pairs.push(pair.to_owned());
+        }
+    }
+    pairs.push(format!("page%5Bnumber%5D={number}"));
+    pairs.push(format!("page%5Bsize%5D={size}"));
+    format!("{path}?{}", pairs.join("&"))
+}
+
 fn forbidden_error() -> Response {
     protocol_error(
         StatusCode::FORBIDDEN,
@@ -2369,4 +2504,26 @@ fn set_jsonapi_headers(response: &mut Response<Body>) {
     response
         .headers_mut()
         .insert(VARY, HeaderValue::from_static("Accept"));
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::page_url;
+
+    #[test]
+    fn pagination_links_preserve_other_query_parameters() {
+        assert_eq!(
+            page_url(
+                "/ports",
+                Some("filter=x&page%5Bnumber%5D=3&include=owner"),
+                2,
+                10
+            ),
+            "/ports?filter=x&include=owner&page%5Bnumber%5D=2&page%5Bsize%5D=10"
+        );
+        assert_eq!(
+            page_url("/ports", None, 1, 25),
+            "/ports?page%5Bnumber%5D=1&page%5Bsize%5D=25"
+        );
+    }
 }
