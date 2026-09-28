@@ -68,11 +68,13 @@ the operation.
 
 ## Scope
 
-This is not a claim of complete JSON:API 1.1 or Atomic Operations conformance.
-The [design documents](docs/design/) record supported behavior and known
-limits, and the [implementation plan](docs/implementation-plan.md) records the
-completed and deferred workstreams. Extensions beyond Atomic Operations and
-profile application are out of scope; unsupported `ext` values are rejected and
-unrecognized profiles ignored. Computed attributes are read-only and cannot be
-filtered or sorted. Association shapes outside the standard foreign-key and
-join-table mappings still use custom mappers or executors.
+Seamark implements the applicable JSON:API 1.1 and Atomic Operations
+requirements for the endpoints and operations it exposes, and rejects
+unsupported requests as the specification requires. It does not implement
+every optional feature or claim exhaustive conformance; see the
+[conformance matrix](docs/design/conformance.md) for the supported profile and
+known gaps. Extensions beyond Atomic Operations and profile application are out
+of scope; unsupported `ext` values are rejected and unrecognized profiles
+ignored. Computed attributes are read-only and cannot be filtered or sorted.
+Association shapes outside the standard foreign-key and join-table mappings
+still use custom mappers or executors.
