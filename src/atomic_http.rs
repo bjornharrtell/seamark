@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
-use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
+use axum::http::header::{CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -17,10 +17,9 @@ use crate::atomic::{
     AtomicOperationsDocument, AtomicOperationsError, AtomicOperationsGuard,
     execute_atomic_operations, plan_atomic_operations, plan_atomic_operations_with_href_resolver,
 };
-use crate::document::is_valid_absolute_uri;
 use crate::document::{ErrorObject, ErrorSource, JsonApiDocument};
 use crate::json::parse_unique_members;
-use crate::media::{is_http_token, unquote_http_quoted_string};
+use crate::media;
 use crate::registry::ResourceRegistry;
 
 const JSONAPI_MEDIA_TYPE: &str = "application/vnd.api+json";
@@ -32,12 +31,6 @@ struct AtomicApiState {
     guard: Arc<dyn AtomicOperationsGuard>,
     handler: Arc<dyn AtomicOperationHandler>,
     href_resolver: Option<Arc<dyn AtomicHrefResolver>>,
-}
-
-struct MediaParameter {
-    name: String,
-    value: Option<String>,
-    quoted: bool,
 }
 
 /// Builds a standalone `POST /operations` router for Atomic Operations.
@@ -393,197 +386,17 @@ fn has_atomic_content_type(headers: &HeaderMap) -> bool {
     let Ok(value) = value.to_str() else {
         return false;
     };
-    let Some((media_type, parameters)) = parse_parameters(value) else {
+    let Ok(parameters) = media::parse_jsonapi_content_type(value) else {
         return false;
     };
-    if !media_type.eq_ignore_ascii_case(JSONAPI_MEDIA_TYPE) {
-        return false;
-    }
-    let mut found_extension = false;
-    let mut found_profile = false;
-    for parameter in parameters {
-        match parameter.name.to_ascii_lowercase().as_str() {
-            "ext" if !found_extension => {
-                found_extension = true;
-                if !parameter.quoted
-                    || !parameter
-                        .value
-                        .as_deref()
-                        .is_some_and(has_only_atomic_extension)
-                {
-                    return false;
-                }
-            }
-            "profile" if !found_profile => {
-                if !parameter.quoted || !parameter.value.as_deref().is_some_and(has_valid_uri_list)
-                {
-                    return false;
-                }
-                found_profile = true;
-            }
-            _ => return false,
-        }
-    }
-    found_extension
+    parameters.extensions.len() == 1 && parameters.extensions[0] == ATOMIC_OPERATIONS_EXTENSION
 }
 
 fn accepts_atomic_media_type(headers: &HeaderMap) -> bool {
-    let values = headers.get_all(ACCEPT);
-    if values.iter().next().is_none() {
-        return false;
-    }
-    let mut best_match: Option<(u8, f32)> = None;
-    for value in values {
-        let Ok(value) = value.to_str() else {
-            return false;
-        };
-        for range in split_quoted(value, ',') {
-            let Some((media_type, parameters)) = parse_parameters(range) else {
-                continue;
-            };
-            let specificity = if media_type.eq_ignore_ascii_case(JSONAPI_MEDIA_TYPE) {
-                2
-            } else if media_type.eq_ignore_ascii_case("application/*") {
-                1
-            } else if media_type == "*/*" {
-                0
-            } else {
-                continue;
-            };
-            let mut extension = false;
-            let mut profile = false;
-            let mut quality = 1.0_f32;
-            let mut has_quality = false;
-            let mut valid = true;
-            for parameter in parameters {
-                if has_quality {
-                    // Parameters after q are Accept extensions, not media-type parameters.
-                    continue;
-                }
-                match parameter.name.to_ascii_lowercase().as_str() {
-                    "ext" if !extension => {
-                        extension = parameter.quoted
-                            && parameter
-                                .value
-                                .as_deref()
-                                .is_some_and(has_only_atomic_extension);
-                        if !extension {
-                            valid = false;
-                        }
-                    }
-                    "profile" if !profile => {
-                        profile = parameter.quoted
-                            && parameter.value.as_deref().is_some_and(has_valid_uri_list);
-                        if !profile {
-                            valid = false;
-                        }
-                    }
-                    "q" if !has_quality => {
-                        has_quality = true;
-                        if parameter.quoted {
-                            valid = false;
-                        } else if let Some(parsed_quality) =
-                            parameter.value.as_deref().and_then(parse_quality_value)
-                        {
-                            quality = parsed_quality;
-                        } else {
-                            valid = false;
-                        }
-                    }
-                    _ => valid = false,
-                }
-            }
-            if valid && extension {
-                match best_match {
-                    Some((best_specificity, _)) if best_specificity > specificity => {}
-                    Some((best_specificity, best_quality))
-                        if best_specificity == specificity && best_quality >= quality => {}
-                    _ => best_match = Some((specificity, quality)),
-                }
-            }
-        }
-    }
-    best_match.is_some_and(|(_, quality)| quality > 0.0)
-}
-
-fn parse_quality_value(value: &str) -> Option<f32> {
-    let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
-    if fractional.len() > 3 || !fractional.bytes().all(|digit| digit.is_ascii_digit()) {
-        return None;
-    }
-    match whole {
-        "0" => value.parse().ok(),
-        "1" if fractional.bytes().all(|digit| digit == b'0') => value.parse().ok(),
-        _ => None,
-    }
-}
-
-fn has_only_atomic_extension(value: &str) -> bool {
-    value == ATOMIC_OPERATIONS_EXTENSION
-}
-
-fn has_valid_uri_list(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .split(' ')
-            .all(|uri| !uri.is_empty() && is_valid_absolute_uri(uri))
-}
-
-fn parse_parameters(value: &str) -> Option<(String, Vec<MediaParameter>)> {
-    let mut segments = split_quoted(value, ';').into_iter();
-    let media_type = segments.next()?.trim();
-    if media_type.is_empty() {
-        return None;
-    }
-    let mut parameters = Vec::new();
-    for segment in segments {
-        let segment = segment.trim();
-        let (name, raw_value) = match segment.split_once('=') {
-            Some((name, raw_value)) => (name.trim(), Some(raw_value.trim())),
-            None => (segment, None),
-        };
-        if !is_http_token(name) {
-            return None;
-        }
-        let (value, quoted) = match raw_value {
-            None => (None, false),
-            Some(raw_value) => match unquote_http_quoted_string(raw_value) {
-                Some(value) => (Some(value), true),
-                None if is_http_token(raw_value) => (Some(raw_value.to_owned()), false),
-                None => return None,
-            },
-        };
-        parameters.push(MediaParameter {
-            name: name.to_owned(),
-            value,
-            quoted,
-        });
-    }
-    Some((media_type.to_owned(), parameters))
-}
-
-fn split_quoted(value: &str, delimiter: char) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' && quoted {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == delimiter && !quoted {
-            segments.push(&value[start..index]);
-            start = index + character.len_utf8();
-        }
-    }
-    if quoted || escaped {
-        return Vec::new();
-    }
-    segments.push(&value[start..]);
-    segments
+    media::accepts_jsonapi(headers, |extensions| {
+        extensions.is_empty()
+            || (extensions.len() == 1 && extensions[0] == ATOMIC_OPERATIONS_EXTENSION)
+    })
 }
 
 fn atomic_error(
@@ -658,6 +471,7 @@ fn set_jsonapi_headers(response: &mut Response<Body>, atomic_extension: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::ACCEPT;
 
     #[test]
     fn requires_quoted_atomic_extension_parameters() {

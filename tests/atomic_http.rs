@@ -738,13 +738,6 @@ async fn negotiates_and_executes_atomic_http_requests() {
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
         ),
         (
-            "/operations",
-            ATOMIC_MEDIA_TYPE,
-            "application/vnd.api+json",
-            valid_body,
-            StatusCode::NOT_ACCEPTABLE,
-        ),
-        (
             "/operations?unsupported=1",
             ATOMIC_MEDIA_TYPE,
             ATOMIC_MEDIA_TYPE,
@@ -823,6 +816,28 @@ async fn negotiates_and_executes_atomic_http_requests() {
         assert_eq!(response.headers()[VARY], "Accept");
         let error = error_document(response, body).await;
         assert!(error.get("errors").is_some());
+    }
+
+    // The extension may be applied even when the client does not require it
+    // through the Accept header; the response still advertises it.
+    for accept in ["application/vnd.api+json", "application/*", "*/*"] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "/operations",
+                ATOMIC_MEDIA_TYPE,
+                accept,
+                valid_body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{accept}");
+        assert_eq!(response.headers()[CONTENT_TYPE], ATOMIC_MEDIA_TYPE);
+        assert_eq!(response.headers()[VARY], "Accept");
+        assert_eq!(
+            document(response).await,
+            json!({"atomic:results": [{"data": {"type": "authors", "id": "created"}}]})
+        );
     }
 
     let malformed_operation = r#"{"atomic:operations":[{"op":"unknown"},{"op":"also-unknown"}]}"#;
@@ -2729,6 +2744,9 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
     let body = r#"{"atomic:operations":[]}"#;
     let accepted = [
         ATOMIC_MEDIA_TYPE,
+        "application/vnd.api+json",
+        "application/*",
+        "*/*;q=1",
         r#"application/vnd.api+json;ext="https://jsonapi.org/ext/\atomic""#,
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.500",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.",
@@ -2743,7 +2761,6 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0,application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.7",
     ];
     let rejected = [
-        "application/vnd.api+json",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=1.001",
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0.1234",
@@ -2757,8 +2774,6 @@ async fn atomic_http_negotiates_qvalues_wildcards_and_extension_parameters() {
         "application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";foo;q=1",
         r#"application/vnd.api+json;ext="https://jsonapi.org/ext/atomic";q=1;foo="x\""#,
         r#"application/vnd.api+json;ext="https://jsonapi.org/ext/atomic";q=1;foo="x"y"z""#,
-        "application/*",
-        "*/*;q=1",
         "*/*;ext=\"https://jsonapi.org/ext/atomic\";q=1,application/vnd.api+json;ext=\"https://jsonapi.org/ext/atomic\";q=0",
     ];
 

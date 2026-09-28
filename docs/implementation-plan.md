@@ -102,6 +102,9 @@ representation when an executor changes fields beyond those in the operation;
 support the `204 No Content` alternative when all results are empty.
 
 - Depends on: **PR2**, **PR4**, **PR5**.
+- Progress: **A1 complete** — base and Atomic endpoints share one negotiation
+  module; the Atomic endpoint applies its extension even when the client does
+  not require it through `Accept`. A2–A5 remain planned.
 - Exit criteria: every item above has positive and negative tests; the Atomic
   and base negotiation tests share the unified code path; conformance matrix
   rows updated.
@@ -224,7 +227,8 @@ on them.
 
 - **PR1 — URL/link builder** (configurable base URL, mount prefix). Unblocks B.
 - **PR2 — Negotiation and envelope pipeline** (one media-type parser, one
-  response assembler). Unblocks A1, A2, C.
+  response assembler). Unblocks A1, A2, C. The media-type parser is complete;
+  the response assembler remains planned.
 - **PR3 — Generic relationship access trait.** Unblocks D.
 - **PR4 — Executor "changed beyond request" signal.** Unblocks A5 and the update
   representation MUSTs.
@@ -234,7 +238,7 @@ on them.
 
 | Milestone | Status | Depends on | Exit criteria |
 | --- | --- | --- | --- |
-| Phase 0 — Base protocol closure | Planned | PR2, PR4, PR5 | Workstream A exit criteria met |
+| Phase 0 — Base protocol closure | In progress | PR2, PR4, PR5 | Workstream A exit criteria met |
 | Phase 1 — Fetch surface | Planned | PR1, Phase 0 | Workstream B exit criteria met |
 | Phase 2 — Extensions and profiles | Blocked | Phase 0, PR2 | Workstream C extension/profile framework met; profile catalog gated by decision |
 | Phase 3 — Association breadth | Blocked | PR3, Phase 0 | Workstream D exit criteria met |
