@@ -152,7 +152,7 @@ async fn post_operations(
             );
         }
     };
-    if let Err(error) = validate_operation_codes(&request_document) {
+    if let Err(error) = validate_operation_shape(&request_document) {
         return atomic_request_error(error, &request_document);
     }
     let document: AtomicOperationsDocument = match from_value(request_document.clone()) {
@@ -215,7 +215,7 @@ async fn post_operations(
     response
 }
 
-fn validate_operation_codes(request_document: &Value) -> Result<(), AtomicOperationsError> {
+fn validate_operation_shape(request_document: &Value) -> Result<(), AtomicOperationsError> {
     let Some(operations) = request_document
         .get("atomic:operations")
         .and_then(Value::as_array)
@@ -232,6 +232,18 @@ fn validate_operation_codes(request_document: &Value) -> Result<(), AtomicOperat
                 index,
                 pointer: format!("/atomic:operations/{index}"),
                 message: "operation must contain a string `op` member".to_owned(),
+            });
+        }
+        if operation.get("ref").is_some_and(|reference| {
+            !reference
+                .as_object()
+                .and_then(|reference| reference.get("type"))
+                .is_some_and(Value::is_string)
+        }) {
+            return Err(AtomicOperationsError::InvalidOperation {
+                index,
+                pointer: format!("/atomic:operations/{index}/ref"),
+                message: "`ref` must contain a string `type` member".to_owned(),
             });
         }
     }
