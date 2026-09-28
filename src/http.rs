@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, RawQuery, State};
-use axum::http::header::{ACCEPT, CONTENT_TYPE, VARY};
+use axum::http::header::{CONTENT_TYPE, VARY};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -16,10 +16,10 @@ use serde_json::Value;
 
 use crate::document::{
     ErrorObject, ErrorSource, JsonApiDocument, PrimaryData, Relationship, RelationshipData,
-    ResourceObject, is_valid_absolute_uri,
+    ResourceObject,
 };
 use crate::json::parse_unique_members;
-use crate::media::{is_valid_accept_extension, unquote_http_quoted_string};
+use crate::media;
 pub use crate::projection::{ProjectionError, project_resource};
 use crate::projection::{include_relationships_by_type, project_resource_with_includes};
 use crate::query::{
@@ -1456,39 +1456,11 @@ fn validate_jsonapi_content_type(headers: &HeaderMap) -> Result<(), Response> {
     let Ok(value) = value.to_str() else {
         return Err(unsupported_media_type("the Content-Type header is invalid"));
     };
-    let mut segments = split_quoted(value, ';').into_iter();
-    if !segments
-        .next()
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(JSONAPI_MEDIA_TYPE))
-    {
+    let parameters = media::parse_jsonapi_content_type(value).map_err(unsupported_media_type)?;
+    if !parameters.extensions.is_empty() {
         return Err(unsupported_media_type(
-            "request bodies must use the JSON:API media type",
+            "this endpoint does not support JSON:API extensions",
         ));
-    }
-    let mut profile_seen = false;
-    for parameter in segments {
-        let Some((name, value)) = parameter.trim().split_once('=') else {
-            return Err(unsupported_media_type(
-                "the Content-Type parameter is invalid",
-            ));
-        };
-        if name.trim().eq_ignore_ascii_case("profile") {
-            let Some(profiles) = unquote_http_quoted_string(value.trim()) else {
-                return Err(unsupported_media_type(
-                    "the JSON:API profile parameter must be quoted",
-                ));
-            };
-            if profile_seen || !has_valid_uri_list(&profiles) {
-                return Err(unsupported_media_type(
-                    "the JSON:API profile parameter is invalid",
-                ));
-            }
-            profile_seen = true;
-        } else {
-            return Err(unsupported_media_type(
-                "only the JSON:API profile parameter is supported on this route",
-            ));
-        }
     }
     Ok(())
 }
@@ -2219,119 +2191,7 @@ fn first_query_parameter(query: &str) -> Option<String> {
 }
 
 fn accepts_jsonapi(headers: &HeaderMap) -> bool {
-    let values = headers.get_all(ACCEPT);
-    if values.iter().next().is_none() {
-        return true;
-    }
-
-    let mut best_match: Option<(u8, f32)> = None;
-    for value in values {
-        let Ok(value) = value.to_str() else {
-            return false;
-        };
-        for range in split_quoted(value, ',') {
-            if let Some((specificity, quality)) = parse_media_range(range) {
-                match best_match {
-                    Some((best_specificity, _)) if best_specificity > specificity => {}
-                    Some((best_specificity, best_quality))
-                        if best_specificity == specificity && best_quality >= quality => {}
-                    _ => best_match = Some((specificity, quality)),
-                }
-            }
-        }
-    }
-    best_match.is_some_and(|(_, quality)| quality > 0.0)
-}
-
-fn parse_media_range(range: &str) -> Option<(u8, f32)> {
-    let mut segments = split_quoted(range, ';').into_iter();
-    let media_type = segments.next()?.trim();
-    let specificity = if media_type.eq_ignore_ascii_case(JSONAPI_MEDIA_TYPE) {
-        2
-    } else if media_type.eq_ignore_ascii_case("application/*") {
-        1
-    } else if media_type == "*/*" {
-        0
-    } else {
-        return None;
-    };
-
-    let mut quality = 1.0_f32;
-    let mut has_quality = false;
-    let mut has_profile = false;
-    for parameter in segments {
-        if has_quality {
-            // Parameters after q are Accept extensions, not media-type
-            // parameters, and do not affect this representation.
-            if !is_valid_accept_extension(parameter) {
-                return None;
-            }
-            continue;
-        }
-        let (name, value) = parameter.trim().split_once('=')?;
-        let name = name.trim();
-        let value = value.trim();
-        if name.eq_ignore_ascii_case("q") {
-            quality = parse_quality_value(value)?;
-            has_quality = true;
-        } else if name.eq_ignore_ascii_case("profile") {
-            // Profiles are advisory; unrecognized profiles do not change this
-            // endpoint's base JSON:API representation.
-            let profile_uris = unquote_http_quoted_string(value)?;
-            if has_profile || !has_valid_uri_list(&profile_uris) {
-                return None;
-            }
-            has_profile = true;
-        } else {
-            // Unsupported extensions and other parameters do not match this
-            // endpoint's base-only JSON:API representation.
-            return None;
-        }
-    }
-    Some((specificity, quality))
-}
-
-fn parse_quality_value(value: &str) -> Option<f32> {
-    let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
-    if fractional.len() > 3 || !fractional.bytes().all(|digit| digit.is_ascii_digit()) {
-        return None;
-    }
-    match whole {
-        "0" => value.parse().ok(),
-        "1" if fractional.bytes().all(|digit| digit == b'0') => value.parse().ok(),
-        _ => None,
-    }
-}
-
-fn has_valid_uri_list(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .split(' ')
-            .all(|uri| !uri.is_empty() && is_valid_absolute_uri(uri))
-}
-
-fn split_quoted(value: &str, delimiter: char) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut segment_start = 0;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' && quoted {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == delimiter && !quoted {
-            segments.push(&value[segment_start..index]);
-            segment_start = index + character.len_utf8();
-        }
-    }
-    if quoted || escaped {
-        return Vec::new();
-    }
-    segments.push(&value[segment_start..]);
-    segments
+    media::accepts_jsonapi(headers, |extensions| extensions.is_empty())
 }
 
 fn apply_fieldset(resource: &mut ResourceObject, fieldset: &[PlannedField]) {
