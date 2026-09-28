@@ -1382,17 +1382,17 @@ fn validate_linkage(
                 "relationship identifiers require exactly one `id` or `lid`",
             ));
         }
-        if let Some(lid) = &identifier.lid {
-            if !local_ids.contains(&(identifier.type_name.clone(), lid.clone())) {
-                return Err(invalid_operation(
-                    index,
-                    path,
-                    &format!(
-                        "relationship local id `{lid}` for `{}` has not been added earlier",
-                        identifier.type_name
-                    ),
-                ));
-            }
+        if let Some(lid) = &identifier.lid
+            && !local_ids.contains(&(identifier.type_name.clone(), lid.clone()))
+        {
+            return Err(invalid_operation(
+                index,
+                path,
+                &format!(
+                    "relationship local id `{lid}` for `{}` has not been added earlier",
+                    identifier.type_name
+                ),
+            ));
         }
     }
     Ok(())
@@ -1818,44 +1818,30 @@ where
             };
         }
 
-        if let PlannedOperation::AddResource { data, .. } = &operation.operation {
-            if let Some(lid) = &data.lid {
-                let Some(identity) = outcome.created_resource else {
-                    return match transaction.rollback().await {
-                        Ok(()) => Err(AtomicExecutionError::LocalId {
-                            index,
-                            message: format!(
-                                "add operation did not return an identity for lid `{lid}`"
-                            ),
-                        }),
-                        Err(rollback) => Err(AtomicExecutionError::Rollback {
-                            index,
-                            operation: format!(
-                                "add operation did not return an identity for lid `{lid}`"
-                            ),
-                            rollback,
-                        }),
-                    };
+        if let PlannedOperation::AddResource { data, .. } = &operation.operation
+            && let Some(lid) = &data.lid
+        {
+            let Some(identity) = outcome.created_resource else {
+                return match transaction.rollback().await {
+                    Ok(()) => Err(AtomicExecutionError::LocalId {
+                        index,
+                        message: format!(
+                            "add operation did not return an identity for lid `{lid}`"
+                        ),
+                    }),
+                    Err(rollback) => Err(AtomicExecutionError::Rollback {
+                        index,
+                        operation: format!(
+                            "add operation did not return an identity for lid `{lid}`"
+                        ),
+                        rollback,
+                    }),
                 };
-                if let Some(result_data) = &outcome.result.data {
-                    let returned = match resource_result_identity(&data.type_name, result_data) {
-                        Ok(returned) => returned,
-                        Err(message) => {
-                            return match transaction.rollback().await {
-                                Ok(()) => {
-                                    Err(AtomicExecutionError::InvalidResult { index, message })
-                                }
-                                Err(rollback) => Err(AtomicExecutionError::Rollback {
-                                    index,
-                                    operation: message,
-                                    rollback,
-                                }),
-                            };
-                        }
-                    };
-                    if identity.type_name != returned.type_name || identity.id != returned.id {
-                        let message = "created local-ID mapping does not match the resource result"
-                            .to_owned();
+            };
+            if let Some(result_data) = &outcome.result.data {
+                let returned = match resource_result_identity(&data.type_name, result_data) {
+                    Ok(returned) => returned,
+                    Err(message) => {
                         return match transaction.rollback().await {
                             Ok(()) => Err(AtomicExecutionError::InvalidResult { index, message }),
                             Err(rollback) => Err(AtomicExecutionError::Rollback {
@@ -1865,10 +1851,12 @@ where
                             }),
                         };
                     }
-                }
-                if let Err(message) = local_ids.insert(&data.type_name, lid, identity) {
+                };
+                if identity.type_name != returned.type_name || identity.id != returned.id {
+                    let message =
+                        "created local-ID mapping does not match the resource result".to_owned();
                     return match transaction.rollback().await {
-                        Ok(()) => Err(AtomicExecutionError::LocalId { index, message }),
+                        Ok(()) => Err(AtomicExecutionError::InvalidResult { index, message }),
                         Err(rollback) => Err(AtomicExecutionError::Rollback {
                             index,
                             operation: message,
@@ -1876,6 +1864,16 @@ where
                         }),
                     };
                 }
+            }
+            if let Err(message) = local_ids.insert(&data.type_name, lid, identity) {
+                return match transaction.rollback().await {
+                    Ok(()) => Err(AtomicExecutionError::LocalId { index, message }),
+                    Err(rollback) => Err(AtomicExecutionError::Rollback {
+                        index,
+                        operation: message,
+                        rollback,
+                    }),
+                };
             }
         }
         results.push(outcome.result);
