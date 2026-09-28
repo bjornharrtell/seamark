@@ -1167,6 +1167,13 @@ async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
         (
             "POST",
             "/ports",
+            r#"{"data":{"type":"ports","id":"client-id","lid":"local-id"}}"#,
+            StatusCode::BAD_REQUEST,
+            "invalid_resource_identity",
+        ),
+        (
+            "POST",
+            "/ports",
             r#"{"data":{"type":"people"}}"#,
             StatusCode::CONFLICT,
             "resource_type_mismatch",
@@ -1198,6 +1205,13 @@ async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
             r#"{"data":{"type":"ports"}}"#,
             StatusCode::CONFLICT,
             "resource_id_mismatch",
+        ),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"type":"ports","id":"1","lid":"local-id"}}"#,
+            StatusCode::BAD_REQUEST,
+            "invalid_resource_identity",
         ),
         (
             "PATCH",

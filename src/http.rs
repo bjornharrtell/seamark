@@ -759,6 +759,9 @@ async fn create_resource(
         Ok(resource) => resource,
         Err(response) => return response,
     };
+    if let Err(response) = validate_mutation_resource_identity(&resource) {
+        return response;
+    }
     if resource.type_name != resource_type {
         return mutation_error(
             StatusCode::CONFLICT,
@@ -780,7 +783,7 @@ async fn create_resource(
             Some("/data/id"),
         );
     }
-    let changeset = match map_resource_changeset(definition, &resource, true) {
+    let changeset = match map_resource_changeset(definition, &resource) {
         Ok(changeset) => changeset,
         Err(response) => return response,
     };
@@ -840,6 +843,9 @@ async fn update_resource(
         Ok(resource) => resource,
         Err(response) => return response,
     };
+    if let Err(response) = validate_mutation_resource_identity(&resource) {
+        return response;
+    }
     if resource.type_name != resource_type {
         return mutation_error(
             StatusCode::CONFLICT,
@@ -861,7 +867,7 @@ async fn update_resource(
             Some("/data/id"),
         );
     }
-    let changeset = match map_resource_changeset(definition, &resource, false) {
+    let changeset = match map_resource_changeset(definition, &resource) {
         Ok(changeset) => changeset,
         Err(response) => return response,
     };
@@ -1246,7 +1252,6 @@ fn parse_mutation_document(body: &[u8]) -> Result<ResourceObject, Response> {
 fn map_resource_changeset(
     definition: &ResourceDefinition,
     resource: &ResourceObject,
-    creating: bool,
 ) -> Result<ResourceMutationChangeset, Response> {
     let mut changeset = ResourceMutationChangeset::default();
     if let Some(attributes) = &resource.attributes {
@@ -1320,7 +1325,12 @@ fn map_resource_changeset(
                 .insert(mapping.model_field().to_owned(), data);
         }
     }
-    if creating && resource.lid.is_some() && resource.id.is_some() {
+    Ok(changeset)
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_mutation_resource_identity(resource: &ResourceObject) -> Result<(), Response> {
+    if resource.id.is_some() && resource.lid.is_some() {
         return Err(mutation_error(
             StatusCode::BAD_REQUEST,
             "invalid_resource_identity",
@@ -1329,7 +1339,7 @@ fn map_resource_changeset(
             Some("/data"),
         ));
     }
-    Ok(changeset)
+    Ok(())
 }
 
 #[allow(clippy::result_large_err)]

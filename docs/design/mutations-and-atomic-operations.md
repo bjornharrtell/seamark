@@ -210,9 +210,10 @@ rejected during planning with HTTP 400. Atomic `Accept` negotiation requires the
 quoted Atomic extension, validates HTTP qvalue syntax, accounts for media-range
 specificity and q=0, accepts/ignores valid token extensions after `q`, and
 rejects duplicate or unsupported extension parameters.
-These focused protocol controls do not complete M5/M6 conformance or replace
-application-defined authorization, route resolution, codecs, limits, or
-association executors.
+These controls satisfy the documented first-release M5/M6 evidence for the
+supported Atomic paths; they do not claim complete JSON:API/Atomic conformance
+or replace application-defined authorization, route resolution, codecs, limits,
+or association executors.
 
 Every successful resource-add result must include the created resource as
 `data`, including adds with a client-assigned `id`. This is the server's
