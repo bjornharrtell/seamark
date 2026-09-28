@@ -1290,6 +1290,10 @@ async fn atomic_http_rejects_relationship_cardinality_mismatch_before_authorizat
             "/atomic:operations/0/data",
         ),
         (
+            r#"{"atomic:operations":[{"op":"remove","ref":{"type":"articles","id":"1","relationship":"author"},"data":[{"type":"authors","id":"2"}]}]}"#,
+            "/atomic:operations/0/data",
+        ),
+        (
             r#"{"atomic:operations":[{"op":"update","ref":{"type":"articles","id":"1","relationship":"author"},"data":[{"type":"authors","id":"2"}]}]}"#,
             "/atomic:operations/0/data",
         ),
