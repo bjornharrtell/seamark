@@ -259,6 +259,11 @@ malformed-input regression coverage for filters, includes, documents, and
 negotiation.
 
 - Depends on: all workstreams.
+- Progress: E1, E3, and E4 complete — the matrix records evidence for every
+  implemented behavior, the PostgreSQL/SQLite shared fixtures define parity, and
+  structural-depth/malformed-input regressions are covered. **E2 deferred** — no
+  external conformance suite has been adopted; the matrix remains the evidence
+  index, and adopting a suite is follow-up work outside the current decisions.
 - Exit criteria: the matrix has no `Covered` claim without a test; the external
   suite result is recorded; parity fixtures cover each implemented shape.
 
@@ -280,11 +285,11 @@ on them.
 
 | Milestone | Status | Depends on | Exit criteria |
 | --- | --- | --- | --- |
-| Phase 0 — Base protocol closure | In progress | PR2, PR4, PR5 | Workstream A exit criteria met |
+| Phase 0 — Base protocol closure | Complete | PR2, PR4, PR5 | Workstream A met; optional error `links` deferred |
 | Phase 1 — Fetch surface | Complete | PR1, Phase 0 | Workstream B met; B4/B6 deferred with conformant rejection |
 | Phase 2 — Extensions and profiles | Closed | — | Out of scope per decision; Atomic remains the only supported extension |
 | Phase 3 — Association breadth | Complete | PR3, Phase 0 | Workstream D met; D1/D4 deferred to application executors |
-| Phase 4 — Verification closure | Complete | Phase 0–3 | Workstream E met; matrix records evidence and deferrals |
+| Phase 4 — Verification closure | Complete | Phase 0–3 | Workstream E met; E2 external suite deferred |
 
 ## Decision gates
 
