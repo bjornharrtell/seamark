@@ -224,6 +224,15 @@ pub struct QueryResourceResult {
     pub included: Vec<AdapterIncludedResource>,
 }
 
+/// Results returned by an adapter for a related-resource read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueryRelatedResult {
+    /// A to-one related resource, or `None` for an empty relationship.
+    One(Option<QueryResourceResult>),
+    /// A to-many related collection.
+    Many(QueryCollectionResult),
+}
+
 /// The asynchronous read operations required by the initial GET routes.
 #[async_trait]
 pub trait ResourceAdapter: Send + Sync + 'static {
@@ -305,6 +314,20 @@ pub trait QueryResourceAdapter: Send + Sync + 'static {
         _limits: &crate::limits::ExecutionLimits,
     ) -> Result<Option<QueryResourceResult>, QueryAdapterError> {
         self.resource(resource, id, plan).await
+    }
+
+    /// Executes a related-resource read for one relationship.
+    ///
+    /// The default reports the unsupported operation explicitly so adapters
+    /// keep working while opting into related-resource routes.
+    async fn related(
+        &self,
+        _resource: &ResourceDefinition,
+        _id: &str,
+        _relationship: &RelationshipMapping,
+        _plan: &ReadPlan,
+    ) -> Result<QueryRelatedResult, QueryAdapterError> {
+        Err(QueryAdapterError::ResourceReadUnsupported)
     }
 }
 
@@ -694,6 +717,12 @@ fn build_router(state: ApiState) -> Router {
                 .fallback(method_not_allowed),
         );
     }
+    if state.query_adapter.is_some() {
+        router = router.route(
+            "/{resource_type}/{id}/{relationship}",
+            get(get_related).fallback(method_not_allowed),
+        );
+    }
     router.with_state(Arc::new(state))
 }
 
@@ -1080,6 +1109,214 @@ async fn get_resource(
         apply_resource_links(&mut document, &resource_type, &id, query.as_deref());
     }
     respond_with_validated_document(StatusCode::OK, document)
+}
+
+#[allow(clippy::result_large_err)]
+#[allow(clippy::too_many_lines)]
+async fn get_related(
+    State(state): State<Arc<ApiState>>,
+    Path((resource_type, id, relationship_name)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = validate_request(&headers, None) {
+        return response;
+    }
+    let definition = match state.registry.resource(&resource_type) {
+        Ok(definition) => definition,
+        Err(_) => return unknown_resource_type(&resource_type),
+    };
+    let Some(relationship) = definition.relationship_by_name(&relationship_name).cloned() else {
+        return protocol_error(
+            StatusCode::NOT_FOUND,
+            "relationship_not_found",
+            "Relationship not found",
+            Some(format!(
+                "Relationship `{relationship_name}` is not registered on `{resource_type}`."
+            )),
+            None,
+        );
+    };
+    if !relationship.allows(RelationshipPermission::RelatedRead) {
+        return forbidden_error();
+    }
+    let Some(cardinality) = relationship.cardinality() else {
+        return relationship_cardinality_required(&relationship_name);
+    };
+    let (Some(query_adapter), Some(pagination)) =
+        (state.query_adapter.as_ref(), state.pagination.as_ref())
+    else {
+        return read_not_configured_error();
+    };
+    let read_query = match parse_read_query(query.as_deref().unwrap_or_default()) {
+        Ok(query) => query,
+        Err(error) => return query_parse_error(error),
+    };
+    let include_requested = !read_query.includes.is_empty();
+    let target_type = relationship.target_type();
+    let plan = match cardinality {
+        RelationshipCardinality::ToOne => {
+            plan_resource_read(&state.registry, target_type, &read_query, pagination)
+        }
+        RelationshipCardinality::ToMany => {
+            plan_read(&state.registry, target_type, &read_query, pagination)
+        }
+    };
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(error) => return read_plan_error(error),
+    };
+    if let Some(limits) = &state.execution_limits
+        && let Err(message) = limits.validate_read(&plan)
+    {
+        return limit_exceeded_error(message);
+    }
+    if !state
+        .authorizer
+        .authorize_query(definition, Some(&id), &plan, &headers)
+        .await
+    {
+        return forbidden_error();
+    }
+    let result = match query_adapter
+        .related(definition, &id, &relationship, &plan)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return query_adapter_error(error),
+    };
+    let include_relationships = include_relationships_by_type(&plan);
+    let target_definition = match state.registry.resource(target_type) {
+        Ok(definition) => definition,
+        Err(_) => return adapter_error(),
+    };
+    let target_relationships = include_relationships
+        .get(target_type)
+        .cloned()
+        .unwrap_or_default();
+    let mut document = match result {
+        QueryRelatedResult::One(result) => match result {
+            Some(QueryResourceResult { resource, included }) => {
+                let root = match project_resource_with_includes(
+                    target_definition,
+                    &resource,
+                    &target_relationships,
+                ) {
+                    Ok(root) => root,
+                    Err(_) => return adapter_error(),
+                };
+                let included = match project_included(&state, included, &include_relationships) {
+                    Ok(included) => included,
+                    Err(_) => return adapter_error(),
+                };
+                JsonApiDocument {
+                    data: Some(PrimaryData::One(root)),
+                    included: (include_requested || !included.is_empty()).then_some(included),
+                    ..JsonApiDocument::default()
+                }
+            }
+            None => JsonApiDocument {
+                data: Some(PrimaryData::Null),
+                ..JsonApiDocument::default()
+            },
+        },
+        QueryRelatedResult::Many(QueryCollectionResult {
+            resources,
+            included,
+        }) => {
+            let resources = match resources
+                .iter()
+                .map(|resource| {
+                    project_resource_with_includes(
+                        target_definition,
+                        resource,
+                        &target_relationships,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(resources) => resources,
+                Err(_) => return adapter_error(),
+            };
+            let included = match project_included(&state, included, &include_relationships) {
+                Ok(included) => included,
+                Err(_) => return adapter_error(),
+            };
+            JsonApiDocument {
+                data: Some(PrimaryData::Many(resources)),
+                included: (include_requested || !included.is_empty()).then_some(included),
+                ..JsonApiDocument::default()
+            }
+        }
+    };
+    if document.validate_response().is_err() {
+        let sparse_fieldset_exception_applies = document.included.is_some()
+            && has_sparse_fieldset_include_relationship(&plan)
+            && document
+                .validate_response_with_sparse_fieldset_exception()
+                .is_ok();
+        if !sparse_fieldset_exception_applies {
+            return adapter_error();
+        }
+    }
+    if let Some(PrimaryData::One(resource)) = document.data.as_mut()
+        && let Some(fieldset) = plan.fieldsets.get(target_type)
+    {
+        apply_fieldset(resource, fieldset);
+    }
+    if let Some(PrimaryData::Many(resources)) = document.data.as_mut()
+        && let Some(fieldset) = plan.fieldsets.get(target_type)
+    {
+        for resource in resources {
+            apply_fieldset(resource, fieldset);
+        }
+    }
+    if let Some(included) = document.included.as_mut() {
+        for resource in included {
+            if let Some(fieldset) = plan.fieldsets.get(&resource.type_name) {
+                apply_fieldset(resource, fieldset);
+            }
+        }
+    }
+    if state.links {
+        let path = format!(
+            "/{}/{}/{}",
+            encode_path_segment(&resource_type),
+            encode_path_segment(&id),
+            encode_path_segment(&relationship_name)
+        );
+        let mut links = serde_json::Map::new();
+        links.insert(
+            "self".to_owned(),
+            Value::String(with_query(path, query.as_deref())),
+        );
+        document.links = Some(links);
+        add_resource_self_links(&mut document);
+    }
+    respond_with_validated_document(StatusCode::OK, document)
+}
+
+fn project_included(
+    state: &ApiState,
+    included: Vec<AdapterIncludedResource>,
+    include_relationships: &BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> Result<Vec<ResourceObject>, ProjectionError> {
+    included
+        .iter()
+        .map(|included| {
+            let definition = state
+                .registry
+                .resource(&included.resource_type)
+                .map_err(|_| ProjectionError::UnknownResourceType)?;
+            project_resource_with_includes(
+                definition,
+                &included.resource,
+                include_relationships
+                    .get(&included.resource_type)
+                    .unwrap_or(&std::collections::BTreeSet::new()),
+            )
+        })
+        .collect()
 }
 
 async fn create_resource(

@@ -21,7 +21,7 @@ use serde_json::Value as JsonValue;
 use crate::document::RelationshipData;
 use crate::http::{
     AdapterIncludedResource, AdapterResource, QueryAdapterError, QueryCollectionResult,
-    QueryResourceAdapter, QueryResourceResult,
+    QueryRelatedResult, QueryResourceAdapter, QueryResourceResult,
 };
 use crate::limits::ExecutionLimits;
 use crate::projection::{include_relationships_by_type, project_adapter_record_with_includes};
@@ -2471,6 +2471,106 @@ impl QueryResourceAdapter for SeaOrmQueryAdapter {
             .ok_or(QueryAdapterError::ReadFailed)?
             .resource(id, plan, Some(limits), Some(self))
             .await
+    }
+
+    async fn related(
+        &self,
+        resource: &ResourceDefinition,
+        id: &str,
+        relationship: &RelationshipMapping,
+        plan: &ReadPlan,
+    ) -> Result<QueryRelatedResult, QueryAdapterError> {
+        let source_type = resource.type_name();
+        let target_type = relationship.target_type();
+        let source_executor = self
+            .executors
+            .get(source_type)
+            .ok_or(QueryAdapterError::ReadFailed)?;
+        let sources = source_executor
+            .resources_by_ids(&[id.to_owned()], None)
+            .await
+            .map_err(|_| QueryAdapterError::ReadFailed)?;
+        let pairs = self
+            .relationship_resources(source_type, relationship, &sources, None)
+            .await
+            .map_err(|_| QueryAdapterError::ReadFailed)?;
+        let mut roots: Vec<AdapterResource> =
+            pairs.into_iter().map(|(_, resource)| resource).collect();
+        let included = self
+            .load_standard_included(
+                target_type,
+                &mut roots,
+                &plan.includes,
+                &plan.fieldsets,
+                None,
+            )
+            .await
+            .map_err(|_| QueryAdapterError::ReadFailed)?;
+
+        let registry = self
+            .registry
+            .as_deref()
+            .ok_or(QueryAdapterError::ReadFailed)?;
+        let target_definition = registry
+            .resource(target_type)
+            .map_err(|_| QueryAdapterError::ReadFailed)?;
+        let include_relationships = include_relationships_by_type(plan);
+        let target_relationships = include_relationships
+            .get(target_type)
+            .cloned()
+            .unwrap_or_default();
+        let fieldset = plan.fieldsets.get(target_type).map(Vec::as_slice);
+        let roots = roots
+            .into_iter()
+            .map(|resource| {
+                project_adapter_record_with_includes(
+                    target_definition,
+                    resource,
+                    fieldset,
+                    &target_relationships,
+                )
+            })
+            .collect::<Vec<_>>();
+        let included = included
+            .into_iter()
+            .map(|included| {
+                let definition = registry
+                    .resource(&included.resource_type)
+                    .map_err(|_| QueryAdapterError::ReadFailed)?;
+                let fieldset = plan
+                    .fieldsets
+                    .get(&included.resource_type)
+                    .map(Vec::as_slice);
+                let resource = project_adapter_record_with_includes(
+                    definition,
+                    included.resource,
+                    fieldset,
+                    include_relationships
+                        .get(&included.resource_type)
+                        .unwrap_or(&BTreeSet::new()),
+                );
+                Ok(AdapterIncludedResource {
+                    resource_type: included.resource_type,
+                    resource,
+                })
+            })
+            .collect::<Result<Vec<_>, QueryAdapterError>>()?;
+
+        match relationship.cardinality() {
+            Some(crate::registry::RelationshipCardinality::ToMany) => {
+                Ok(QueryRelatedResult::Many(QueryCollectionResult {
+                    resources: roots,
+                    included,
+                }))
+            }
+            _ => {
+                let root = roots
+                    .into_iter()
+                    .next()
+                    .map(|resource| QueryResourceResult { resource, included });
+                Ok(QueryRelatedResult::One(root))
+            }
+        }
     }
 }
 

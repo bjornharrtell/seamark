@@ -154,11 +154,13 @@ Extend sorting, pagination, and filtering parity to related-resource and
 relationship collections.
 
 - Depends on: **PR1** (link builder), **A1**, **A3**.
-- Progress: **B1/B2/B5 partial** — opt-in `ApiBuilder::links` emits document
+- Progress: **B1/B2/B3/B5 partial** — opt-in `ApiBuilder::links` emits document
   `self`, resource `self`, and pagination (`first`/`prev`/`next`/`last`)
-  links. B3 (related routes), B4 (relationship-endpoint queries), and B6
-  (related-collection queries) remain planned. Related links are not emitted
-  until B3 exists, because the spec requires advertised links to resolve.
+  links. Related-resource `GET /{type}/{id}/{relationship}` is served when the
+  relationship grants `RelationshipPermission::RelatedRead` and a query adapter
+  is configured. B4 (relationship-endpoint queries) and B6 (related-collection
+  queries) remain planned, as do `related` links (deferred until B3 coverage is
+  complete on both backends).
 - Exit criteria: links resolve to working GETs; relationship and related
   endpoints pass include/fieldset/sort/page fixtures on PostgreSQL and SQLite;
   unsupported query controls are rejected with the specified status.
