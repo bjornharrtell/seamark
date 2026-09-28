@@ -1153,6 +1153,13 @@ async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
         (
             "POST",
             "/ports",
+            r#"{"data":{"attributes":{"name":"West"}}}"#,
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
+        ),
+        (
+            "POST",
+            "/ports",
             r#"{"data":{"type":"ports","id":"client-id"}}"#,
             StatusCode::FORBIDDEN,
             "client_generated_id_not_supported",
@@ -1170,6 +1177,13 @@ async fn base_mutation_statuses_follow_resource_identity_and_linkage_rules() {
             r#"{"data":{"type":"people","id":"1"}}"#,
             StatusCode::CONFLICT,
             "resource_type_mismatch",
+        ),
+        (
+            "PATCH",
+            "/ports/1",
+            r#"{"data":{"id":"1"}}"#,
+            StatusCode::BAD_REQUEST,
+            "invalid_document",
         ),
         (
             "PATCH",
