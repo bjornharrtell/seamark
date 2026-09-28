@@ -2074,3 +2074,94 @@ pub async fn assert_final_state(database: &DatabaseConnection) {
     assert_eq!(links[0].port_id, 1);
     assert_eq!(links[0].tag_id, 2);
 }
+
+/// Verifies the join-table executor calls an application insert-columns hook
+/// once per created membership row.
+pub async fn execute_join_table_insert_columns_case(database: &DatabaseConnection) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    create_tables(database).await;
+    port::ActiveModel {
+        port_id: Set(1),
+        title: Set("Pier".to_owned()),
+        owner_id: Set(None),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+    tag::ActiveModel {
+        tag_id: Set(1),
+        tag_name: Set("First".to_owned()),
+    }
+    .insert(database)
+    .await
+    .unwrap();
+
+    let registry = registry();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let insert_columns = {
+        let calls = calls.clone();
+        Some(Arc::new(
+            move |_model: &mut port_tag::ActiveModel| -> Result<(), String> {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+            as Arc<
+                dyn Fn(&mut port_tag::ActiveModel) -> Result<(), String> + Send + Sync,
+            >)
+    };
+    let join_table =
+        SeaOrmJoinTableMutationHandler::<port_tag::Entity, _>::new_with_insert_columns(
+            &registry,
+            "ports",
+            "tags",
+            Arc::new(MutationCodec),
+            insert_columns,
+        )
+        .unwrap();
+    let executors: Vec<Arc<dyn SeaOrmAtomicOperationExecutor>> = vec![
+        Arc::new(join_table),
+        Arc::new(
+            SeaOrmResourceMutationHandler::<port::Entity, _>::new(
+                &registry,
+                "ports",
+                Arc::new(MutationCodec),
+            )
+            .unwrap(),
+        ),
+        Arc::new(
+            SeaOrmResourceMutationHandler::<tag::Entity, _>::new(
+                &registry,
+                "tags",
+                Arc::new(MutationCodec),
+            )
+            .unwrap(),
+        ),
+    ];
+    let dispatcher = SeaOrmAtomicOperationDispatcher::new(executors);
+    let document: AtomicOperationsDocument = serde_json::from_value(json!({
+        "atomic:operations": [{
+            "op": "add",
+            "ref": {"type": "ports", "id": "1", "relationship": "tags"},
+            "data": [{"type": "tags", "id": "1"}]
+        }]
+    }))
+    .unwrap();
+    let operations = plan_atomic_operations(&registry, &document).unwrap();
+    execute_atomic_operations(
+        database,
+        &operations,
+        &HeaderMap::new(),
+        &AllowGuard,
+        &dispatcher,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        port_tag::Entity::find().all(database).await.unwrap().len(),
+        1
+    );
+}
