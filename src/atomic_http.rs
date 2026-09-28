@@ -234,17 +234,34 @@ fn validate_operation_shape(request_document: &Value) -> Result<(), AtomicOperat
                 message: "operation must contain a string `op` member".to_owned(),
             });
         }
-        if operation.get("ref").is_some_and(|reference| {
-            !reference
-                .as_object()
-                .and_then(|reference| reference.get("type"))
-                .is_some_and(Value::is_string)
-        }) {
-            return Err(AtomicOperationsError::InvalidOperation {
-                index,
-                pointer: format!("/atomic:operations/{index}/ref"),
-                message: "`ref` must contain a string `type` member".to_owned(),
-            });
+        if let Some(reference_value) = operation.get("ref") {
+            let reference_pointer = format!("/atomic:operations/{index}/ref");
+            let Some(reference) = reference_value.as_object() else {
+                return Err(AtomicOperationsError::InvalidOperation {
+                    index,
+                    pointer: reference_pointer,
+                    message: "`ref` must be an object".to_owned(),
+                });
+            };
+            if !reference.get("type").is_some_and(Value::is_string) {
+                return Err(AtomicOperationsError::InvalidOperation {
+                    index,
+                    pointer: reference_pointer,
+                    message: "`ref` must contain a string `type` member".to_owned(),
+                });
+            }
+            for member in ["id", "lid", "relationship"] {
+                if reference
+                    .get(member)
+                    .is_some_and(|value| !value.is_string())
+                {
+                    return Err(AtomicOperationsError::InvalidOperation {
+                        index,
+                        pointer: format!("{reference_pointer}/{member}"),
+                        message: format!("`ref.{member}` must be a string"),
+                    });
+                }
+            }
         }
     }
     Ok(())
