@@ -23,13 +23,6 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check tag matches crate version
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "seamark"))')"
-          test "$TAG_NAME" = "v$package_version"
-
       - name: Authenticate with crates.io
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
@@ -45,6 +38,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check tag matches crate version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "seamark"))')"
+          test "$TAG_NAME" = "v$package_version"
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
