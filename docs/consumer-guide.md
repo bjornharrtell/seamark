@@ -83,8 +83,10 @@ let registry = Arc::new(ResourceRegistry::new([ports, people, tags])?);
 
 `AttributeMapping::new` grants representation reads only. Filtering, sorting,
 and writes require their own named `AttributePermission`. Registering a
-relationship does not enable includes or changes. Base resource writes and
-Atomic Operations also have separate resource permissions.
+relationship does not enable includes or changes. Related-resource reads
+require `RelationshipPermission::RelatedRead`; linkage reads, includes, and
+each relationship write (base and Atomic) are independent permissions. Base
+resource writes and Atomic Operations also have separate resource permissions.
 
 Implement `AuthorizationPolicy` once and wrap it in `SharedAuthorization` to
 use the same application policy for query plans (including includes), ordinary
@@ -147,7 +149,10 @@ the validated include tree. `AllowAllSeaOrmReadGuard` is an explicit
 pass-through for direct query execution inside this already-authorized router;
 use a restrictive `SeaOrmReadGuard` when executing query plans outside that
 boundary. The standard adapter loads declared to-one and to-many foreign-key
-relationships in batches. Custom include loaders remain available for
+relationships in batches. Ordered join tables register through the same
+`register_join_table` call and preserve member order through a position column.
+Related-resource routes (`GET /{type}/{id}/{relationship}`) are served when the
+relationship grants `RelatedRead`. Custom include loaders remain available for
 application-defined association shapes.
 
 The `label` field above is mapped from a model function and reused by the
@@ -208,17 +213,23 @@ let app = ApiBuilder::new(registry.clone(), authorization.clone())
     .try_build()?;
 ```
 
+Optional builder flags stay off by default: `.links()` emits document and
+resource `self` links plus pagination links, and `.jsonapi_fallback()` installs
+a scoped JSON:API `404`/`405` fallback on the component router.
+
 The handlers for configured writable resources must be registered for each
 enabled operation. `.try_build()` checks standard query, base mutation, and
 Atomic executor coverage before serving requests. Custom adapters may provide
 their own registry validation or keep dynamic dispatch.
 
-For to-many writes, register a
-`SeaOrmJoinTableMutationHandler` for a two-column join table, or a
-`SeaOrmToManyForeignKeyMutationHandler` for a nullable foreign key on the
-related entity. The base mutation adapter composes those relationship
-executors with resource create/update inside the same transaction. Unsupported
-association shapes can use custom executors.
+For to-many writes, register a `SeaOrmJoinTableMutationHandler` for a two-column
+join table (use `new_with_insert_columns` when the join table has additional
+required columns, or an ordered join-table mapping to preserve member order), or
+a `SeaOrmToManyForeignKeyMutationHandler` for a direct foreign key on the
+related entity. Nullable foreign keys support add, remove, and replace;
+non-nullable foreign keys support add and transfer only. The base mutation
+adapter composes those relationship executors with resource create/update inside
+the same transaction. Unsupported association shapes can use custom executors.
 
 `RequestAuthorizer::authorize_mutation` denies by default.
 `SharedAuthorization` lets one `AuthorizationPolicy` govern HTTP reads and
@@ -243,8 +254,9 @@ adapters, and Atomic executor. It can still use `ApiBuilder`,
 resource projection. Those helpers simplify the Seamark boundary; any change to
 the fixture's storage implementation is independent.
 
-Association shapes outside to-one foreign keys, to-many foreign keys, and
-registered join tables still need custom mappers or executors. Computed
+Association shapes outside two-column, ordered, and extra-column join tables
+and direct foreign keys still need custom mappers or executors. Extensions
+beyond Atomic Operations and profile application are out of scope. Computed
 attributes use an explicit mapper and remain read-only and non-queryable.
 Custom SeaORM include loaders receive a per-request
 `SeaOrmRuntimeBudget` when `max_included_resources` or `max_include_queries` is
