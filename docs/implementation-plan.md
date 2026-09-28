@@ -1,733 +1,96 @@
 # Implementation plan
 
-This is the evolving implementation roadmap for issue #1. The first release
-target is a useful, explicitly bounded implementation profile: common JSON:API
-1.1 resource reads and mutations, relationship linkage, and ordered Atomic
-resource/relationship operations with transaction rollback. The intended stack
-is Axum and SeaORM, with PostgreSQL as the primary validated database and
-SQLite retaining parity for the same core fixtures. Public resource names and
-fields must be mapped explicitly; query support is deliberately focused on
-equality/null filters, opt-in sorting, page-number/page-size pagination,
-sparse fieldsets, and registered includes.
+This document is the current roadmap and status for issue #1. It describes the
+first-useful release profile, milestone completion, verification, and explicit
+follow-up boundaries. Detailed requirement-to-test evidence lives in
+[`docs/design/conformance.md`](design/conformance.md); this plan intentionally
+does not duplicate its per-case matrix.
 
-This profile does not claim complete JSON:API or Atomic conformance. Applicable
-normative MUST requirements for exposed behavior remain release-blocking.
-Optional or conditional capabilities that the profile does not promise may be
-deferred, provided requests are rejected or ignored as the specification
-requires and the support boundary is documented. `docs/design/conformance.md`
-tracks both release blockers and deferrable follow-up work.
+## First-useful profile
 
-Milestone status records the current implementation, not the release target.
-Completing a milestone demonstrates only its listed scope; it does not imply
-full JSON:API conformance or release readiness.
+- Rust library using Axum for opt-in HTTP routes and SeaORM for typed database
+  execution. PostgreSQL is the primary validated backend; SQLite provides core
+  parity for the shared fixtures.
+- Public resource types, identifiers, attributes, and relationships are mapped
+  explicitly. ORM naming and association shapes are not inferred.
+- Collection and single-resource reads support registered includes and sparse
+  fieldsets. Collection query support is equality/null filters, repeated-filter
+  OR, opt-in sorting, and configured page-number/page-size pagination. On
+  single-resource routes, only `include` and `fields[type]` are supported.
+  Unsupported query parameters are rejected before authorization or execution.
+- Base resource POST/PATCH/DELETE and relationship-linkage GET/PATCH/POST/DELETE
+  use a separate mutation adapter. Base mutations are not routed through
+  Atomic planning. Mutation routes are opt-in; the default router remains
+  read-only.
+- The opt-in Atomic Operations endpoint supports ordered resource and
+  relationship operations, local IDs, typed join-table and nullable direct-FK
+  relationship handlers, result validation, and transaction rollback.
+- Authorization, resource limits, include loading, href resolution, typed value
+  codecs, and unsupported association dispatch remain explicit application
+  hooks.
+
+This is a bounded implementation profile, not a claim of complete JSON:API or
+Atomic conformance. Applicable MUST requirements for the exposed behavior are
+release-blocking. A `Partial` row in the conformance matrix may describe
+broader optional, conditional, or out-of-profile combinations and is not by
+itself a release blocker. Unsupported inputs still receive or are ignored with
+the response required by the specification.
 
 ## Milestones
 
-| # | Milestone and scope | Exit criteria and testing evidence | Status |
+| # | Milestone | Status | Completion boundary |
 | --- | --- | --- | --- |
-| 0 | **Design baseline.** Keep the design documents aligned on the bounded first-release profile, resource mapping model, query grammar, and implementation boundaries. | The first useful profile and explicitly deferred scope are documented; Axum and SeaORM are the initial adapters; PostgreSQL is primary and SQLite is a secondary backend for the shared core fixtures; public mappings and supported query behavior are documented. | Complete |
-| 1 | **Rust crate and protocol foundation.** Build the library foundation and JSON:API document, resource, relationship, and error representations. Add only structural validation at this stage. | Verified: 19 integration tests pass. Coverage includes serialization, explicit-null versus omission, nullable resource `id`/`lid` request objects with response-only persistent-ID validation, null/one/many relationship linkage with `id` and `lid`, empty collections, missing identities, and duplicate resource identities scoped by type across primary and included data. `cargo fmt --all`, `cargo test --all-targets --all-features`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo doc --no-deps --all-features`, and `git diff --check` pass. Duplicate JSON-member rejection is a separate parser test, not the resource-identity check. Compound linkage reachability and local-ID consistency across relationship linkages remain deferred. Keep validation gaps visible; do not imply complete normative validation. | Complete |
-| 2 | **Minimal resource registry and explicit mappings.** Define a small registry of public resource types and explicit identifier, attribute, and relationship mappings independent of ORM entity naming. Keep this first mapping layer minimal and adapter-independent; defer SeaORM/database mapping to milestone 4. | Verified: 8 registry integration tests cover valid and invalid declarations, same-category duplicate public names, reserved `id`/`type` names, identifier/attribute/relationship backing-field collisions, relationship target resolution including self-reference, resource-scoped lookup, explicit filter/sort opt-in, and all-or-nothing batch validation. Only registered resources and declared fields are exposed. No ORM persistence or broader route/query behavior is part of this milestone. | Complete |
-| 3 | **Single Axum GET vertical slice.** Add collection and single-resource GET routes backed by the registry and a narrow persistence-independent adapter. Implement JSON:API media-type negotiation and structured protocol errors; expose only supported capabilities and reject every unsupported query parameter. | Verified: all 13 HTTP tests and all full-project quality gates pass at the time this slice was completed (40 integration tests total). Tests cover unknown types, authorization denial before any adapter call (zero adapter calls), empty collections and missing single-resource results, null-versus-omitted values, output restricted to declared attributes/relationships, accepted/rejected media types on both routes, structured errors for type/auth/negotiation/query/adapter failures, query-source reporting with leading separators, and unsupported query rejection. Negotiation ignores profile parameters, rejects unsupported extension ranges, applies specificity so exact `q=0` overrides wildcards, and combines repeated exact ranges by highest quality. Every tested success/error response has JSON:API Content-Type and `Vary: Accept`. Adapter IDs are normalized persistent IDs; invalid relationship target types become generic adapter errors. The default router remains GET-only; mutation routes are opt-in. | Complete |
-| 4 | **Read planning and SeaORM/PostgreSQL mapping and execution.** Establish the production mapping from explicit public-resource declarations to SeaORM entities and PostgreSQL, then implement the documented equality/null filter grammar, repeated-filter OR behavior, opt-in sorting, page-number/page-size pagination, sparse fieldsets, and registered includes. Apply authorization hooks and resource limits before execution. | **Verified prototype evidence:** 23 query tests cover parser and plan behavior; 2 PostgreSQL query integration tests exercise persisted string/OR, null, typed numeric, and boolean predicates, sorting, pagination, identifiers, sparse fieldsets, application-provided include loading, authorization/limit rejection, and invalid typed filter rejection before execution. Shared PostgreSQL/SQLite cases cover string, signed 64-bit (`BIGINT`), and UUID primary keys; they read exact JSON:API string IDs, filter typed string/`i64`/UUID values, and the BIGINT and UUID cases exercise Atomic create/update/delete with persisted-state assertions. UUID support uses SeaORM's existing `with-uuid` feature; the UUID codec emits canonical lowercase hyphenated strings. The fallible `SeaOrmQueryExecutor::new` validates the registered identifier and filterable/sortable attribute columns against its typed entity before execution; a regression test covers invalid identifier and query-field mappings. `SeaOrmFilterValueCodec` provides the typed query-literal conversion contract; typed mutations use the complementary `SeaOrmMutationValueCodec`, with `SeaOrmValueCodec` combining both. `router_with_query` provides opt-in collection query parsing/planning; 10 HTTP tests cover mapping, percent-decoding/repeat/unknown-parameter errors, mapped and unknown filter fields, allow-listed and unknown sort fields, supported/unsupported filter operators, mapped and unknown sparse-fieldset fields, valid/invalid includes, configured page-size and page-offset boundaries before adapter calls, and authorization-before-execution. PostgreSQL HTTP integration exercises the SeaORM query executor through that adapter boundary. **Verified:** The documented filter grammar, opt-in sorting, pagination, sparse fieldsets, registered includes, pre-query authorization/resource-limit checks, and PostgreSQL execution are covered by plan, route, and backend tests; shared SQLite execution is covered in M7. Broader identifier/type, relationship-cardinality, and unusual query-combination matrices are deferred. | Complete |
-| 5 | **Base mutations and bounded Atomic Operations.** Implement base resource create/update/delete and relationship-linkage operations separately from Atomic planning. Support ordered Atomic resource/relationship operations, result reporting, local-ID references, and all-or-nothing execution through SeaORM transactions; explicitly dispatch association shapes not handled by built-in typed handlers. | **Verified prototype evidence:** Base HTTP has opt-in resource POST/PATCH/DELETE and relationship-linkage GET/PATCH/POST/DELETE routes through distinct mutation command/adapter types. Focused Axum tests verify mapping, status and media behavior, ID/type mismatch (409), unsupported client IDs (403), missing relationship `data`, omitted-versus-null PATCH, and authorization before adapters. Shared typed PostgreSQL/SQLite cases verify server-generated create (201 plus representation/Location), update (200), delete (204), linkage operations, to-many add/replace/remove, exact persisted state, missing-target errors, and rollback. `SeaOrmBaseMutationAdapter` commits or rolls back one validated base command and does not route base HTTP work through Atomic planning. Atomic handlers cover the registered resource operations, local-ID references, explicitly configured join tables, and nullable direct-FK to-many add/remove/replacement. Empty string `id` and `lid` values remain opaque identifiers through Atomic planning, local-ID resolution, result validation, relationship linkage, and typed persistence; `atomic_identifiers_accept_empty_jsonapi_strings`, `executes_operations_in_order_maps_local_ids_and_rolls_back_failures`, and the shared PostgreSQL/SQLite string-identifier case cover these paths. The shared `execute_http_to_many_relationship_dispatch_case` verifies Axum-to-typed-join persistence and rollback for `ref` targets; `execute_http_to_many_foreign_key_idempotent_add_case` verifies successful repeated adds and removes of already-absent members for nullable-FK targets. The additional `execute_http_href_to_many_relationship_dispatch_case` drives `router_with_href_resolver` through typed join-table add/remove and asserts exact results and persisted rows. `atomic_http_returns_updated_resource_for_additional_server_fields` confirms a custom handler returns the updated representation when an update also changes a registered `revision` field; the typed SeaORM handler's application-hook boundary is documented separately. `atomic_http_rejects_resource_add_without_data_before_authorization_or_handler` verifies the Atomic Processing Errors 400/pointer requirement before guard or handler calls. `atomic_http_rejects_relationship_cardinality_mismatch_before_authorization` proves to-one `add` and `remove` cardinality mismatches are rejected before guard or handler calls; the route regressions `atomic_http_rejects_resource_update_data_mismatching_ref_before_authorization`, `atomic_http_rejects_href_update_data_mismatching_resolved_target_before_authorization`, `atomic_http_rejects_resource_update_without_target_before_authorization`, `atomic_http_rejects_resource_data_with_both_id_and_lid_before_authorization`, `atomic_http_rejects_resource_add_without_string_type_before_authorization`, `atomic_http_rejects_missing_or_non_string_operation_codes_before_authorization`, `atomic_http_rejects_missing_or_non_array_operations_before_authorization`, `atomic_http_rejects_invalid_reference_identities_before_authorization_or_handler`, `atomic_http_rejects_missing_or_non_string_reference_type_before_authorization_or_handler`, `atomic_http_rejects_non_string_reference_members_before_authorization_or_handler`, `atomic_http_rejects_non_string_href_targets_before_authorization_or_handler`, and `atomic_http_rejects_non_object_operations_before_authorization_or_handler` verify target/data identity, required resource type, operation code, error pointer, malformed `ref`/`href`/operation shapes, and pre-authorization behavior. Planner cases also cover cardinality shapes for resource-level linkage and relationship add/update/remove. Shared PostgreSQL/SQLite HTTP cases classify duplicate client-generated IDs as HTTP 409 `conflict` and missing Atomic update/remove targets as HTTP 404 `resource_not_found`, each with an operation pointer, rollback of preceding writes, and no `atomic:results`. The full current run has 231 integration tests and 6 unit tests, including 11 isolated SQLite tests; the shared HTTP scenarios extend existing backend test functions without increasing the backend-specific SQLite count. **Verified:** The supported base and Atomic request/result/error/media cases, status mappings, authorization order, local-ID behavior, idempotent relationship changes, and transaction rollback are covered by Axum plus PostgreSQL/SQLite tests. Other ORM association shapes remain application-executor responsibilities; exhaustive optional/error combinations are deferred. | Complete |
-| 6 | **First-release conformance and hardening.** Validate the first useful implementation profile and document any intentionally deferred support. | Every applicable normative MUST for the exposed routes, query subset, mutations, media negotiation, and Atomic operations in the profile has positive/negative evidence. PostgreSQL integration, shared SQLite core cases, Axum, unit, docs, and lint gates pass in CI. `docs/design/conformance.md` separates release blockers from deferrable optional or out-of-profile behavior. Do not claim complete JSON:API/Atomic conformance: exhaustive line-by-line evidence for optional/conditional capabilities and unsupported endpoint shapes is a follow-up, not a release blocker. | Complete |
-| 7 | **SQLite core parity and follow-up matrix.** Keep SQLite as a second SeaORM backend for the first-release core profile, with PostgreSQL remaining primary. | **Core parity evidence now integrated:** `.github/workflows/ci.yml` runs all features, including isolated `sqlite::memory:` tests. Shared PostgreSQL/SQLite cases cover the supported query and transaction behavior, common fixture results, core identifiers, to-one linkage, configured to-many operations, and rollback. SQLite is not claimed to match every PostgreSQL engine-specific behavior. **Deferred:** exhaustive parity for uncommon identifiers/types, all relationship association shapes, engine-specific schema/constraint behavior, and concurrency/locking. | Complete |
+| 0 | Design baseline | Complete | The supported profile, architecture, resource mapping, query grammar, and explicit deferrals are documented. |
+| 1 | Rust crate and protocol foundation | Complete | JSON:API document/resource/relationship/error models and structural validation are implemented; omitted values remain distinct from explicit `null`. |
+| 2 | Registry and explicit mappings | Complete | Resource types and public fields resolve through validated, adapter-independent registry mappings. |
+| 3 | Axum GET vertical slice | Complete | Collection and single-resource GET routes negotiate JSON:API, authorize before adapters, project registered fields, and reject unsupported queries. |
+| 4 | Read planning and SeaORM execution | Complete | The documented filter/sort/page/fieldset/include plan runs through PostgreSQL-backed SeaORM; HTTP validation and limits precede query execution. |
+| 5 | Base mutations and bounded Atomic Operations | Complete | Base CRUD/linkage remains separate from Atomic; supported ordered Atomic operations, local IDs, results, rollback, media negotiation, and error mapping are covered. Unsupported association shapes use application executors. |
+| 6 | First-release conformance and hardening | Complete | The applicable MUST requirements for the first-useful profile have positive/negative evidence; local gates and PR CI passed for the implementation. The matrix remains explicitly partial outside the profile. |
+| 7 | SQLite core parity | Complete | Shared PostgreSQL/SQLite query, identifier, relationship, mutation, result, and rollback fixtures pass. This is core parity, not an exhaustive claim of engine equivalence. |
 
-## First-useful release gate and deferrals
+## Release gate and verification
 
-The first useful release is gated on the bounded profile above: common base
-resource reads and writes, relationship linkage, the documented query subset,
-and ordered Atomic resource/relationship mutations with local IDs and
-transaction rollback. The supported paths must satisfy their applicable
-normative MUST requirements, pass the PostgreSQL and shared SQLite test suites,
-and document unsupported inputs and application-dispatch boundaries. A
-`Partial` matrix row is not automatically a release blocker.
+The first-useful release is gated on the profile above: resource reads and
+mutations, relationship linkage, the documented query subset, and ordered
+Atomic resource/relationship operations with local IDs and transaction
+rollback. Its exposed paths must meet their applicable normative MUSTs, pass
+PostgreSQL and shared SQLite checks, and document unsupported inputs and
+application-dispatch boundaries. The conformance matrix records those
+requirements and evidence.
 
-| Deferrable follow-up | Rationale and boundary |
-| --- | --- |
-| Applying requested profiles and reflecting them in response media types | JSON:API says servers SHOULD attempt to apply recognized profiles. The base endpoint currently ignores profile requests and does not advertise applied profiles; profile-specific behavior is outside the first-release contract. |
-| Automatic support for every ORM association shape and ordered relationship persistence | ORM shape and relationship ordering are application concerns, not a JSON:API wire-format requirement. The explicit typed handlers cover supported mappings; other shapes and ordered storage use custom application executors. |
-| Exhaustive optional/conditional endpoint combinations and the complete line-by-line conformance matrix | The first release covers the documented endpoint profile and all applicable MUSTs. Optional capabilities not advertised by that profile, unusual combinations, and exhaustive re-testing of unsupported endpoint forms are a follow-up; unsupported requests must still receive the specified response. |
-| Full parity for uncommon identifier types, engine-specific schema behavior, and concurrency/locking | Current shared fixtures establish parity for core identifiers and transactions. These broader backend-specific matrices do not block the bounded profile and must not be presented as verified until tested. |
-| Ongoing IANA/BCP 47 registry freshness beyond current snapshots | Registry contents change independently of this crate. Registered link relations use the IANA snapshot updated 2026-06-12, and language tags receive syntax/registry validation; continuously tracking future registry updates is maintenance follow-up. |
+Latest verified suite: **231 integration tests** (including **11 SQLite test
+functions**), **6 unit tests**, and **1 doctest**. The isolated PostgreSQL-backed
+all-feature suite, Clippy with warnings denied, rustdoc with warnings denied,
+formatting, and diff checks pass; both PR CI jobs passed on the code-identical
+head before this documentation-only cleanup.
 
-### M4 pagination overflow route evidence
+```sh
+SEAMARK_TEST_DATABASE_URL=<isolated-postgres-url> cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps
+cargo fmt --check
+git diff --check
+```
 
-`query_router_rejects_pagination_offset_overflow_before_authorization_or_execution`
-verifies that a page-number/page-size multiplication overflow becomes a JSON:API
-400 `invalid_query` sourced to `page[number]` before authorization or adapter
-calls. The case uses the existing route configuration (maximum page size 100,
-maximum offset 1,000); it adds no pagination defaults. The valid route control
-`query_router_plans_executes_and_projects_collection_queries` asserts page 2,
-size 5, and offset 5.
+Continue development in reviewable commits on the issue-tracking PR. Update
+this roadmap only when milestone status, profile boundaries, or a design
+decision changes; add detailed case evidence to
+[`docs/design/conformance.md`](design/conformance.md).
+Delegate genuinely independent work only after agreeing on interfaces and file
+ownership, then review and integrate results before recording milestone
+evidence.
 
-### M4 HTTP execution-limit route evidence
+## Intentional deferrals
 
-`postgres_query_http_rejects_invalid_auth_and_limited_queries_before_sql`
-now pairs a backed within-limit include request (HTTP 200, a returned database
-row, and one include-loader call) with a page-size-2 request over a configured
-limit of 1. The over-limit request returns the exact JSON:API 413
-`resource_limit` error. It invokes the query adapter but the SeaORM guard
-returns before SQL or the include loader; after the control succeeds, the test
-drops the backing table so an accidental over-limit query would fail instead
-of being masked.
-
-### M4 unknown-filter field route evidence
-
-`query_router_rejects_unknown_filter_field_before_authorization_or_execution`
-pairs a valid public `name` filter mapped to internal `title` with
-`equals(secret,'Harbor')`. The latter returns JSON:API 400 `invalid_query`,
-source `filter`, and the deterministic detail
-`attribute \`secret\` is not registered on resource \`ports\`` before
-authorization or adapter calls. The route does not expose or fall back to an
-unregistered field. Typed conversion remains unchanged: `PortFilterCodec`
-encodes typed literals for SeaORM's bound `column.eq(value)` expression, with
-exact-ID numeric and boolean coverage in shared PostgreSQL/SQLite `FILTER_CASES`.
-
-### M4 SeaORM fieldset mapping enforcement
-
-`executes_database_filters_sort_pagination_and_includes_with_fieldsets`
-(PostgreSQL) and `executes_sqlite_filters_sort_pagination_fieldsets_and_includes`
-submit manually constructed plans containing an unregistered mapper-only
-attribute and a registered relationship with a mismatched target. The executor
-returns the same deterministic `InvalidFieldsetField` detail for each invalid
-mapping before authorization or database execution. Valid fieldset projection
-also intersects mapper output with the resource registry, so unregistered
-values cannot escape through direct `SeaOrmReadResult` use.
-
-### M4 SeaORM sort-plan mapping enforcement
-
-The shared PostgreSQL and SQLite SeaORM query regressions construct one sort
-plan with an unknown public name mapped to a real sortable column and another
-with the registered public `depth` name mapped to `owner_id`. Both return the
-exact `InvalidSortField` error even with a denying guard, proving the sort
-allowlist runs before authorization. The existing `first_page_with_owner`
-query remains the valid `-depth` database-side sort control.
-
-### M4 SeaORM filter-plan mapping enforcement
-
-The same PostgreSQL and SQLite executor tests submit filter ASTs (including a
-nested `and`/`not`) for relationship field `owner_id` and mapper-only field
-`private`; both return the exact `InvalidFilterField` error with a denying
-guard, proving field validation precedes authorization. A manually built typed
-`depth_m = "2"` filter returns only port `1` on both backends through the
-configured codec; an invalid `berth_count` literal returns
-`InvalidFilterValue` before SQL. Existing shared typed filter cases retain
-additional numeric, boolean, string, and null controls, with comparisons still
-executed by SeaORM.
-
-### M4 SeaORM include-plan mapping enforcement
-
-PostgreSQL's `authorization_limits_and_validation_failures_precede_queries`
-and SQLite's `sqlite_query_executor_validates_include_trees_before_authorization_or_loading`
-submit manually constructed include trees with an unregistered root
-relationship, mismatched internal field, mismatched target type, and a bad
-nested node beneath a valid parent. Each returns the exact
-`InvalidIncludeRelationship` resource/name pair while authorization/limit and
-loader counters remain zero; SQLite's empty database also ensures an
-accidental root query fails the case. Existing two-level `neighbors` controls
-still pass through the application loader on both backends and assert exact
-included identities and linkage. Include traversal remains application
-provided and database-backed.
-
-### M4 SeaORM pagination-plan enforcement
-
-`authorization_limits_and_validation_failures_precede_queries` (PostgreSQL)
-and `sqlite_query_executor_validates_include_trees_before_authorization_or_loading`
-(SQLite) reject manually constructed pages with zero number, size, or limit,
-limit/size mismatch, checked offset overflow, or offset inconsistent with
-`(number - 1) * size` before calling the guard. Each backend also rejects
-page-size and offset values above its explicitly configured `BoundedGuard`
-limits before authorization. A database-backed page at the exact configured
-maximum size and offset succeeds on both backends. `Page` fields are unsigned,
-so negative values are unrepresentable; the checks add no defaults or caps.
-
-### M5 empty-operations request evidence
-
-The [Atomic Operations extension](https://jsonapi.org/ext/atomic/#document-structure)
-does not require a non-empty `atomic:operations` array; when returning a
-document, the result array must match the request length. The planner accepts
-an empty array, and `atomic_http_accepts_empty_operations_as_a_successful_no_op`
-returns HTTP 200 with `atomic:results: []`. The guard authorizes the request,
-but no operation handler runs.
-
-### M5 relative `href` route evidence
-
-The extension defines operation `href` as an RFC 3986 URI-reference. The
-`atomic_http_passes_relative_href_unchanged_to_application_resolver` regression
-routes the path-relative `articles/1` through the application resolver without
-framework normalization; the resolver records the exact input and the request
-returns HTTP 200 with one empty result. Existing
-`accepts_uri_reference_targets_for_resource_mutations` coverage continues to
-reject the malformed `not a URI reference` value.
-
-### M5 href-to-persistence integration evidence
-
-`execute_http_href_to_many_relationship_dispatch_case` runs from both
-`postgres_atomic_result_document_matches_shared_backend_case` and
-`sqlite_atomic_result_document_matches_shared_backend_case`. It drives
-`atomic_http::router_with_href_resolver` with href-targeted to-many add and
-remove operations twice each, asserts each positional empty result, and verifies
-that repeated add preserves exactly one typed join-table row while repeated
-remove leaves no rows after each request. This closes the
-Axum-to-resolver-to-typed-persistence idempotency evidence gap without
-broadening association support; ordered associations, additional join-table
-columns, and unusual combinations remain deferred.
-
-### M5 Atomic authorization transaction-order evidence
-
-`atomic_http_denial_precedes_transaction_and_operation_handler` verifies the
-guard contract at the HTTP boundary. A denied request returns JSON:API 403
-`forbidden`, calls authorization once, skips limit validation, and never calls
-the mutation handler. Because the denied case uses a disconnected database
-connection, an attempted transaction begin would produce a database error
-instead of the expected 403. The authorized PostgreSQL control calls
-authorization, limit validation, and the handler once each, then returns HTTP
-200 with the expected result document.
-
-### M5 to-many relationship replacement evidence
-
-The [Atomic to-many relationship rules](https://jsonapi.org/ext/atomic/#updating-to-many-relationships)
-define `add`, `remove`, and `update` as add-members, remove-members, and
-replace-all operations. `SeaOrmJoinTableMutationHandler` now implements all
-three for explicitly configured two-column join tables. The shared
-`execute_to_many_relationship_replacement_case` runs on PostgreSQL and SQLite:
-it asserts an `href`-targeted non-empty replacement, `ref`-targeted empty-array
-clearing, and rollback when a `ref`-targeted replacement includes a target that
-violates the join table's foreign key.
-The helper resolves the owner and members through `LocalIdMap`, checks the
-declared target type, returns the required empty result object, and relies on
-the operation transaction for rollback. Its two-column table stores set
-membership, not member order; ordered associations and other shapes remain
-application-dispatched.
-
-### M5 nullable direct-FK to-many evidence
-
-`SeaOrmToManyForeignKeyMutationHandler` provides typed Atomic `add`, `remove`,
-and `update` replacement for relationships whose related entity stores a
-nullable FK to the source. Replacement clears the current members and assigns
-the requested set within the same transaction; it refuses to reassign any
-requested member currently owned by another source. The shared PostgreSQL/SQLite
-`execute_to_many_foreign_key_relationship_case` creates two owners and two
-related resources, attaches both through a local-ID reference, removes one,
-and asserts exact operation-result ordering and persisted FK state. Further
-controls replace the set with one member, clear it with an empty array, and
-attempt a replacement that first assigns an unowned member but then encounters
-a member owned by another source. The failed operation is rolled back, leaving
-both prior FK values intact. The handler does not persist member ordering;
-join tables, non-nullable direct FKs, and other association shapes remain
-available to explicitly dispatched custom executors.
-The shared `execute_http_to_many_relationship_dispatch_case` and
-`execute_http_to_many_foreign_key_idempotent_add_case` route cases also cover
-idempotency for both supported association mappings: after removing a present
-member, a later Atomic `remove` for that existing-but-unlinked resource
-succeeds, including duplicate identifiers in one operation. PostgreSQL and
-SQLite assert the empty result objects and unchanged persisted state; their
-subsequent failing-operation controls still verify rollback.
-
-### M5 resource adds and updates with to-many relationships
-
-When no custom executor handles an `AddResource` or `UpdateResource` directly,
-`SeaOrmAtomicOperationDispatcher` separates to-many linkage from the resource
-changeset, executes scalar and to-one changes with the typed resource handler,
-and dispatches each to-many replacement through its registered typed
-relationship handler in the same transaction. The shared
-`execute_to_many_relationship_replacement_case` verifies join-table adds and
-updates, including local-ID linkage; `execute_to_many_foreign_key_relationship_case`
-verifies nullable direct-FK adds and updates. Both cases run against PostgreSQL
-and SQLite. Failure controls assert that invalid relationship targets roll
-back a newly added resource and that relationship failures roll back preceding
-scalar updates. Server-assigned resource identity is obtained from the typed
-add result when no `lid` is supplied. Custom executors retain first-match
-precedence. Ordered associations, non-nullable direct FKs, and other
-unconfigured association shapes remain outside this built-in composition.
-
-### M7 multi-field nullable sort parity evidence
-
-The shared `multi_field_sorted_ports` database case runs on PostgreSQL and
-SQLite with the allow-listed sort `active,-capacity`. Ports 1 and 3 tie on
-`active`; the secondary descending nullable `capacity` key yields exact IDs
-`2,1,3`, keeping the null-capacity row last. The existing single-field
-ascending and descending capacity controls remain in place and continue to
-assert NULLS LAST on both backends.
-
-### M7 sparse-fieldset include parity evidence
-
-Per the JSON:API [compound-document full-linkage rule](https://jsonapi.org/format/#document-compound-documents),
-included resources need not be visibly linked when the linking relationship
-was excluded by a requested sparse fieldset. Both PostgreSQL and SQLite route
-controls request `include=owner` while selecting only `fields[ports]=name` and
-`fields[people]=name`; each asserts the exact same response document: root
-port `1` has only its `name` attribute, and included person `11` has only its
-`name` attribute. The relationship is omitted but the requested include is
-retained; shared executor assertions verify the same primary and included
-projection on both backends.
-
-## Delivery and verification workflow
-
-- Work iteratively in a pull request tracking issue #1. Keep this roadmap
-  current as implementation decisions or evidence change.
-- At each milestone, update the relevant design documents and this plan:
-  record status, decisions, verified exit evidence, and remaining gaps. Mark a
-  milestone complete only after its criteria and tests pass.
-- Commit coherent milestone work in the issue-tracking pull request. Keep
-  commits reviewable and do not treat a commit or merged milestone as proof of
-  full release conformance.
-- Prefer focused unit tests for protocol and planning logic, adapter-level
-  tests for Axum behavior, and backend-specific integration tests for
-  persistence and transaction guarantees. M4-M6 validate PostgreSQL first;
-  M7 adds SQLite using the same shared behavior matrix where capabilities
-  overlap. Add regression tests for fixes and keep CI checks aligned with the
-  Rust toolchain and crate configuration.
-- Delegate only work that is genuinely independent and can proceed concurrently
-  (for example, isolated conformance-test research or a separate test fixture).
-  Agree on interfaces and file ownership first, avoid concurrent edits to the
-  same design or implementation surface, and integrate/review delegated
-  results before recording milestone evidence.
-- Track known omissions explicitly. Until milestone 6 meets its exit criteria,
-  describe implementation and supported behavior as partial.
-
-## Current implementation checkpoint
-
-Milestones 0 through 7 are complete for the documented first-useful profile; the full JSON:API/Atomic matrix remains intentionally partial. The crate
-provides JSON:API document, resource, relationship, and error structures with
-limited structural validation, an explicit public resource registry, and a
-read-only Axum collection/single-resource GET slice. The protocol model preserves omitted fields separately from explicit `null`,
-supports request resource `lid` values, requires response resource `id`
-values, and rejects duplicate resource identities by type across
-primary/included data. The registry validates public/internal field mappings
-and target types and requires explicit filter/sort opt-in. Both GET routers
-negotiate JSON:API responses, authorize before adapter calls, check
-relationship target types, and project only declared fields. The default
-router rejects all query strings; the opt-in query router handles planned
-collection query parameters and single-resource `include` and
-`fields[resource-type]`. Single-resource filters, sorting, pagination, and
-unknown parameters remain rejected before authorization or adapters.
-
-The M4 prototype parses equality/null filter expressions, combines repeated
-filters with OR, and plans opt-in sorting, explicitly configured pagination,
-sparse fieldsets, and nested include paths. A separate typed SeaORM executor
-executes predicates, sorting, and offset/limit in PostgreSQL; callers supply
-typed filter conversion (including typed numeric and boolean values), model
-mapping, an authorization/limit guard, and an include loader. The opt-in Axum
-collection-query adapter validates and authorizes before adapter execution.
-HTTP unit coverage verifies percent
-decoding, duplicate/unknown parameter handling, sorting/filter/page mapping,
-fieldset projection, includes, and authorization order. A PostgreSQL-backed
-HTTP integration drives the SeaORM executor and verifies filtered, sorted,
-paginated resources, relationship linkage, included resources, and sparse
-fieldsets. Shared PostgreSQL/SQLite query tests cover nullable to-one linkage
-and an application-defined self-referential to-many mapping, including two
-related resources loaded into `included` through the adapter contract. A
-focused Axum regression pairs successful `include=owner` execution with an
-unknown nested include path that returns a JSON:API 400 before authorization
-or any query, include-loader, or collection adapter call. A PostgreSQL route
-regression verifies invalid queries are rejected before adapter execution,
-maps SeaORM authorization and resource-limit failures to HTTP 403 and 413,
-and proves both guarded outcomes occur before SQL against an intentionally
-absent table. The registry rejects resource type and public field names that
-do not meet JSON:API member-name rules. The fallible
-`SeaOrmQueryExecutor::new` validates the registered identifier and all
-filterable/sortable attribute columns against its entity at construction;
-invalid mappings have a focused regression test. The shared
-`SeaOrmFilterValueCodec` and `SeaOrmMutationValueCodec` traits now provide
-typed query/mutation conversion hooks, with `SeaOrmValueCodec` for shared
-implementations. At this checkpoint the all-features suite passes with 231 integration tests,
-6 unit tests, 11 SQLite cases, and 1 doctest; PostgreSQL and SQLite execution
-are both verified for the supported core fixtures. Formatting, warning-free
-Clippy, rustdoc, and whitespace checks pass. M4 first-useful-profile exit
-criteria are complete; broader identifier/type, relation, query-combination,
-and unsupported-request matrices are deferred as recorded above.
-
-M5 now adds an Atomic Operations document/planner with operation and local-ID
-validation, public-to-internal resource changesets, and relationship field
-resolution. The standalone Axum `POST /operations` router enforces quoted
-Atomic Operations extension negotiation, rejects query strings, returns
-result/error documents, and passes request headers to authorization.
-`SeaOrmResourceMutationHandler` provides typed resource CRUD and to-one
-foreign-key updates using the application-supplied mutation codec; the
-dispatcher composes resource-level to-many adds and updates with configured
-join-table or nullable direct-FK handlers, while custom executors retain
-first-match precedence for unsupported shapes. Applications can resolve
-relationship `href` routes before planning. The transaction runner invokes
-handlers in order, checks result identities, and rolls back on failure.
-**Current focused evidence:** 30 Atomic Operations planner tests, 17 Atomic
-HTTP tests, 5 PostgreSQL mutation-suite tests, and 5 library unit tests. A
-shared PostgreSQL/SQLite case verifies string primary-key query/filter
-behavior, included to-one linkage, Atomic
-create/update/delete, and string-key relationship reassignment. Atomic
-result validation checks missing, short, and long result arrays; positional
-update-result identities; client-assigned add-ID matches; and operation-specific
-result data. Every resource add now requires a valid created-resource
-representation, including client-assigned IDs; this selects the extension's
-representation-returning option rather than conditionally omitting `data`.
-`validate_operation_result` enforces that contract inside the transaction
-before commit, and `AtomicOperationsDocument::validate_response_for` applies
-the same check to complete response documents. The shared
-`execute_client_assigned_add_result_http_case` and
-`execute_client_assigned_add_missing_result_rollback_http_case` are invoked by
-both PostgreSQL and SQLite route suites: they verify the returned and persisted
-client-ID representation, then assert a handler's missing representation
-produces HTTP 500, omits `atomic:results`, and rolls back the client-ID insert.
-Resource add/update `data` must be a valid response resource with a matching
-type and known ID, while relationship and remove operations forbid result
-`data`. The Atomic extension permits a resource-update result without `data`
-when the server changes no fields beyond those requested, or a representation
-of the updated resource; `validates_atomic_resource_update_result_shapes`
-checks both accepted shapes and rejects a representation with a different or
-nonpersistent identity. The planner cannot infer whether a server changed
-additional fields, for which the extension requires a representation. The
-invalid-server-result regression maps invalid relationship `data` and a missing
-server-supplied local-ID identity to HTTP 500, while client-caused operation
-errors remain 422; the shared
-`execute_invalid_result_rollback_case` also verifies database-write rollback on
-PostgreSQL and SQLite. Atomic documents and embedded
-resource data now reuse base JSON:API validation for top-level links and
-`jsonapi` members, resource links, and relationship object structure/links.
-The typed `SeaOrmJoinTableMutationHandler` handles configured two-column
-join-table add/remove and full membership replacement for Atomic `update`,
-using the existing mutation codec, local-ID map, and shared transaction.
-Resource-level `add` and `update` operations can also compose scalar and
-to-one changes with to-many relationship replacements through the matching
-configured handler in that same transaction.
-PostgreSQL/SQLite tests prove ordered membership changes, empty replacement,
-rollback after a failed replacement, and rollback after a later operation
-fails. `SeaOrmToManyForeignKeyMutationHandler` now handles explicitly mapped
-nullable direct-FK add/remove on PostgreSQL and SQLite; it rejects implicit
-reassignment and the shared regression verifies result ordering, persisted
-linkage, and rollback after an earlier FK update. The resource CRUD handler
-still declines to-many changesets; replacement, ordered associations,
-non-nullable direct FKs, and unsupported association shapes retain custom
-dispatch. Unsupported methods on registered base and Atomic routes return
-JSON:API 405 errors with `Allow` and `Vary: Accept` headers before authorization
-or adapter/handler execution. Applications may opt into
-`http::not_found_fallback` as their top-level Axum fallback for unmatched-path
-JSON:API 404 responses; component routers do not capture unrelated app paths.
-Link `hreflang` validation checks registry and prefix rules after syntax
-parsing, including rejection of well-formed but unregistered subtags.
-The first-release profile's applicable request/result/error/media-type requirements are covered by the current route and backend tests; the broader conformance matrix remains partial.
-Resource, collection, and relationship href resolution now has planner, HTTP,
-and PostgreSQL mutation coverage. Absolute URI-reference matching remains
-application-defined: `AtomicHrefResolver` receives the original value and
-applies the application's own base-URL policy without framework normalization.
-The HTTP test resolver uses an exact configured base URL, accepts matching
-absolute collection/resource/relationship references, and proves a mismatched
-resource identity returns HTTP 400 at the operation pointer before execution.
-M6 first-release conformance is complete for the documented profile; this is
-not a claim of full JSON:API/Atomic conformance. M7 provides shared SQLite core parity. PostgreSQL and SQLite now assert one
-shared complete query response document and one shared eleven-operation
-Atomic result document with matching persisted state. The shared Atomic case
-covers collection, resource, and relationship `href` targets, typed join-table
-to-many add/remove with explicit column mapping, proves removing one of two
-relationship members leaves the other persisted, and verifies rollback of a
-later relationship add when a subsequent operation fails. The additional
-shared relationship-replacement case asserts replacement, empty replacement,
-and failed-replacement rollback on both backends. Its shared failure batch now creates a
-typed tag through `lid`, attaches it to the relationship, then fails updating
-a missing resource at index 2; both backends assert that index and the exact
-pre-batch persisted state. Broader
-string and integer identifier/type and relationship coverage now runs through
-both query and Atomic paths. The first-release M7 core-parity exit criteria are complete; broader
-identifier/type/relationship-cardinality matrices and engine-specific behavior
-remain deferred. No full conformance claim is made.
-The shared `FILTER_CASES` fixture now also applies the nested
-`and(equals(name,'Beta'),not(equals(depth,'2')))` filter to both backends and
-asserts the same matching port ID (`2`); the former PostgreSQL-only assertion
-has been replaced by these paired shared-fixture checks.
-That shared fixture also already covers null-filter parity:
-`equals(capacity,null)` yields exactly port ID `3` on PostgreSQL and SQLite,
-while the non-null `equals(capacity,'8')` control yields ID `2`.
-`FilterValue::Null` maps to database-side `column.is_null()` without invoking
-the non-null typed value codec.
-Repeated `equals(name,...)` values are also already shared through
-`first_page_with_owner`: both backends assert page IDs `2` and `1`, covering
-the full OR union. The shared filter matrix adds `equals(active,'false')` with
-exact ID `2`, complementing the existing `equals(active,'true')` IDs `1,3`
-control on both backends.
-Both database-backed include cases now compare unfielded owner resources
-against the same fixture-derived exact attribute map, including both declared
-values and excluding adapter-only fields.
-The shared `two_level_neighbors` query exercises the loader contract's nested
-include tree through the application-provided self-referential mapping on both
-PostgreSQL and SQLite. Both database tests assert root `2` links to `1`, exact
-included identities `1` and `3`, and second-level linkage `1 -> [2,3]` and
-`3 -> [1]`, without repeating the primary resource in `included`.
-The document layer now directly verifies that a resource object's `id` is a
-string: `resource_object_ids_must_be_strings` accepts a string ID and rejects
-a numeric ID during document decoding.
-`resource_fields_must_not_conflict_with_type_id_or_each_other` pairs the
-document-layer rejection of a same-name `owner` attribute/relationship with a
-valid distinct `name`/`owner` field control.
-`relationship_identifiers_require_type_and_exactly_one_identity` accepts a
-typed linkage `id`, rejects omitted `type` during document decoding, and
-asserts document validation rejects both missing identity members and
-simultaneous `id`/`lid`. The existing `rejects_identifiers_without_type_or_identity`
-also validates the empty-type case.
-`link_objects_require_href_and_reject_meta_only_objects` rejects empty and
-meta-only link objects while accepting `href`-only and `href`-plus-`meta`
-controls; present `href` values remain validated as URI references.
-Shared `sorted_ports_page` cases also assert exact descending-depth IDs across
-two pages (`2,3` then `1`), projected root attributes, and matching owner
-includes against both database engines.
-The shared nullable-capacity sort cases also assert ascending IDs `1,2,3` and
-descending IDs `2,1,3` on PostgreSQL and SQLite, placing null values last in
-both directions. `SeaOrmQueryExecutor` sorts the null predicate before each
-requested field order so the result does not depend on backend-native null
-ordering; the existing non-null depth sort remains unchanged.
-The SQLite query fixture's `Database::connect("sqlite::memory:")` connection
-asserts `PRAGMA foreign_keys = 1` and that an orphan owner write fails with a
-foreign-key violation. `assert_orphan_owner_foreign_key_is_rejected` performs
-the equivalent write against the shared relation-generated schema on both
-PostgreSQL and SQLite. No production connection override is required.
-The shared Atomic backend case also runs
-`execute_local_id_to_one_relationship_case`: it creates an owner and port in
-order, links the port to the owner's local ID, compares the exact result
-document, and verifies the persisted owner foreign key on PostgreSQL and SQLite.
-The shared `execute_to_one_relationship_lifecycle_case` additionally compares
-Atomic result shapes and persisted state after resource creation, relationship
-clearing with `data: null`, reassignment, and resource removal. The built-in typed resource handler still declines to-many relationship
-operations, as verified by
-`typed_executor_declines_to_many_relationships_for_application_dispatch`.
-`SeaOrmJoinTableMutationHandler` provides typed add/remove behavior for an
-explicitly configured two-column join table. Other association shapes continue
-to use application executors through the same dispatcher.
-
-M6 first-release conformance has been verified against the supported profile and recorded in the gap-tracking matrix.
-Document validation now rejects simultaneous `id`/`lid`, requires persistent
-IDs for response resource objects and relationship identifiers, requires
-relationship `lid` references to resolve to a resource object with the same
-type and local ID, checks
-conflicting or invalid resource type/field names, rejects unreachable included
-resources, relationship objects without linkage, non-empty links, or metadata
-(including an empty links object by itself), and error objects without any
-defined member. An empty links object remains allowed when linkage supplies
-relationship content. It validates link `href` URI references, registered-token or
-absolute-URI relation types, BCP 47 `hreflang` syntax, JSON Pointer syntax for
-error sources, HTTP status strings in the 100-599 range, an optional string
-`jsonapi.version`, and optional `jsonapi.ext`/`jsonapi.profile` arrays of
-absolute URI strings (including valid URIs unknown to this implementation).
-Generated base and Atomic HTTP error tests
-assert that each error object's `status` matches the HTTP response status;
-Atomic HTTP tests also verify that every emitted source pointer resolves in the
-original request document.
-`typed_invalid_mutation_document_omits_source_pointer_before_authorization_or_adapter`
-verifies that a base mutation with valid JSON but a typed-invalid `jsonapi`
-member returns 400 without `source.pointer`, because Serde does not identify
-an exact failing request value; the regression also verifies rejection before
-authorization or mutation-adapter execution. The Atomic malformed-request
-test submits two invalid operations and confirms that the single returned
-error points to the first operation. Base GET and Atomic HTTP tests also verify
-the permitted stop-at-first-problem strategy when a request has multiple faults,
-so multi-error HTTP status selection is not used by these routes. The matrix
-remains partial: focused base-spec regressions reject a relationship object
-whose only member is an empty `links` object while retaining valid link-only,
-metadata-only, and linkage-bearing relationships, ignore `@`-members across
-typed base-document object contexts, and exclude `@` values from Atomic
-resource-data mapping while preserving ordinary member validation. Invalid
-`@` names in resource attribute maps, relationship maps, link maps, and
-metadata maps now return invalid-member-name errors; valid annotations in
-those maps are discarded, including nested link-object, `meta`, and
-`describedby` annotations, while ordinary values remain intact. Atomic document,
-operation, resource-data, reference, result, link, and metadata maps reject
-malformed `@` names before ignoring unknown members. Other uncovered contexts
-remain open. HTTP
-route-level processing is verified by an
-Atomic POST regression; generated result documents reflect operation outcomes
-and do not promise request-annotation pass-through. Broader top-level, Atomic Operations, endpoint-status, and context-sensitive
-request/response matrices remain partial; no full JSON:API/Atomic conformance
-claim is made.
-Atomic operation-execution failure coverage now explicitly verifies the
-permitted 422 status, JSON:API response headers, and a resolvable
-`/atomic:operations/1` source pointer when the second operation fails after the
-first succeeds; the error document also omits `atomic:results` as required by
-the extension's document-structure rule. The current authorization, guard-limit,
-operation, conflict, not-found, local-ID, invalid-result, rollback, and
-database error categories have mapping evidence in
-`docs/design/conformance.md`; backend-specific transport failures and
-exhaustive combinations remain partial.
-The same route test verifies that an unsupported operation code returns 400
-with a source pointer to its operation object.
-The Atomic HTTP regression also verifies that guard limit failures return 413
-with matching error status and JSON:API headers before an intentionally failing
-operation handler can run; endpoint error mappings remain partial overall.
-The query HTTP route now pairs a successful planned query with a
-`QueryAdapterError::ReadFailed` response and verifies HTTP 500, JSON:API
-`Content-Type`, and the matching string-valued error `status`.
-An Atomic database-acquisition failure is also verified to return a 500 error
-document with matching JSON:API headers and status.
-Document validation now explicitly covers empty `id` and `lid` strings as
-opaque JSON:API string identifiers, including local-ID relationship resolution.
-Unrecognized unique members are also verified to be ignored across base
-document, JSON:API, resource, relationship, identifier, error, and error-source
-objects.
-The document decoder rejects non-object roots and array-shaped resource,
-relationship, identifier, error, error-source, and JSON:API objects.
-Atomic Operations documents now ignore unrecognized members per JSON:API
-processing rules while explicitly rejecting the forbidden base `data` and
-`included` members. Base mutation and Atomic HTTP body parsing reject duplicate
-JSON object member names recursively before typed decoding, with top-level,
-nested-duplicate, and trailing-value regression tests. The Atomic document,
-operation, reference, and result types also reject Serde's sequence-form
-representations where JSON:API requires objects. The Atomic HTTP regression
-verifies malformed document, operation, reference, and resource-add shapes
-produce 400 errors.
-Base GET media negotiation now validates quoted
-absolute profile URI lists, rejects malformed or duplicate profile
-parameters, accepts only HTTP qvalue syntax with at most three fractional
-digits (including the empty fractional form `q=1.`), and treats
-`profile=unquoted` after valid `q=0.5` and bare `;q=1;foo` as Accept extensions
-on both base GET routes; an unsupported media parameter before `q` remains
-unacceptable. It rejects unsupported media
-parameters/extensions, and preserves the rule that unknown profiles do not
-alter the base response. A route regression pairs valid `q=0.125` with
-out-of-grammar `q=0.1234` rejection on both GET routes and checks response
-status and JSON:API media type. Atomic negotiation also accepts `q=1.` with
-the required extension.
-The Atomic POST route now has an end-to-end Content-Type regression: it accepts
-the required Atomic extension with an unknown valid profile, and returns 415
-with a JSON:API error document for unpermitted `charset` and `version`
-parameters or an unsupported extension URI. The regression also verifies
-rejected parameters do not invoke authorization or the operation handler. The
-base mutation route also accepts a quoted space-separated list of absolute
-profile URIs, while empty, relative, multiply-spaced, duplicate, or unsupported
-Content-Type parameters are rejected before authorization or adapter execution.
-Base mutation requests specifically reject a valid-but-unsupported Atomic
-`ext` URI with 415 before authorization or adapter execution.
-Atomic Content-Type likewise rejects empty or multiply-spaced extension/profile
-URI lists before its guard or handler. The exhaustive media-negotiation matrix remains partial beyond the documented
-first-release profile. Base and Atomic parsers decode valid HTTP quoted-pairs in
-quoted profile/extension values before URI validation; route regressions cover
-escaped characters in Content-Type and pre-q Accept parameters.
-`base_mutation_and_relationship_routes_reject_unacceptable_accept_before_execution`
-verifies 406 negotiation on resource POST/PATCH/DELETE and relationship
-GET/PATCH/POST/DELETE routes before authorization or adapter execution.
-These supported mutation/media cases are covered; broader optional media combinations remain partial.
-`validates_included_resources_reachable_from_any_collection_member` adds
-collection-root coverage: an included resource linked only from the second
-primary resource is accepted. The existing reachability regression retains
-direct/transitive positive and disconnected-negative controls, and
-`rejects_included_resources_without_primary_data` covers the no-primary-data
-and errors cases. Per the [JSON:API top-level rule](https://jsonapi.org/format/#document-top-level),
-`included` MUST NOT appear unless `data` is present. The new
-`empty_primary_collection_allows_only_empty_included_array` regression accepts
-`data: []` with `included: []`; a non-empty included array is rejected because
-no included resource can satisfy the [compound-document full-linkage rule](https://jsonapi.org/format/#document-compound-documents)
-from an empty primary collection.
-`null_primary_data_allows_only_empty_included_array` applies the same full-linkage
-rule to `data: null`, accepting an empty `included` array and rejecting a
-non-empty one.
-The [JSON:API compound documents rule](https://jsonapi.org/format/#document-compound-documents)
-prohibits more than one resource object for each `(type,id)` pair.
-`rejects_duplicate_resource_identifiers_in_a_collection` rejects the same
-pair across primary and included data and accepts a reachable included object
-with the same ID under a different type.
-`rejects_duplicate_included_resources_with_same_type_and_id` rejects a
-repeated `(type,id)` pair wholly within included data, with a primary linkage
-control making both included entries reachable.
-The [published Atomic Operations extension](https://jsonapi.org/ext/atomic/)
-distinguishes relationship membership targets from resource references:
-`relationship_adds_require_relationship_refs_without_reclassifying_resource_updates`
-plans an add through `ref.relationship` as a relationship operation and keeps
-a resource update without `relationship` as a resource operation. It rejects
-a relationship add whose `ref` lacks `relationship`, with a pointer to the
-existing `ref` object; `atomic_http_requires_a_relationship_ref_for_relationship_adds`
-proves the valid control reaches the handler and the invalid request is rejected
-before authorization or handler invocation.
-
-### M4 single-resource include and sparse-fieldset execution
-
-`plan_resource_read` reuses the adapter-independent `ReadPlan` and registry
-allowlists for single-resource includes and `fields[resource-type]`, while
-rejecting collection-only filters, sort, page number, and page size as a
-sorted, deduplicated unsupported-parameter error. The router plans these
-requests before authorization and calls the query adapter's resource operation.
-`SeaOrmQueryExecutor::resource` validates public mappings before limits,
-authorization, and SQL; it converts the persistent ID through
-`SeaOrmFilterValueCodec::encode_resource_identifier`, loads the selected row,
-and invokes the application include loader with that root.
-
-`query_router_plans_single_resource_includes_and_fieldsets` asserts the
-adapter-independent response projection. The shared PostgreSQL and SQLite
-query integration tests execute `/ports/1?include=owner` with root and included
-sparse fieldsets, asserting the exact document, included identity, and linkage.
-`query_router_authorizes_before_calling_query_adapter` also denies a valid
-single-resource include/fieldset query with HTTP 403 after one authorization
-call and before either the query adapter or resource adapter is called.
-Each database-backed route test also verifies that the existing row returns
-HTTP 200 while `/ports/999?include=owner` returns HTTP 404 with the exact
-shared `resource_not_found` error document, not successful null data; the
-HTTP-adapter control asserts the same success/missing pair.
-Shared string, i64, and UUID identifier cases also exercise typed single-row
-lookups. The HTTP route tests reject collection-only query components,
-unregistered fields, and relationships with exact parameter sources and zero
-authorization or adapter calls; the backend route regressions pair the valid
-document with an invalid-filter control that performs no SQL.
-
-### M4 requested include response evidence
-
-JSON:API 1.1 requires a compound response with an `included` member whenever a
-supported `include` parameter is supplied, even when the selected relationship
-has no targets. The collection and single-resource GET routes preserve whether
-`include` occurred in the request instead of inferring it from the number of
-resources returned by the adapter. `query_router_returns_empty_included_for_requested_includes_without_targets`
-asserts `included: []` for null to-one linkage and for the accepted empty
-`include=` value on both routes. The PostgreSQL and SQLite
-`executes_*filters_sort_pagination*includes*` cases request `include=owner` for
-the persisted resource with no owner and assert the empty `included` array on
-both collection and single-resource responses. Existing non-empty include
-controls remain unchanged.
-
-### M5 relationship result and Accept negotiation evidence
-
-`validates_relationship_results_for_add_update_and_remove_operations` now
-accepts empty relationship result objects (including permitted `meta`) and
-rejects `data` for relationship add, update, and remove results at the exact
-index. `atomic_http_rejects_relationship_result_data_with_operation_pointer`
-verifies the HTTP boundary returns 500 with a matching JSON:API status and an
-operation pointer when an application handler returns invalid relationship
-result data.
-
-`atomic_http_negotiates_qvalues_wildcards_and_extension_parameters` tests
-concrete and wildcard ranges carrying the quoted Atomic extension, qvalue
-syntax and precedence, q=0 specificity, repeated ranges, profile lists, and
-rejection of malformed qvalues, duplicate parameters, and unsupported
-extension lists before authorization/limits/handlers. The separate
-`atomic_http_combines_repeated_accept_header_fields` route test also confirms
-repeated exact Atomic media-range field values combine by highest quality.
-The Atomic parser now
-uses RFC 9110 qvalue syntax and most-specific media-range precedence rather
-than floating-point parsing and first-match acceptance. The request-shape
-planner matrix remains partial; no general conformance claim is made.
-
-### M5 client-assigned resource-add result evidence
-
-The Atomic extension permits omitting result `data` for a client-ID resource
-add only when the created representation is identical to the request. Seamark
-chooses the conservative always-return-representation behavior instead:
-`validate_operation_result` rejects a missing add representation before the
-transaction commits, and `AtomicOperationsDocument::validate_response_for`
-enforces the same contract for independently validated response documents.
-`validates_atomic_client_assigned_add_result_identity`
-accepts a representation with the requested identity and rejects a missing or
-mismatched one. The shared PostgreSQL/SQLite
-`execute_client_assigned_add_result_http_case` confirms HTTP success, result
-identity, and persisted attributes. Its companion
-`execute_client_assigned_add_missing_result_rollback_http_case` writes the
-client-ID row before returning an empty result; both backends assert HTTP 500,
-an operation pointer, omission of `atomic:results`, and rollback of the write.
-
-### M5 application-resolved href HTTP-to-SeaORM evidence
-
-The shared PostgreSQL/SQLite `execute_http_href_typed_seaorm_case` drives
-`router_with_href_resolver` into typed SeaORM dispatch for collection add,
-resource update/remove, to-one relationship update, and to-many relationship
-add/replace/remove. It asserts the exact seven-result Atomic document and
-persisted state. Its failure control updates a resource and adds a valid
-relationship member before an invalid member fails at operation 2; both
-backends assert the error pointer, omitted `atomic:results`, and rollback of
-the earlier resource and relationship writes. The fixture resolver maps only
-its declared `/ports` routes. This is integration evidence for the application
-resolver boundary, not a protocol requirement for how arbitrary application
-routes must map to resources; the existing mock-handler HTTP href test and
-direct typed-SeaORM href cases remain separate evidence layers.
+- Applying requested profiles and reflecting them in response media types.
+  Profile application is a JSON:API SHOULD and is outside this profile.
+- Automatic support for every ORM association shape, ordered relationship
+  storage, and join tables with additional required columns. Applications may
+  provide custom executors.
+- Exhaustive optional/conditional endpoint combinations and a complete
+  line-by-line JSON:API/Atomic conformance suite. The conformance matrix remains
+  partial; no full conformance claim is made.
+- Backend parity for uncommon identifier types, engine-specific schema or
+  constraint behavior, and concurrency/locking.
+- Continuous refresh of IANA link-relation and BCP 47 registry snapshots.
