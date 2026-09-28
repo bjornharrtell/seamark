@@ -1028,10 +1028,18 @@ async fn atomic_http_rejects_missing_or_non_array_operations_before_authorizatio
         guard.clone(),
         handler.clone(),
     );
-    for (body, code) in [
-        (r#"{}"#, "invalid_atomic_operation"),
-        (r#"{"atomic:operations":null}"#, "invalid_document"),
-        (r#"{"atomic:operations":{}}"#, "invalid_document"),
+    for (body, code, pointer) in [
+        (r#"{}"#, "invalid_atomic_operation", None),
+        (
+            r#"{"atomic:operations":null}"#,
+            "invalid_document",
+            Some("/atomic:operations"),
+        ),
+        (
+            r#"{"atomic:operations":{}}"#,
+            "invalid_document",
+            Some("/atomic:operations"),
+        ),
     ] {
         let response = app
             .clone()
@@ -1049,7 +1057,7 @@ async fn atomic_http_rejects_missing_or_non_array_operations_before_authorizatio
         assert_eq!(response.headers()[VARY], "Accept");
         let error = error_document(response, body).await;
         assert_eq!(error["errors"][0]["code"], code);
-        assert!(error["errors"][0]["source"]["pointer"].is_null());
+        assert_eq!(error["errors"][0]["source"]["pointer"].as_str(), pointer);
     }
     assert_eq!(guard.calls.load(Ordering::SeqCst), 0);
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);

@@ -158,12 +158,16 @@ async fn post_operations(
     let document: AtomicOperationsDocument = match from_value(request_document.clone()) {
         Ok(document) => document,
         Err(error) => {
+            let pointer = request_document
+                .get("atomic:operations")
+                .filter(|operations| !operations.is_array())
+                .map(|_| "/atomic:operations".to_owned());
             return atomic_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_document",
                 "Invalid Atomic Operations document",
                 &error.to_string(),
-                None,
+                existing_request_pointer(pointer, &request_document),
             );
         }
     };
