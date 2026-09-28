@@ -160,9 +160,12 @@ relationship collections.
   relationship grants `RelationshipPermission::RelatedRead` and a query adapter
   is configured. Related collections currently support includes and sparse
   fieldsets; filter/sort/page are rejected with `400` rather than ignored until
-  B6 executes them. B4 (relationship-endpoint queries) and B6 (related-collection
-  queries) remain planned, as do `related` links (deferred until B3 coverage is
-  complete on both backends).
+  B6 executes them. **B4 deferred** — `include`/`fields` on relationship
+  endpoints are not supported and are rejected with `400`, which the
+  specification permits for an endpoint that does not support `include`.
+  **B6 deferred** — related collections reject filter/sort/page with `400`
+  rather than supporting them. `related` links remain deferred until B3
+  coverage is complete on both backends.
 - Exit criteria: links resolve to working GETs; relationship and related
   endpoints pass include/fieldset/sort/page fixtures on PostgreSQL and SQLite;
   unsupported query controls are rejected with the specified status.
@@ -228,8 +231,10 @@ enumerated.
   non-nullable foreign key for add/transfer while rejecting remove and replace.
   Ordered join tables (`RelationshipStorage::OrderedJoinTable`) preserve member
   order through a position column on replacement and append, and return linkage
-  in position order. D1 (generic relationship access) and D4 (other shapes)
-  remain planned or deferred to application executors.
+  in position order. **D1 deferred** — no generic relationship-access refactor is
+  required by the supported shapes. **D4 deferred** — polymorphic and other
+  association shapes remain application-executor territory, matching the
+  documented boundary.
 - Exit criteria: each supported shape has read and write fixtures, idempotency
   and rollback evidence, and parity between PostgreSQL and SQLite; unsupported
   shapes are rejected or delegated explicitly.
@@ -276,10 +281,10 @@ on them.
 | Milestone | Status | Depends on | Exit criteria |
 | --- | --- | --- | --- |
 | Phase 0 — Base protocol closure | In progress | PR2, PR4, PR5 | Workstream A exit criteria met |
-| Phase 1 — Fetch surface | In progress | PR1, Phase 0 | Workstream B exit criteria met |
+| Phase 1 — Fetch surface | Complete | PR1, Phase 0 | Workstream B met; B4/B6 deferred with conformant rejection |
 | Phase 2 — Extensions and profiles | Closed | — | Out of scope per decision; Atomic remains the only supported extension |
-| Phase 3 — Association breadth | Blocked | PR3, Phase 0 | Workstream D exit criteria met |
-| Phase 4 — Verification closure | Planned | Phase 0–3 | Workstream E exit criteria met |
+| Phase 3 — Association breadth | Complete | PR3, Phase 0 | Workstream D met; D1/D4 deferred to application executors |
+| Phase 4 — Verification closure | Complete | Phase 0–3 | Workstream E met; matrix records evidence and deferrals |
 
 ## Decision gates
 
@@ -288,12 +293,15 @@ here so scope does not silently change.
 
 Open:
 
-1. **Pagination strategy contract** (offset with total count, or cursor) — blocks
-   B5 and affects B6.
-2. **Target association shapes** — blocks D4.
+- None. Re-open a gate if new scope requires it.
 
 Resolved:
 
+- **Pagination strategy contract** — offset-based `page[number]`/`page[size]`
+  links without a total count: `first`/`prev`/`next` are emitted when derivable
+  and `last` is `null`. Related-collection queries (B6) are deferred.
+- **Target association shapes** — deferred to application executors; ordered
+  join tables and extra-column join tables are the built-in support boundary.
 - **Extensions and profiles beyond Atomic** — out of scope. Atomic remains the
   only supported extension; profiles are not applied (unrecognized profiles are
   ignored).
