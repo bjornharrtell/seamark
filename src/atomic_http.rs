@@ -275,7 +275,9 @@ fn atomic_request_error(error: AtomicOperationsError, request_document: &Value) 
     let pointer = match &error {
         AtomicOperationsError::InvalidOperation { pointer, .. }
         | AtomicOperationsError::Forbidden { pointer, .. } => Some(pointer.clone()),
-        AtomicOperationsError::MissingOperations => Some("/atomic:operations".to_owned()),
+        AtomicOperationsError::MissingOperations | AtomicOperationsError::EmptyOperations => {
+            Some("/atomic:operations".to_owned())
+        }
         _ => None,
     };
     if matches!(&error, AtomicOperationsError::Forbidden { .. }) {

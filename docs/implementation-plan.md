@@ -102,12 +102,26 @@ representation when an executor changes fields beyond those in the operation;
 support the `204 No Content` alternative when all results are empty.
 
 - Depends on: **PR2**, **PR4**, **PR5**.
-- Progress: **A1 complete** — base and Atomic endpoints share one negotiation
-  module; the Atomic endpoint applies its extension even when the client does
-  not require it through `Accept`. A2–A5 remain planned.
-- Exit criteria: every item above has positive and negative tests; the Atomic
-  and base negotiation tests share the unified code path; conformance matrix
-  rows updated.
+- Progress:
+  - **A1 complete** — base and Atomic endpoints share one negotiation module;
+    the Atomic endpoint applies its extension even when the client does not
+    require it through `Accept`.
+  - **A2 closed** — the top-level `jsonapi` object is not emitted (decision).
+    Capability advertisement remains via `Content-Type`, which is sufficient
+    because base endpoints apply no extension or profile.
+  - **A3 partial** — `ApiBuilder::jsonapi_fallback` installs a scoped JSON:API
+    `404`/`405` fallback. Optional error `links` (`about`, `type`) are deferred.
+  - **A4 closed** — current write statuses (`201`/`200`/`204`) are retained;
+    `202` is async-only and does not apply. `409`/`403` behavior is already
+    covered; `Location`/`self` consistency is deferred to B1 (no `self` links
+    exist yet).
+  - **A5 complete** — empty `atomic:operations` is rejected with `400`; typed
+    SeaORM add/update results return a resource representation (attributes and
+    to-one relationships; to-many linkage is omitted because the standard
+    mutation mapper cannot load it). The `204`-when-all-empty alternative is
+    not adopted.
+- Exit criteria met except the deferred optional items noted above; record
+  further evidence in the conformance matrix as they land.
 
 ### B. Optional fetch surface
 
@@ -246,15 +260,25 @@ on them.
 
 ## Decision gates
 
-These are open decisions that block named workstreams. Each should be resolved
-and recorded in the conformance matrix before the workstream starts.
+Open decisions that block named workstreams. Resolved decisions are recorded
+here so scope does not silently change.
+
+Open:
 
 1. **Pagination strategy contract** (offset with total count, or cursor) — blocks
    B5 and affects B6.
 2. **Supported profile list** — blocks C3.
-3. **Empty `atomic:operations` behavior** — blocks A5.
-4. **`202`/`204` adoption policy** per operation — blocks A4.
-5. **Target association shapes** — blocks D4.
+3. **Target association shapes** — blocks D4.
+
+Resolved:
+
+- **Top-level `jsonapi` object** — not emitted. Capability advertisement uses
+  `Content-Type`.
+- **Empty `atomic:operations`** — rejected with `400`.
+- **Write statuses** — retain `201`/`200`/`204`; `202` is async-only.
+- **Atomic add/update results** — typed SeaORM results return a resource
+  representation (attributes and to-one; to-many omitted). The `204`-when-empty
+  alternative is not adopted.
 
 ## Relationship to other documents
 

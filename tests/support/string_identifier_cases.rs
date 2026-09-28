@@ -402,12 +402,32 @@ pub async fn run(database: &DatabaseConnection) {
     assert_eq!(
         serde_json::to_value(results).unwrap(),
         json!([
+            {"data": {
+                "type": "vessels",
+                "id": "harbor-east",
+                "attributes": {"name": "East Harbor Updated"},
+                "relationships": {"owner": {"data": {"type": "people", "id": "captain-1"}}}
+            }},
             {},
+            {"data": {
+                "type": "vessels",
+                "id": "harbor-north",
+                "attributes": {"name": "North Harbor"},
+                "relationships": {"owner": {"data": {"type": "people", "id": "captain-2"}}}
+            }},
             {},
-            {"data": {"type": "vessels", "id": "harbor-north"}},
-            {},
-            {"data": {"type": "vessels", "id": ""}},
-            {},
+            {"data": {
+                "type": "vessels",
+                "id": "",
+                "attributes": {"name": "Empty Harbor"},
+                "relationships": {"owner": {"data": {"type": "people", "id": ""}}}
+            }},
+            {"data": {
+                "type": "vessels",
+                "id": "",
+                "attributes": {"name": "Empty Harbor Updated"},
+                "relationships": {"owner": {"data": {"type": "people", "id": ""}}}
+            }},
             {}
         ])
     );
